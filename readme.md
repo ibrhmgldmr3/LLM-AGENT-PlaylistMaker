@@ -33,7 +33,7 @@ Make A Playlist, öğrenme sürecini kolaylaştırmak için geliştirilmiş bir 
 
 1. Uygulamayı başlatın:
     ```
-    python main.py
+    python -m streamlit run .\make_a_playlist.py
     ```
 
 2. Öğrenmek istediğiniz ana konuyu girin (örn. "Yapay Zeka", "Web Geliştirme").
