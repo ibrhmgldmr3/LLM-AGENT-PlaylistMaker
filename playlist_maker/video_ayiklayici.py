@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-
 import yt_dlp
+import time
+
 def youtubede_ara(topic, output_file="playlist_maker/datas/video_linkleri.txt", num_results=2):
     """
     Belirtilen konu için YouTube'da arama yapar ve ilk birkaç video linkini dosyaya kaydeder.
@@ -15,15 +16,25 @@ def youtubede_ara(topic, output_file="playlist_maker/datas/video_linkleri.txt", 
     # YouTube arama URL'sini oluştur
     search_url = f"ytsearch{num_results}:{topic}"
     
-    # yt-dlp seçeneklerini yapılandır
+    # yt-dlp seçeneklerini ayarla - daha güvenli
     ydl_opts = {
         'quiet': True,
         'extract_flat': True,
         'force_generic_extractor': True,
         'skip_download': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'extractor_args': {
+            'youtube': {
+                'skip': ['dash', 'hls']
+            }
+        }
     }
     
     try:
+        # Rate limiting - arama öncesi bekle
+        print(f"⏱️ YouTube arama öncesi 3 saniye bekleniyor...")
+        time.sleep(3)
+        
         # yt-dlp kullanarak ara ve bilgileri çıkar
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(search_url, download=False)

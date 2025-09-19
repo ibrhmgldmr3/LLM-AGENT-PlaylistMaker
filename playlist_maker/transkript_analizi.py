@@ -16,11 +16,34 @@ api_key = os.getenv("OPENAI_API_KEY")
 base_url = os.getenv("OPENAI_API_URL")
 
 llm = ChatOpenAI(
-    model="gpt-3.5-turbo",
+    model="openai/gpt-oss-20b:free",
     openai_api_key=api_key,
     base_url=base_url,
     temperature=0.3
 )
+
+def transkript_gecerli_mi(transkript_metni):
+    """Transkriptin geçerli olup olmadığını kontrol eder"""
+    if not transkript_metni or len(transkript_metni.strip()) < 50:
+        return False
+    
+    # Google hata sayfası kontrolü
+    google_hata_belirtileri = [
+        "We're sorry...",
+        "your computer or network may be sending automated queries",
+        "Google Help",
+        "<html>",
+        "<head>",
+        "Sorry...",
+        "automated queries"
+    ]
+    
+    for belirti in google_hata_belirtileri:
+        if belirti.lower() in transkript_metni.lower():
+            print(f"🚫 Google hata sayfası tespit edildi: {belirti}")
+            return False
+    
+    return True
 
 def klasorden_transkriptleri_yukle(directory):
     transcripts = []
@@ -43,6 +66,12 @@ def klasorden_transkriptleri_yukle(directory):
                     continue
 
                 transcript_text = transcript_data.get("text", str(transcript_data))
+                
+                # Transkript geçerlilik kontrolü
+                if not transkript_gecerli_mi(transcript_text):
+                    print(f"⚠️ Geçersiz transkript atlandı: {video_id}")
+                    continue
+                
                 transcripts.append({
                     "video_id": video_id,
                     "transcript": transcript_text,
@@ -51,7 +80,7 @@ def klasorden_transkriptleri_yukle(directory):
             except Exception as e:
                 print(f"Hata: {transcript_file} okunurken sorun oluştu: {str(e)}")
 
-        print(f"{len(transcripts)} transkript dosyası başarıyla yüklendi.")
+        print(f"{len(transcripts)} geçerli transkript dosyası yüklendi.")
     except Exception as e:
         print(f"Dizin okunurken hata: {str(e)}")
     return transcripts
@@ -111,7 +140,7 @@ def json_verilerini_parsla(response_text):
         "yorum": "Değerlendirme yapılamadı."
     }
 
-def tum_transkriptleri_analiz_et(transcripts, topic):
+def tum_transkriptleri_analiz_et(transcripts, topic, altbaslik=None):
     best_score = -1
     best_video_id = ""
     tum_sonuclar = []
@@ -139,8 +168,8 @@ def tum_transkriptleri_analiz_et(transcripts, topic):
             traceback.print_exc()
             continue
 
-    if tum_sonuclar:
-        analiz_sonuclarini_kaydet(tum_sonuclar)
+    if tum_sonuclar and altbaslik:
+        analiz_sonuclarini_kaydet(tum_sonuclar, altbaslik)
     return best_video_id
 
 def save_best_video(video_id, transcripts, output_file="en_iyi_video.txt"):
@@ -156,13 +185,51 @@ def save_best_video(video_id, transcripts, output_file="en_iyi_video.txt"):
     except Exception as e:
         print(f"URL dosyaya yazılırken hata: {str(e)}")
 
-def analiz_sonuclarini_kaydet(results, output_file="analiz_sonuclari.json"):
+def analiz_sonuclarini_kaydet(results, altbaslik, output_file="analiz_sonuclari.json"):
     try:
+        # Mevcut analiz sonuçlarını oku
+        try:
+            with open(output_file, "r", encoding="utf-8") as file:
+                mevcut_veri = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            mevcut_veri = {
+                "konu": "Bilinmiyor",
+                "analiz_tarihi": "",
+                "alt_basliklar": []
+            }
+        
+        # Yeni alt başlık verilerini ekle
+        alt_baslik_verisi = {
+            "alt_baslik": altbaslik,
+            "video_analizleri": []
+        }
+        
+        for result in results:
+            video_analizi = {
+                "video_id": result["video_id"],
+                "video_url": f"https://www.youtube.com/watch?v={result['video_id']}",
+                "score": result["score"],
+                "kapsam_uyumu": result.get("kapsam_uyumu", 0),
+                "bilgi_derinligi": result.get("bilgi_derinligi", 0),
+                "anlatim_tarzi": result.get("anlatim_tarzi", 0),
+                "hedef_kitle": result.get("hedef_kitle", 0),
+                "yapisal_tutarlilik": result.get("yapisal_tutarlilik", 0),
+                "genel_puan": result.get("genel_puan", 0),
+                "yorum": result.get("yorum", "")
+            }
+            alt_baslik_verisi["video_analizleri"].append(video_analizi)
+        
+        # Alt başlık verilerini ana veriye ekle
+        mevcut_veri["alt_basliklar"].append(alt_baslik_verisi)
+        
+        # Güncellenmiş veriyi kaydet
         with open(output_file, "w", encoding="utf-8") as file:
-            json.dump(results, file, ensure_ascii=False, indent=2)
-        print(f"Analiz sonuçları '{output_file}' dosyasına kaydedildi.")
+            json.dump(mevcut_veri, file, ensure_ascii=False, indent=2)
+        print(f"'{altbaslik}' alt başlığı için analiz sonuçları '{output_file}' dosyasına eklendi.")
     except Exception as e:
         print(f"Analiz sonuçları kaydedilirken hata: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 def tum_islemler(konu_basligi):
     try:
@@ -180,7 +247,7 @@ def tum_islemler(konu_basligi):
             print("Hata: Analiz edilecek transkript bulunamadı!")
             return
 
-        best_video_id = tum_transkriptleri_analiz_et(transcripts, konu_basligi)
+        best_video_id = tum_transkriptleri_analiz_et(transcripts, konu_basligi, altbaslik=konu_basligi)
         if not best_video_id:
             print("\n⚠️ En iyi video bulunamadı!")
             return

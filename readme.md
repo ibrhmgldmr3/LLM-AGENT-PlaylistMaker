@@ -11,12 +11,13 @@ Make A Playlist, öğrenme sürecini kolaylaştırmak için geliştirilmiş bir 
 - Python 3.7 veya üstü
 - pip (Python paket yöneticisi)
 - İnternet bağlantısı
+- OpenRouter API anahtarı (ücretsiz hesap oluşturabilirsiniz)
 
 ## Kurulum
 
 1. Repoyu klonlayın:
     ```
-    git clone https://github.com/kullaniciadi/make_a_playlist.git
+    git clone https://github.com/ibrhmgldmr3/LLM-AGENT-PlaylistMaker.git
     ```
 
 2. Proje dizinine gidin:
@@ -29,18 +30,54 @@ Make A Playlist, öğrenme sürecini kolaylaştırmak için geliştirilmiş bir 
     pip install -r requirements.txt
     ```
 
+4. **API Anahtarı Kurulumu**:
+   
+   a. [OpenRouter](https://openrouter.ai/) sitesinden ücretsiz hesap oluşturun
+   
+   b. API anahtarınızı alın
+   
+   c. Proje dizininde `.env` dosyasını oluşturun ve aşağıdaki içeriği ekleyin:
+   ```
+   OPENAI_API_KEY=your_openrouter_api_key_here
+   OPENAI_API_URL=https://openrouter.ai/api/v1
+   ```
+   
+   d. `your_openrouter_api_key_here` yerine gerçek API anahtarınızı yazın
+
 ## Kullanım
 
 1. Uygulamayı başlatın:
     ```
-    python main.py
+    python -m streamlit run make_a_playlist.py
     ```
 
-2. Öğrenmek istediğiniz ana konuyu girin (örn. "Yapay Zeka", "Web Geliştirme").
+2. Web tarayıcınızda http://localhost:8501 adresine gidin
 
-3. Uygulama konuyla ilgili en önemli alt başlıkları analiz edecektir (maksimum 10 adet).
+3. Öğrenmek istediğiniz ana konuyu girin (örn. "Yapay Zeka", "Web Geliştirme").
 
-4. Her alt başlık için en uygun eğitim videoları otomatik olarak seçilir.
+4. Uygulama konuyla ilgili en önemli alt başlıkları analiz edecektir (maksimum 10 adet).
 
-5. Oluşturulan öğrenme çalma listesini JSON veya CSV formatında dışa aktarabilirsiniz.
+5. Her alt başlık için en uygun eğitim videoları otomatik olarak seçilir.
+
+6. Oluşturulan öğrenme çalma listesini görüntüleyebilirsiniz.
+
+## Kullanılan Teknolojiler
+
+- **Streamlit**: Web arayüzü
+- **LangChain**: AI model entegrasyonu
+- **OpenRouter**: AI model API'si
+- **yt-dlp**: YouTube video işleme
+- **faster-whisper**: Ses tanıma ve transkripsiyon
+
+## Sorun Giderme
+
+**404 Hatası**: Eğer "Not Found" hatası alıyorsanız:
+- API anahtarınızın doğru olduğundan emin olun
+- `.env` dosyasının doğru yapılandırıldığından emin olun
+- İnternet bağlantınızı kontrol edin
+
+**Paket Hatası**: Eğer modül bulunamadı hatası alıyorsanız:
+```bash
+pip install -r requirements.txt
+```
 
