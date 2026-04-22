@@ -36,12 +36,6 @@ pip install -r requirements.txt
 
 Create `.env` from `.env.example`.
 
-## Git Hygiene
-
-- `.env` stays local and is ignored by git
-- runtime output under `data/` stays local and is ignored by git
-- local `whisper.cpp/` builds, binaries, and models stay local and are ignored by git
-- if you need to share config, update `.env.example` instead of committing `.env`
 
 ## Canonical Environment Variables
 
