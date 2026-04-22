@@ -1,92 +1,114 @@
-﻿import requests
-
 from src.config import AppConfig
-from src.models import Transcript
+from src.models import TranscriptResult, VideoCandidate
 from src.services import transcript_service
+from src.storage import SQLiteStore
 
 
-def test_transcript_cache_hit(tmp_path, monkeypatch):
+def _config(tmp_path):
     config = AppConfig(
-        GEMINI_API_KEY="x",
-        GEMINI_MODEL="test",
-        YOUTUBE_SEARCH_PER_TOPIC=8,
-        TRANSCRIPT_SCORE_TOP_K=3,
-        REQUEST_TIMEOUT_SEC=10,
-        RETRY_MAX_ATTEMPTS=1,
-        RETRY_BASE_DELAY_SEC=0.1,
-        DATA_DIR=str(tmp_path),
+        gemini_api_key="test",
+        gemini_model="gemini-test",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+        retry_max_attempts=1,
     )
-    cache_path = tmp_path / "cache" / "transcripts" / "abc123def45.json"
-    cache_path.parent.mkdir(parents=True)
-    cache_path.write_text('{"video_id":"abc123def45","language":"en","source":"cache","text":"hello world","fetched_at":"now"}', encoding="utf-8")
-
-    monkeypatch.setattr(transcript_service, "_fetch_youtube_transcript", lambda *args, **kwargs: None)
-    monkeypatch.setattr(transcript_service, "_fetch_ytdlp_captions", lambda *args, **kwargs: None)
-    monkeypatch.setattr(transcript_service, "_whisper_cpp_transcribe", lambda *args, **kwargs: None)
-
-    t = transcript_service.get_transcript(config, "abc123def45", "https://www.youtube.com/watch?v=abc123def45", str(tmp_path))
-    assert isinstance(t, Transcript)
-    assert t.source == "cache"
+    config.ensure_directories()
+    return config
 
 
-def test_transcript_429_does_not_crash(tmp_path, monkeypatch):
-    config = AppConfig(
-        GEMINI_API_KEY="x",
-        GEMINI_MODEL="test",
-        YOUTUBE_SEARCH_PER_TOPIC=8,
-        TRANSCRIPT_SCORE_TOP_K=3,
-        REQUEST_TIMEOUT_SEC=10,
-        RETRY_MAX_ATTEMPTS=1,
-        RETRY_BASE_DELAY_SEC=0.1,
-        DATA_DIR=str(tmp_path),
+def _candidate():
+    return VideoCandidate(
+        video_id="abc123def45",
+        url="https://www.youtube.com/watch?v=abc123def45",
+        title="Python functions explained",
+        language="en",
     )
 
-    monkeypatch.setattr(transcript_service, "_fetch_youtube_transcript", lambda *args, **kwargs: None)
 
-    def _raise_429(*args, **kwargs):
-        raise RuntimeError("429 Client Error: Too Many Requests")
+def test_transcript_provider_fallback_and_cache_reuse(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    store = SQLiteStore(config.sqlite_path)
+    state = transcript_service.RunTranscriptState()
+    candidate = _candidate()
 
-    monkeypatch.setattr(transcript_service, "_fetch_ytdlp_captions", _raise_429)
-    monkeypatch.setattr(transcript_service, "_whisper_cpp_transcribe", lambda *args, **kwargs: None)
+    calls = {"youtube": 0, "ytdlp": 0, "asr": 0}
 
-    t = transcript_service.get_transcript(
-        config,
-        "abc123def45",
-        "https://www.youtube.com/watch?v=abc123def45",
-        str(tmp_path),
-    )
-    assert t is None
+    def fake_youtube(*args, **kwargs):
+        calls["youtube"] += 1
+        raise RuntimeError("blocked")
 
+    def fake_ytdlp(*args, **kwargs):
+        calls["ytdlp"] += 1
+        return TranscriptResult(video_id=candidate.video_id, status="unavailable", source="yt_dlp_subtitles")
 
-def test_download_vtt_with_backoff_retries_429(monkeypatch):
-    calls = {"count": 0}
+    def fake_asr(*args, **kwargs):
+        calls["asr"] += 1
+        return TranscriptResult(
+            video_id=candidate.video_id,
+            status="available",
+            source="asr",
+            backend="faster_whisper",
+            text="python functions scope parameters return values",
+        )
 
-    class _Resp:
-        def __init__(self, status_code=200, text="", headers=None):
-            self.status_code = status_code
-            self.text = text
-            self.headers = headers or {}
+    monkeypatch.setattr(transcript_service, "_fetch_youtube_transcript", fake_youtube)
+    monkeypatch.setattr(transcript_service, "_fetch_ytdlp_subtitles", fake_ytdlp)
+    monkeypatch.setattr(transcript_service, "_fetch_asr_transcript", fake_asr)
 
-        def raise_for_status(self):
-            if self.status_code >= 400:
-                raise requests.HTTPError(response=self)
+    first = transcript_service.get_transcript(config, store, candidate, str(tmp_path), state)
+    second = transcript_service.get_transcript(config, store, candidate, str(tmp_path), state)
 
-    def _fake_get(*args, **kwargs):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            return _Resp(status_code=429, headers={"Retry-After": "0"})
-        return _Resp(status_code=200, text="WEBVTT\n\nhello world")
-
-    monkeypatch.setattr(transcript_service.requests, "get", _fake_get)
-    monkeypatch.setattr(transcript_service.time, "sleep", lambda *_: None)
-
-    text = transcript_service._download_vtt_with_backoff("http://example.com/test.vtt", timeout_sec=2)
-    assert "hello world" in text
-    assert calls["count"] == 2
+    assert first.status == "available"
+    assert second.status == "available"
+    assert second.backend == "faster_whisper"
+    assert calls == {"youtube": 1, "ytdlp": 1, "asr": 1}
 
 
-def test_parse_retry_after_seconds_invalid_values():
-    assert transcript_service._parse_retry_after_seconds("1.5") == 1.5
-    assert transcript_service._parse_retry_after_seconds("0") is None
-    assert transcript_service._parse_retry_after_seconds("-1") is None
-    assert transcript_service._parse_retry_after_seconds("abc") is None
+def test_provider_cooldown_skips_repeated_requests(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    store = SQLiteStore(config.sqlite_path)
+    state = transcript_service.RunTranscriptState()
+    candidate = _candidate()
+
+    store.mark_provider_cooldown("youtube_transcript_api", "rate limited", config.provider_cooldown_sec)
+    calls = {"youtube": 0, "ytdlp": 0, "asr": 0}
+
+    monkeypatch.setattr(transcript_service, "_fetch_youtube_transcript", lambda *args, **kwargs: calls.__setitem__("youtube", calls["youtube"] + 1))
+
+    def fake_ytdlp(*args, **kwargs):
+        calls["ytdlp"] += 1
+        return TranscriptResult(video_id=candidate.video_id, status="unavailable", source="yt_dlp_subtitles")
+
+    def fake_asr(*args, **kwargs):
+        calls["asr"] += 1
+        return TranscriptResult(
+            video_id=candidate.video_id,
+            status="available",
+            source="asr",
+            backend="whisper.cpp",
+            text="python transcript from asr backend",
+        )
+
+    monkeypatch.setattr(transcript_service, "_fetch_ytdlp_subtitles", fake_ytdlp)
+    monkeypatch.setattr(transcript_service, "_fetch_asr_transcript", fake_asr)
+
+    result = transcript_service.get_transcript(config, store, candidate, str(tmp_path), state)
+
+    assert result.status == "available"
+    assert calls["youtube"] == 0
+    assert calls["ytdlp"] == 1
+    assert calls["asr"] == 1
+
+
+def test_asr_backend_selection(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+
+    monkeypatch.setattr(transcript_service.FasterWhisperProvider, "is_available", lambda self: True)
+    monkeypatch.setattr(transcript_service.WhisperCppProvider, "is_available", lambda self: True)
+    assert transcript_service.select_transcription_backend(config).name == "faster_whisper"
+
+    config.asr_backend = "whisper.cpp"
+    assert transcript_service.select_transcription_backend(config).name == "whisper.cpp"
+
+    config.asr_backend = "faster-whisper"
+    assert transcript_service.select_transcription_backend(config).name == "faster_whisper"

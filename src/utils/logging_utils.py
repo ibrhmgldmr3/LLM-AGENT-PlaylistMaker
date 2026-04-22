@@ -1,6 +1,6 @@
-﻿import logging
+import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -13,12 +13,14 @@ def setup_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
+    logger.propagate = False
 
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
+    if not logger.handlers:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
 
     if log_file:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -31,5 +33,5 @@ def setup_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
 
 
 def run_log_path(run_dir: str) -> str:
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return os.path.join(run_dir, f"run_{ts}.log")

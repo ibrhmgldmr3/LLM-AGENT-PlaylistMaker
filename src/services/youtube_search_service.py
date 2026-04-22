@@ -1,71 +1,66 @@
-﻿from typing import List
-import yt_dlp
+from __future__ import annotations
 
 from src.config import AppConfig
-from src.models import VideoCandidate
+from src.models import FilterOptions, VideoCandidate
+from src.providers.youtube_data_api_provider import ProviderPermanentError, ProviderTemporaryError, YouTubeDataAPIProvider
+from src.providers.ytdlp_provider import YtDlpProvider
+from src.storage import SQLiteStore
 from src.utils.retry_utils import retry_with_backoff
-from src.utils.youtube_utils import duration_score, title_relevance_score
-from src.utils.ytdlp_options import build_ydl_common_options
 
 
-def _ydl_options(config: AppConfig):
-    options = build_ydl_common_options(config)
-    options["extract_flat"] = True
-    options["skip_download"] = True
-    options["force_generic_extractor"] = True
-    return options
+def search_candidates(
+    config: AppConfig,
+    store: SQLiteStore,
+    query: str,
+    filters: FilterOptions,
+    logger=None,
+) -> list[VideoCandidate]:
+    providers = [YouTubeDataAPIProvider(config), YtDlpProvider(config)]
+    provider_errors: list[str] = []
+    for provider in providers:
+        if hasattr(provider, "is_configured") and not provider.is_configured():
+            if logger:
+                logger.info("Skipping %s because it is not configured", provider.name)
+            continue
 
+        cooldown_until = store.get_provider_cooldown(provider.name)
+        if cooldown_until:
+            if logger:
+                logger.warning("Skipping %s due to cooldown until %s", provider.name, cooldown_until)
+            continue
 
-def search_candidates(config: AppConfig, query: str, logger=None) -> List[VideoCandidate]:
-    search_url = f"ytsearch{config.youtube_search_per_topic}:{query}"
+        cached = store.get_search_cache(provider.name, query, filters.model_dump())
+        if cached is not None:
+            if logger:
+                logger.info("Search cache hit for %s via %s", query, provider.name)
+            return cached
 
-    def _call() -> List[VideoCandidate]:
-        with yt_dlp.YoutubeDL(_ydl_options(config)) as ydl:
-            info = ydl.extract_info(search_url, download=False)
-        entries = info.get("entries", []) if info else []
-        results: List[VideoCandidate] = []
-        for entry in entries:
-            if not entry or "id" not in entry:
-                continue
-            video_id = entry.get("id")
-            title = entry.get("title") or ""
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            duration = entry.get("duration")
-            view_count = entry.get("view_count")
-            channel = entry.get("uploader") or entry.get("channel")
-            publish_date = entry.get("upload_date")
-            is_live = bool(entry.get("is_live"))
-
-            results.append(
-                VideoCandidate(
-                    video_id=video_id,
-                    url=url,
-                    title=title,
-                    channel=channel,
-                    duration_sec=duration,
-                    view_count=view_count,
-                    publish_date=publish_date,
-                    is_live=is_live,
-                    metadata_score=0.0,
-                )
+        try:
+            candidates = retry_with_backoff(
+                lambda: provider.search(query, filters, config.search_candidates_per_subtopic),
+                attempts=config.retry_max_attempts,
+                base_delay=config.retry_base_delay_sec,
+                logger=logger,
+                on_exception=(ProviderTemporaryError, RuntimeError),
             )
-        return results
+        except ProviderPermanentError as exc:
+            provider_errors.append(str(exc))
+            continue
+        except Exception as exc:
+            provider_errors.append(str(exc))
+            store.mark_provider_cooldown(provider.name, str(exc), config.provider_cooldown_sec)
+            continue
 
-    return retry_with_backoff(
-        _call,
-        attempts=config.retry_max_attempts,
-        base_delay=config.retry_base_delay_sec,
-        logger=logger,
-    )
+        store.clear_provider_cooldown(provider.name)
+        deduped: dict[str, VideoCandidate] = {}
+        for candidate in candidates:
+            if candidate.video_id not in deduped:
+                deduped[candidate.video_id] = candidate
+                store.upsert_video_metadata(candidate, config.metadata_cache_ttl_sec)
+        final_candidates = list(deduped.values())
+        store.put_search_cache(provider.name, query, filters.model_dump(), final_candidates, config.search_cache_ttl_sec)
+        return final_candidates
 
-
-def metadata_prefilter(candidates: List[VideoCandidate], keywords: List[str], top_k: int) -> List[VideoCandidate]:
-    for c in candidates:
-        score = 0.0
-        score += duration_score(c.duration_sec)
-        score += title_relevance_score(c.title, keywords)
-        if c.is_live:
-            score -= 1.0
-        c.metadata_score = score
-    candidates.sort(key=lambda x: x.metadata_score, reverse=True)
-    return candidates[:top_k]
+    if logger and provider_errors:
+        logger.warning("All search providers failed for query %s: %s", query, provider_errors)
+    return []

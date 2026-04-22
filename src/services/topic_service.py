@@ -1,59 +1,44 @@
-﻿import json
-from typing import List
+from __future__ import annotations
 
-from google import genai
+from difflib import SequenceMatcher
 
-from src.config import AppConfig
+from src.models import Subtopic
+from src.providers.llm_provider import LLMProvider
 from src.utils.retry_utils import retry_with_backoff
-from src.utils.text_utils import normalize_text
+from src.utils.text_utils import normalize_text, slugify_text
 
 
-SYSTEM_PROMPT = "Return only valid JSON."
-
-
-def _parse_subtopics(text: str) -> List[str]:
-    text = text.strip()
-    try:
-        data = json.loads(text)
-        if isinstance(data, list):
-            return [normalize_text(str(x)) for x in data if normalize_text(str(x))]
-    except json.JSONDecodeError:
-        pass
-
-    lines = [normalize_text(line.strip("-0123456789. ")) for line in text.splitlines()]
-    return [line for line in lines if line]
-
-
-def generate_subtopics(config: AppConfig, topic: str, logger=None) -> List[str]:
-    client = genai.Client(api_key=config.gemini_api_key)
-
-    def _call() -> List[str]:
-        response = client.models.generate_content(
-            model=config.gemini_model,
-            contents=(
-                "List the key subtopics someone should learn for this topic. "
-                "Return a JSON array of strings only, no extra text. "
-                f"Topic: {topic}"
-            ),
-            config={"system_instruction": SYSTEM_PROMPT, "response_mime_type": "application/json"},
-        )
-        text = response.text or ""
-        items = _parse_subtopics(text)
-        if not items:
-            raise ValueError("No subtopics parsed")
-        seen = set()
-        deduped = []
-        for item in items:
-            key = item.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(item)
-        return deduped
-
-    return retry_with_backoff(
-        _call,
-        attempts=config.retry_max_attempts,
-        base_delay=config.retry_base_delay_sec,
+def generate_subtopics(provider: LLMProvider, topic: str, language: str, logger=None) -> list[Subtopic]:
+    attempts = getattr(getattr(provider, "config", None), "retry_max_attempts", 3)
+    base_delay = getattr(getattr(provider, "config", None), "retry_base_delay_sec", 1.0)
+    raw_items = retry_with_backoff(
+        lambda: provider.generate_subtopics(topic, language),
+        attempts=attempts,
+        base_delay=base_delay,
         logger=logger,
     )
+    results: list[Subtopic] = []
+    for item in raw_items:
+        title = normalize_text(item)
+        if not title:
+            continue
+        normalized = slugify_text(title)
+        if not normalized:
+            continue
+        merged = False
+        for existing in results:
+            if existing.normalized_title == normalized or _similar(existing.title, title) >= 0.87:
+                if title not in existing.source_titles:
+                    existing.source_titles.append(title)
+                merged = True
+                break
+        if merged:
+            continue
+        results.append(Subtopic(title=title, normalized_title=normalized, source_titles=[title]))
+    if logger:
+        logger.info("Generated %s normalized subtopics", len(results))
+    return results
+
+
+def _similar(left: str, right: str) -> float:
+    return SequenceMatcher(a=left.lower(), b=right.lower()).ratio()

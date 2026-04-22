@@ -1,4 +1,4 @@
-﻿import re
+import re
 from typing import Optional
 
 
@@ -20,3 +20,18 @@ def normalize_text(text: str) -> str:
     if not text:
         return ""
     return re.sub(r"\s+", " ", text).strip()
+
+
+def slugify_text(text: str) -> str:
+    normalized = normalize_text(text).lower()
+    normalized = re.sub(r"[^a-z0-9\s-]", "", normalized)
+    normalized = re.sub(r"[\s-]+", "-", normalized)
+    return normalized.strip("-")
+
+
+def keyword_overlap_score(text: str, query: str) -> float:
+    query_tokens = {token for token in slugify_text(query).split("-") if token}
+    text_tokens = {token for token in slugify_text(text).split("-") if token}
+    if not query_tokens or not text_tokens:
+        return 0.0
+    return len(query_tokens & text_tokens) / len(query_tokens)

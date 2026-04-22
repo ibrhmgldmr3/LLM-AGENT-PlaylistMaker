@@ -1,145 +1,190 @@
-﻿from typing import Callable, List, Optional
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from uuid import uuid4
 
 from src.config import AppConfig
-from src.models import PlaylistResult, ProgressEvent, SubtopicResult, VideoCandidate, now_iso
-from src.services.cache_service import generate_run_id, get_run_dir, save_playlist_result
+from src.models import (
+    ExportArtifacts,
+    PlaylistRequest,
+    PlaylistResult,
+    ProgressEvent,
+    Recommendation,
+    SubtopicResult,
+    TranscriptResult,
+)
+from src.providers import GeminiLLMProvider
+from src.services.metadata_ranker import rank_candidates
+from src.services.playlist_publish_service import create_youtube_playlist
+from src.services.recommendation_service import select_recommendation
 from src.services.topic_service import generate_subtopics
-from src.services.youtube_search_service import metadata_prefilter, search_candidates
-from src.services.transcript_service import get_transcript
-from src.services.ranking_service import score_transcript
-from src.utils.logging_utils import setup_logger, run_log_path
-from src.utils.text_utils import normalize_text
+from src.services.transcript_service import RunTranscriptState, get_transcript
+from src.services.youtube_search_service import search_candidates
+from src.storage import SQLiteStore
+from src.utils.logging_utils import run_log_path, setup_logger
 
 
-ProgressCallback = Callable[[ProgressEvent], None]
+def build_playlist(config: AppConfig, request: PlaylistRequest, progress_callback=None) -> PlaylistResult:
+    if os.name == "nt" and config.allow_unsafe_openmp_workaround:
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+    run_id = uuid4().hex
+    run_dir = config.runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-def _emit(callback: Optional[ProgressCallback], event: ProgressEvent) -> None:
-    if callback:
-        callback(event)
+    store = SQLiteStore(config.sqlite_path)
+    logger = setup_logger("playlist", run_log_path(str(run_dir)))
+    store.create_run(run_id, request.topic, request.filters.model_dump())
 
+    def emit(stage: str, message: str, progress: float, current: int | None = None, total: int | None = None) -> None:
+        if progress_callback:
+            progress_callback(
+                ProgressEvent(stage=stage, message=message, progress=progress, current=current, total=total)
+            )
 
-def build_playlist(config: AppConfig, topic: str, progress_callback: Optional[ProgressCallback] = None) -> PlaylistResult:
-    run_id = generate_run_id()
-    run_dir = get_run_dir(config.data_dir, run_id)
-    logger = setup_logger("playlist", run_log_path(run_dir))
+    emit("topic_planning", "Generating subtopics", 0.05)
+    llm = GeminiLLMProvider(config)
+    subtopics = generate_subtopics(llm, request.topic, request.filters.language, logger=logger)
 
-    warnings: List[str] = []
+    transcript_state = RunTranscriptState()
+    transcript_results_by_video: dict[str, TranscriptResult] = {}
+    recommendations: list[Recommendation] = []
+    subtopic_results: list[SubtopicResult] = []
+    warnings: list[str] = []
+    used_video_ids: set[str] = set()
 
-    _emit(progress_callback, ProgressEvent(stage="topic", message="Generating subtopics", progress=0.05))
-    subtopics = generate_subtopics(config, topic, logger=logger)
-
-    results: List[SubtopicResult] = []
-    selected_videos: List[VideoCandidate] = []
-    used_ids = set()
-
-    total = len(subtopics)
-    for idx, subtopic in enumerate(subtopics, start=1):
-        _emit(
-            progress_callback,
-            ProgressEvent(
-                stage="search",
-                message=f"Searching videos for: {subtopic}",
-                progress=min(0.1 + (idx - 1) / max(total, 1) * 0.6, 0.7),
-                current=idx,
-                total=total,
-            ),
+    total_subtopics = len(subtopics) or 1
+    for index, subtopic in enumerate(subtopics, start=1):
+        query = f"{request.topic} {subtopic.title}"
+        emit(
+            "candidate_search",
+            f"Searching candidates for {subtopic.title}",
+            0.1 + ((index - 1) / total_subtopics) * 0.22,
+            index,
+            total_subtopics,
         )
-        query = f"{topic} {subtopic}"
-        try:
-            candidates = search_candidates(config, query, logger=logger)
-        except Exception as exc:
-            warnings.append(f"Search failed for subtopic '{subtopic}': {exc}")
-            logger.warning("Search failed for subtopic %s: %s", subtopic, exc)
-            results.append(
-                SubtopicResult(
-                    subtopic=subtopic,
-                    candidates_considered=0,
-                    top_scored=0,
-                    selected_video_id=None,
-                    scores=[],
+        candidates = search_candidates(config, store, query, request.filters, logger=logger)
+
+        emit(
+            "metadata_ranking",
+            f"Ranking metadata for {subtopic.title}",
+            0.32 + ((index - 1) / total_subtopics) * 0.22,
+            index,
+            total_subtopics,
+        )
+        ranked = rank_candidates(candidates, request.topic, subtopic.title, request.filters)
+        shortlisted = ranked[: config.metadata_top_k]
+
+        transcripts: dict[str, TranscriptResult] = {}
+        emit(
+            "transcript_enrichment",
+            f"Enriching top candidates for {subtopic.title}",
+            0.54 + ((index - 1) / total_subtopics) * 0.22,
+            index,
+            total_subtopics,
+        )
+        for candidate, _metadata_score in shortlisted:
+            if candidate.video_id not in transcript_results_by_video:
+                transcript_results_by_video[candidate.video_id] = get_transcript(
+                    config,
+                    store,
+                    candidate,
+                    str(run_dir),
+                    transcript_state,
+                    logger=logger,
                 )
-            )
-            continue
-
-        if not candidates:
-            warnings.append(f"No candidates found for subtopic: {subtopic}")
-            results.append(
-                SubtopicResult(
-                    subtopic=subtopic,
-                    candidates_considered=0,
-                    top_scored=0,
-                    selected_video_id=None,
-                    scores=[],
+                store.add_run_video(
+                    run_id,
+                    "transcript",
+                    candidate.video_id,
+                    transcript_results_by_video[candidate.video_id].model_dump(),
                 )
-            )
-            continue
+            transcript = transcript_results_by_video[candidate.video_id]
+            transcripts[candidate.video_id] = transcript
 
-        keywords = [w for w in normalize_text(subtopic).split(" ") if len(w) > 2]
-        top_candidates = metadata_prefilter(candidates, keywords, config.transcript_score_top_k)
-
-        scores = []
-        for candidate in top_candidates:
-            _emit(
-                progress_callback,
-                ProgressEvent(
-                    stage="transcript",
-                    message=f"Fetching transcript for {candidate.title}",
-                    progress=min(0.7, 0.1 + (idx - 1) / max(total, 1) * 0.6),
-                    current=idx,
-                    total=total,
-                ),
-            )
-            transcript = get_transcript(config, candidate.video_id, candidate.url, run_dir, logger=logger)
-            if not transcript:
-                logger.info("Transcript missing for %s", candidate.video_id)
-                continue
-            try:
-                score = score_transcript(config, transcript.text, subtopic, logger=logger)
-            except Exception as exc:
-                logger.warning("Scoring failed for %s: %s", candidate.video_id, exc)
-                continue
-            if not score:
-                continue
-            scores.append({"video_id": candidate.video_id, **score.model_dump()})
-
-        selected_id = None
-        if scores:
-            scores.sort(key=lambda x: x.get("genel_puan", 0), reverse=True)
-            for s in scores:
-                if s["video_id"] not in used_ids:
-                    selected_id = s["video_id"]
-                    used_ids.add(selected_id)
-                    break
-
-        if selected_id:
-            for c in candidates:
-                if c.video_id == selected_id:
-                    selected_videos.append(c)
-                    break
-        else:
-            warnings.append(f"No unique best video for subtopic: {subtopic}")
-
-        results.append(
-            SubtopicResult(
+        recommendation = select_recommendation(subtopic.title, shortlisted, transcripts, used_video_ids, index)
+        if recommendation is None:
+            warnings.append(f"No unique recommendation found for subtopic '{subtopic.title}'.")
+            subtopic_result = SubtopicResult(
                 subtopic=subtopic,
+                query=query,
                 candidates_considered=len(candidates),
-                top_scored=len(scores),
-                selected_video_id=selected_id,
-                scores=scores,
+                shortlisted_candidates=[candidate for candidate, _score in shortlisted],
+                selected_video_id=None,
+                transcript_status="unavailable",
+                notes=["No unique candidate survived ranking and deduplication."],
             )
-        )
+        else:
+            recommendations.append(recommendation)
+            subtopic_result = SubtopicResult(
+                subtopic=subtopic,
+                query=query,
+                candidates_considered=len(candidates),
+                shortlisted_candidates=[candidate for candidate, _score in shortlisted],
+                selected_video_id=recommendation.video.video_id,
+                transcript_status=recommendation.transcript_status,
+                notes=[recommendation.why_selected],
+            )
+            store.add_run_video(run_id, "recommendation", recommendation.video.video_id, recommendation.model_dump())
+        subtopic_results.append(subtopic_result)
+        store.add_run_subtopic(run_id, index, subtopic_result.model_dump())
 
-    _emit(progress_callback, ProgressEvent(stage="done", message="Playlist created", progress=1.0))
-
-    playlist = PlaylistResult(
+    emit("final_playlist_assembly", "Assembling final playlist", 0.9)
+    result = PlaylistResult(
         run_id=run_id,
-        topic=topic,
-        subtopics=results,
-        selected_videos=selected_videos,
-        created_at=now_iso(),
+        topic=request.topic,
+        filters=request.filters,
+        subtopics=subtopic_results,
+        recommendations=recommendations,
         warnings=warnings,
     )
 
-    save_playlist_result(run_dir, playlist)
-    return playlist
+    if request.create_youtube_playlist:
+        try:
+            result.published_playlist_url = create_youtube_playlist(config, result, logger=logger)
+        except Exception as exc:
+            warnings.append(f"YouTube playlist creation failed: {exc}")
+
+    exports = export_playlist_artifacts(run_dir, result)
+    result.exports = exports
+
+    store.finalize_run(run_id, result)
+    emit("done", "Playlist created", 1.0)
+    return result
+
+
+def export_playlist_artifacts(run_dir: Path, result: PlaylistResult) -> ExportArtifacts:
+    json_path = run_dir / "result.json"
+    markdown_path = run_dir / "study_plan.md"
+    json_path.write_text(json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+    markdown_path.write_text(_render_markdown(result), encoding="utf-8")
+    return ExportArtifacts(json_path=str(json_path), markdown_path=str(markdown_path))
+
+
+def _render_markdown(result: PlaylistResult) -> str:
+    lines = [
+        f"# Study Plan: {result.topic}",
+        "",
+        f"Generated at: {result.created_at}",
+        "",
+        "## Playlist",
+        "",
+    ]
+    for recommendation in result.recommendations:
+        lines.extend(
+            [
+                f"{recommendation.position}. [{recommendation.video.title}]({recommendation.video.url})",
+                f"   - Subtopic: {recommendation.subtopic}",
+                f"   - Why: {recommendation.why_selected}",
+                f"   - Confidence: {recommendation.confidence_score}",
+                f"   - Transcript: {recommendation.transcript_status}",
+                "",
+            ]
+        )
+    if result.warnings:
+        lines.extend(["## Warnings", ""])
+        lines.extend([f"- {warning}" for warning in result.warnings])
+        lines.append("")
+    return "\n".join(lines)
