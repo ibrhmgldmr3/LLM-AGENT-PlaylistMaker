@@ -1,20 +1,69 @@
 from __future__ import annotations
 
+import functools
+import re
 from dataclasses import dataclass
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from src.config import AppConfig
 from src.models import FilterOptions, VideoCandidate
+from src.providers.errors import (
+    ProviderPermanentError,
+    ProviderRateLimitedError,
+    ProviderTemporaryError,
+)
+from src.utils.logging_utils import redact_secrets
 
 
-class ProviderTemporaryError(RuntimeError):
-    pass
+SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+
+# YouTube Data API sinirlari
+MAX_SEARCH_RESULTS = 50
+MAX_VIDEO_IDS_PER_CALL = 50
+MAX_CHANNEL_IDS_PER_CALL = 50
+
+# Tekrar denemenin fayda etmeyecegi hata nedenleri.
+_PERMANENT_REASONS = {
+    "keyinvalid",
+    "keyexpired",
+    "accessnotconfigured",
+    "ipreferrerblocked",
+    "forbidden",
+    "badrequest",
+    "invalidparameter",
+}
+# Gecici, tekrar denenebilir hata nedenleri.
+_TEMPORARY_REASONS = {
+    "quotaexceeded",
+    "ratelimitexceeded",
+    "userratelimitexceeded",
+    "backenderror",
+    "internalerror",
+    "servicelunavailable",
+}
+
+@functools.lru_cache(maxsize=1)
+def _session() -> requests.Session:
+    """Paylasimli HTTP oturumu.
+
+    Aramalar paralel calistigi icin her istekte yeni TCP+TLS el sikismasi yapmak
+    ciddi gecikme ekliyordu. Baglanti havuzu bunu tek sefere indiriyor.
+    """
+    session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=4, pool_maxsize=16, max_retries=0)
+    session.mount("https://", adapter)
+    return session
 
 
-class ProviderPermanentError(Exception):
-    pass
+_ISO_DURATION_RE = re.compile(
+    r"^P(?:(?P<weeks>\d+)W)?(?:(?P<days>\d+)D)?"
+    r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
+)
 
 
 @dataclass
@@ -34,29 +83,32 @@ class YouTubeDataAPIProvider:
             "part": "snippet",
             "q": query,
             "type": "video",
-            "maxResults": min(limit, 20),
+            "maxResults": max(1, min(limit, MAX_SEARCH_RESULTS)),
             "key": self.config.youtube_data_api_key,
             "relevanceLanguage": filters.language,
             "safeSearch": "moderate",
         }
-        try:
-            search_resp = requests.get(
-                "https://www.googleapis.com/youtube/v3/search",
-                params=params,
-                timeout=self.config.request_timeout_sec,
-            )
-            if search_resp.status_code in {403, 429, 500, 503}:
-                raise ProviderTemporaryError(f"YouTube Data API search failed: {search_resp.status_code}")
-            search_resp.raise_for_status()
-            search_data = search_resp.json()
-        except requests.RequestException as exc:
-            raise ProviderTemporaryError(f"YouTube Data API search request failed: {exc}") from exc
+        search_data = self._get(SEARCH_URL, params, "search")
 
-        video_ids = [item["id"]["videoId"] for item in search_data.get("items", []) if item.get("id", {}).get("videoId")]
+        video_ids = [
+            item["id"]["videoId"]
+            for item in search_data.get("items", [])
+            if item.get("id", {}).get("videoId")
+        ]
         if not video_ids:
             return []
-        details = self._fetch_video_details(video_ids)
-        detail_map = {item["id"]: item for item in details}
+
+        detail_map = {item["id"]: item for item in self._fetch_video_details(video_ids)}
+
+        channel_ids = {
+            detail.get("snippet", {}).get("channelId")
+            for detail in detail_map.values()
+            if detail.get("snippet", {}).get("channelId")
+        }
+        # channels.list cagrisi sadece 1 kota birimi (search.list 100 birim).
+        # Gercek otorite sinyali icin bu maliyet ihmal edilebilir.
+        channel_map = self._fetch_channel_stats(sorted(channel_ids))
+
         candidates: list[VideoCandidate] = []
         for item in search_data.get("items", []):
             video_id = item.get("id", {}).get("videoId")
@@ -67,42 +119,118 @@ class YouTubeDataAPIProvider:
             content_details = detail.get("contentDetails", {})
             statistics = detail.get("statistics", {})
             snippet_detail = detail.get("snippet", {})
+            live_content = snippet_detail.get("liveBroadcastContent") or snippet.get("liveBroadcastContent")
+            channel_id = snippet_detail.get("channelId") or snippet.get("channelId")
+            channel_stats = channel_map.get(channel_id, {})
             candidates.append(
                 VideoCandidate(
                     video_id=video_id,
                     url=f"https://www.youtube.com/watch?v={video_id}",
-                    title=snippet.get("title", ""),
-                    description=snippet.get("description", ""),
-                    channel=snippet.get("channelTitle"),
+                    title=snippet_detail.get("title") or snippet.get("title", ""),
+                    # Arama sonucundaki aciklama kirpilmis; detay yanitindaki tam metni tercih et.
+                    description=snippet_detail.get("description") or snippet.get("description", ""),
+                    channel=snippet_detail.get("channelTitle") or snippet.get("channelTitle"),
+                    channel_id=channel_id,
+                    subscriber_count=_safe_int(channel_stats.get("subscriberCount")),
+                    channel_video_count=_safe_int(channel_stats.get("videoCount")),
                     duration_sec=_parse_iso_duration_seconds(content_details.get("duration")),
                     view_count=_safe_int(statistics.get("viewCount")),
                     publish_date=snippet_detail.get("publishedAt") or snippet.get("publishedAt"),
                     language=snippet_detail.get("defaultAudioLanguage") or snippet_detail.get("defaultLanguage"),
-                    is_live=snippet.get("liveBroadcastContent") == "live",
+                    is_live=live_content in {"live", "upcoming"},
                     discovery_provider=self.name,
                 )
             )
         return candidates
 
+    def _fetch_channel_stats(self, channel_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Kanal istatistiklerini toplu ceker. Basarisiz olursa siralama devam eder."""
+        stats: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(channel_ids), MAX_CHANNEL_IDS_PER_CALL):
+            chunk = channel_ids[start : start + MAX_CHANNEL_IDS_PER_CALL]
+            params = {
+                "part": "statistics",
+                "id": ",".join(chunk),
+                "key": self.config.youtube_data_api_key,
+                "maxResults": len(chunk),
+            }
+            try:
+                payload = self._get(CHANNELS_URL, params, "channel stats")
+            except Exception:
+                # Otorite sinyali "olsa iyi olur" seviyesinde; yoksa isim ipuclarina donulur.
+                return stats
+            for item in payload.get("items", []):
+                if item.get("id"):
+                    stats[item["id"]] = item.get("statistics", {})
+        return stats
+
     def _fetch_video_details(self, video_ids: list[str]) -> list[dict[str, Any]]:
-        params = {
-            "part": "contentDetails,statistics,snippet",
-            "id": ",".join(video_ids),
-            "key": self.config.youtube_data_api_key,
-            "maxResults": len(video_ids),
-        }
+        items: list[dict[str, Any]] = []
+        for start in range(0, len(video_ids), MAX_VIDEO_IDS_PER_CALL):
+            chunk = video_ids[start : start + MAX_VIDEO_IDS_PER_CALL]
+            params = {
+                "part": "contentDetails,statistics,snippet",
+                "id": ",".join(chunk),
+                "key": self.config.youtube_data_api_key,
+                "maxResults": len(chunk),
+            }
+            payload = self._get(VIDEOS_URL, params, "video details")
+            items.extend(payload.get("items", []))
+        return items
+
+    def _get(self, url: str, params: dict[str, Any], label: str) -> dict[str, Any]:
         try:
-            response = requests.get(
-                "https://www.googleapis.com/youtube/v3/videos",
-                params=params,
-                timeout=self.config.request_timeout_sec,
-            )
-            if response.status_code in {403, 429, 500, 503}:
-                raise ProviderTemporaryError(f"YouTube Data API video details failed: {response.status_code}")
-            response.raise_for_status()
-            return response.json().get("items", [])
+            response = _session().get(url, params=params, timeout=self.config.request_timeout_sec)
         except requests.RequestException as exc:
-            raise ProviderTemporaryError(f"YouTube Data API video details request failed: {exc}") from exc
+            # Istisna metni tam URL'i (ve API anahtarini) icerebilir.
+            raise ProviderTemporaryError(
+                redact_secrets(f"YouTube Data API {label} request failed: {exc}")
+            ) from exc
+
+        if response.status_code >= 400:
+            raise self._classify_error(response, label)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ProviderTemporaryError(f"YouTube Data API {label} returned invalid JSON") from exc
+
+    def _classify_error(self, response: requests.Response, label: str) -> Exception:
+        """HTTP durumunu ve API'nin `reason` alanini kullanarak kalici/gecici ayrimi yapar.
+
+        403 hem "kota doldu" (gecici) hem "gecersiz anahtar" (kalici) icin donuyor;
+        eskiden ikisi de gecici sayilip bosuna 3 kez tekrar deneniyordu.
+        """
+        reason = ""
+        message = ""
+        try:
+            payload = response.json().get("error", {})
+            message = payload.get("message", "") or ""
+            errors = payload.get("errors") or []
+            if errors:
+                reason = (errors[0].get("reason") or "").lower()
+        except Exception:
+            pass
+
+        detail = redact_secrets(f"{response.status_code} {reason or message}".strip())
+        text = f"YouTube Data API {label} failed: {detail}"
+
+        # Hiz siniri: tekrar denemek yerine saglayiciyi dinlendir.
+        if response.status_code == 429 or reason in {"ratelimitexceeded", "userratelimitexceeded"}:
+            retry_after = response.headers.get("Retry-After") if hasattr(response, "headers") else None
+            try:
+                retry_after = int(retry_after) if retry_after else None
+            except (TypeError, ValueError):
+                retry_after = None
+            return ProviderRateLimitedError(text, retry_after=retry_after)
+        if reason in _PERMANENT_REASONS:
+            return ProviderPermanentError(text)
+        if reason in _TEMPORARY_REASONS:
+            return ProviderTemporaryError(text)
+        if response.status_code in {500, 502, 503, 504}:
+            return ProviderTemporaryError(text)
+        if response.status_code in {400, 401, 403, 404}:
+            return ProviderPermanentError(text)
+        return ProviderTemporaryError(text)
 
 
 def _safe_int(value: Any) -> int | None:
@@ -113,19 +241,23 @@ def _safe_int(value: Any) -> int | None:
 
 
 def _parse_iso_duration_seconds(value: str | None) -> int | None:
-    if not value or not value.startswith("PT"):
+    """ISO 8601 sure ifadesini saniyeye cevirir.
+
+    Onceki elle yazilmis ayristirici hafta/gun bilesenlerini goz ardi ediyordu:
+    `P1DT2H` -> None donuyor ve 26 saatlik video "suresi bilinmiyor" sayiliyordu.
+    """
+    if not value:
         return None
-    hours = minutes = seconds = 0
-    current = ""
-    for char in value[2:]:
-        if char.isdigit():
-            current += char
-            continue
-        if char == "H":
-            hours = int(current or "0")
-        elif char == "M":
-            minutes = int(current or "0")
-        elif char == "S":
-            seconds = int(current or "0")
-        current = ""
-    return hours * 3600 + minutes * 60 + seconds
+    match = _ISO_DURATION_RE.match(value.strip())
+    if not match:
+        return None
+    parts = match.groupdict()
+    if not any(parts.values()):
+        return None
+    weeks = int(parts["weeks"] or 0)
+    days = int(parts["days"] or 0)
+    hours = int(parts["hours"] or 0)
+    minutes = int(parts["minutes"] or 0)
+    seconds = float(parts["seconds"] or 0)
+    total = weeks * 604800 + days * 86400 + hours * 3600 + minutes * 60 + seconds
+    return int(total)
