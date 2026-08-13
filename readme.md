@@ -1,42 +1,37 @@
 # Make A Playlist
 
-Production-leaning Streamlit app for generating topic-based YouTube learning playlists with:
+A Streamlit app that turns one learning goal into an ordered YouTube playlist.
 
-- Gemini-driven topic decomposition
-- YouTube Data API search as the primary path
-- `yt-dlp` fallback for discovery and subtitle/audio access
-- metadata-first ranking before any transcript work
-- optional transcript enrichment with provider fallback
-- SQLite-backed cache and run metadata
-- JSON and Markdown run exports
-- optional official YouTube playlist creation through OAuth
-
-## Runtime
-
-- Entry point: `app.py`
-- Main app command:
+Give it a topic. It asks Gemini to break the topic into distinct subtopics, searches
+YouTube for each, ranks candidates on metadata, optionally enriches the shortlist with
+transcripts, and assigns one video per subtopic — then exports the result as JSON and
+Markdown, and can publish it as a real YouTube playlist.
 
 ```bash
 streamlit run app.py
 ```
 
+---
+
 ## Requirements
 
-- Python 3.10+
-- Gemini API key **with available quota/credits**
-- `ffmpeg` on `PATH` (or `FFMPEG_PATH`) if ASR audio extraction is used
-- A JS runtime on `PATH` (`node` is fine) — yt-dlp needs it to solve YouTube's
-  `nsig` challenge; without it audio download fails with "Requested format is not
-  available". Requires `yt-dlp >= 2025.11`, which is where the `js_runtimes` option
-  landed. The app warns in the sidebar if the installed version is too old.
-- Optional YouTube Data API key for primary search
-- Optional YouTube OAuth client credentials for playlist publishing (the API key is
-  *not* used for this)
-- Optional `whisper.cpp` binary + model if using the fallback ASR adapter. It reads
-  16 kHz mono WAV only; the downloader produces exactly that.
+| | |
+|---|---|
+| Python | 3.10+ (developed against 3.10 and 3.13) |
+| **Gemini API key** | required, **with available quota/credits** |
+| YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used |
+| YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
+| A JS runtime (`node`) | needed for audio download; see below |
+| `ffmpeg` | needed only when ASR is enabled |
+| `whisper.cpp` binary + model | optional alternative ASR backend |
 
-`yt-dlp` tracks YouTube changes closely — if discovery or audio download starts
-failing, upgrade it first:
+**About the JS runtime:** yt-dlp needs one to solve YouTube's `nsig` challenge. Without
+it, audio download fails with *"Requested format is not available"*. This requires
+`yt-dlp >= 2025.11`, where the `js_runtimes` option landed — older versions silently
+ignore the setting. The app shows a sidebar warning if the installed version is too old.
+
+`yt-dlp` tracks YouTube's changes closely. If discovery or audio download starts failing,
+upgrade it first:
 
 ```bash
 pip install -U yt-dlp
@@ -48,200 +43,304 @@ pip install -U yt-dlp
 pip install -r requirements.txt
 ```
 
-Create `.env` from `.env.example`.
+Copy `.env.example` to `.env` and set at least `GEMINI_API_KEY`.
 
+> **Editing `.env` on Windows:** use an editor or `Add-Content .env "KEY=value" -Encoding utf8`.
+> Do **not** append with `>>` or `Out-File` — Windows PowerShell writes UTF-16 there, and a
+> UTF-16 line inside a UTF-8 `.env` makes `python-dotenv` fail with
+> `ValueError: embedded null character`. The app detects this and tells you which lines are
+> damaged, but the file still has to be repaired.
 
-## Canonical Environment Variables
+---
 
-Required:
+## How a run works
 
-- `GEMINI_API_KEY`
+The pipeline is split into phases so independent, network-bound work runs concurrently
+while order-dependent work stays sequential and deterministic.
 
-Recommended:
+| # | Phase | Concurrency |
+|---|---|---|
+| 1 | **Topic decomposition** — one Gemini call, capped at `MAX_SUBTOPICS` | single call |
+| 2 | **Candidate discovery** — YouTube Data API, `yt-dlp` fallback | parallel (`MAX_SEARCH_WORKERS`) |
+| 3 | **Metadata ranking** — every subtopic scored against the pooled candidates | in-process |
+| 4 | **Transcript enrichment** — deduplicated per video across subtopics | parallel (`MAX_TRANSCRIPT_WORKERS`) |
+| 5 | **Assignment** — one video per subtopic, maximising total fit | sequential |
+| 6 | **Export** — JSON + Markdown, optional YouTube playlist | sequential |
 
-- `GEMINI_MODEL`
-- `YOUTUBE_DATA_API_KEY`
+Parallelising phases 2 and 4 measured a **~3.5x end-to-end speedup** on a 4-subtopic run
+(12.8s → 3.7s) producing byte-identical output.
 
-Optional playlist publishing:
+### Discovery
 
-- `YOUTUBE_OAUTH_CLIENT_SECRET_FILE`
-- `YOUTUBE_OAUTH_TOKEN_FILE`
+The candidate pool is deliberately built wider than any single search:
 
-ASR:
+- **The LLM writes the search queries, not the code.** One call returns
+  `{title, query, query_en}` per subtopic, so the extra queries cost no extra LLM calls.
+  Mechanically concatenating topic and subtopic produced unnatural, repetitive strings
+  (*"Makine öğrenmesi ile zaman serisi tahmini XGBoost ile zaman serisi tahmini"*); the
+  model instead emits what people actually search for (*"XGBoost LightGBM zaman serisi
+  tahmini python"*). Queries follow the requested language, so choosing `tr` does not
+  silently return an all-English playlist.
+- **Optional bilingual search.** When the interface language is not English, a second
+  English query per subtopic can be run and the pools merged. On a Turkish machine-learning
+  topic this grew the pool from 52 to 95 videos and lifted the weakest slot; it costs one
+  extra `search.list` call per subtopic. Turkish videos still outrank English ones when
+  both fit, so it only changes slots where local content is thin.
+- **Candidates are pooled across subtopics.** Every subtopic ranks against the union of
+  all searches, not just its own results — on a 5-subtopic run that is ~55 unique videos
+  instead of ~12, at zero extra quota. A subtopic whose own search fails is still served
+  from the pool, and the run says so.
+- **Starved queries are widened.** A search returning nothing is retried with the bare
+  subtopic title before giving up.
+- **Subtopics merge on distinctive tokens**, not raw string similarity. *"XGBoost ile zaman
+  serisi tahmini"* and *"LSTM ile zaman serisi tahmini"* are 0.885 similar as strings and
+  were being collapsed into one — silently dropping an entire method from the playlist.
 
-- `ASR_BACKEND=auto|faster-whisper|whisper.cpp`
-- `FASTER_WHISPER_MODEL_SIZE`
-- `FASTER_WHISPER_DEVICE`
-- `FASTER_WHISPER_COMPUTE_TYPE`
-- `WHISPER_CPP_CLI_PATH`
-- `WHISPER_CPP_MODEL_PATH`
-- `FFMPEG_PATH`
+### Ranking
 
-Storage and pipeline:
+Relevance is measured against the **subtopic and the topic separately**, never as one
+merged query. Merged, the shared topic tokens dominate and every subtopic produces nearly
+the same ordering — the ARIMA slot and the LSTM slot would pick the same video.
 
-- `DATA_DIR`
-- `SQLITE_PATH`
-- `SEARCH_CANDIDATES_PER_SUBTOPIC`
-- `METADATA_TOP_K`
-- `REQUEST_TIMEOUT_SEC`
-- `RETRY_MAX_ATTEMPTS`
-- `RETRY_BASE_DELAY_SEC`
+| Signal | Weight |
+|---|---|
+| Title × subtopic | 3.2 |
+| Title × topic | 0.8 |
+| Description × subtopic | 1.6 |
+| Description × topic | 0.4 |
+| Channel authority | 0 … 2.2 |
+| Duration fit | −3.0 … 2.0 |
+| Language match | −0.2 … 1.5 |
+| Freshness | −0.25 … 1.5 |
+| Difficulty fit | −0.1 … 1.0 |
+| Engagement | 0 … 1.0 |
+| Live-stream penalty | −2.0 |
+| Transcript bonus | −0.1 … 1.0 |
 
-## Pipeline
+The topic weight is deliberately low: discovery already constrains the pool to the topic,
+so weighting it heavily mostly rewards echoing the topic's phrasing — which structurally
+penalised English candidates in Turkish runs, on top of the language score.
 
-The run is split into phases so that independent, network-bound work happens concurrently
-while order-dependent work stays sequential:
+Four more things make the score discriminative:
 
-1. **Topic decomposition** with Gemini (one call, capped at `MAX_SUBTOPICS`)
-2. **Candidate discovery — parallel** across subtopics (`MAX_SEARCH_WORKERS`),
-   via YouTube Data API with `yt-dlp` fallback. An empty result falls through to the
-   next provider rather than ending the search.
-3. **Metadata-first ranking** across title, description, channel, duration, language,
-   freshness, and engagement. Videos over `Max duration` are pushed behind all others.
-4. **Transcript enrichment — parallel** (`MAX_TRANSCRIPT_WORKERS`), deduplicated per
-   video across subtopics:
-   - `youtube-transcript-api`
-   - `yt-dlp` subtitle extraction
-   - ASR fallback (`faster-whisper` primary, `whisper.cpp` optional) —
-     **off by default**, see below
-5. **Selection — sequential**, so subtopic order and cross-subtopic deduplication are
-   deterministic. The shortlist is re-ranked by `metadata score + transcript bonus`,
-   so transcripts actually influence which video is picked.
-6. Optional official YouTube playlist publishing (OAuth only; no API key needed)
+- **Pool-based IDF.** The candidate pool is itself the corpus. `xgboost` appears in one
+  title, `model` in a dozen, so the rare term carries the weight. Without it a subtopic
+  could be won by a video matching only its generic words: *"Ağaç Tabanlı Modeller ve
+  XGBoost"* went to an LSTM text-generation video on the strength of `tabanlı` and
+  `modeller` alone, with `xgboost` unmatched.
+- **Stem-aware matching.** Turkish is agglutinative, so `tahmin`/`tahmini` and
+  `model`/`modelleri` must match; English `filter`/`filters` too. Matching is by common
+  prefix, guarded so `veri` does not match `verimlilikten` and version numbers stay
+  distinct (`python2` ≠ `python3`, `gpt4` ≠ `gpt5`).
+- **Pedagogical and structural stopwords.** `temelleri`, `giriş`, `basics`, `explained`,
+  `tabanlı`, `based` appear in subtopic titles but carry no domain meaning — and being
+  rare, IDF would otherwise score them *high*. A cognitive-science lecture once won a
+  time-series subtopic purely on the word "temelleri". Domain words that are merely common
+  (`model`, `yöntem`) are deliberately left in; IDF handles those.
+- **Real channel authority.** Subscriber count on a log scale, fetched with
+  `channels.list` (1 quota unit per search, against 100 for the search itself). The
+  previous keyword heuristic scored a channel named "Random Tutorial Guy" above
+  MIT OpenCourseWare. Engagement is measured as **views per day**, so a two-week-old video
+  is not punished against a five-year-old one.
 
-Parallelising steps 2 and 4 measured a ~3.5x end-to-end speedup on a 4-subtopic run
-(12.8s → 3.7s) with byte-identical output.
+**Assignment** maximises fit across the whole playlist rather than filling subtopics in
+order — greedy assignment let an early subtopic take a video a later one needed far more.
+A small `CHANNEL_REPEAT_PENALTY` breaks near-ties toward a different channel without
+overriding a clearly better video.
+
+A subtopic whose terms appear in no pool title has no signal to rank on; the assignment
+fills it with whatever maximises the total. Those picks score low and the UI labels them a
+**weak match** instead of presenting them as good ones.
 
 ### ASR is off by default
 
-Downloading audio and running Whisper costs roughly 90–120 seconds per video on CPU,
-while the first two transcript providers already cover the large majority of videos and
-a transcript contributes at most +1.0 to a ~19-point ranking scale. Enable it from the
-sidebar toggle or with `ENABLE_ASR_FALLBACK=true`; `MAX_ASR_VIDEOS_PER_RUN` caps the
-cost per run.
+Downloading audio and running Whisper costs roughly **90–120 seconds per video** on CPU.
+The first two transcript providers already cover the large majority of videos, and a
+transcript moves the score by at most +1.0. Enable it from the sidebar toggle or with
+`ENABLE_ASR_FALLBACK=true`; `MAX_ASR_VIDEOS_PER_RUN` caps the cost per run.
 
-### How discovery works
+The downloader produces 16 kHz mono WAV — exactly what `whisper.cpp` requires, and one
+less encode step than MP3. The Whisper model is cached process-wide (a cold load measured
+5.5s; cached loads are instant).
 
-The candidate pool is built to be wider than any single search:
+---
 
-- **The LLM writes the search query**, not the code. One call returns
-  `{title, query}` per subtopic, so no extra cost. Mechanically concatenating
-  topic and subtopic produced unnatural, repetitive queries
-  ("Makine öğrenmesi ile zaman serisi tahmini XGBoost ile zaman serisi tahmini");
-  the model instead emits what people actually search for
-  ("XGBoost LightGBM zaman serisi tahmini python"). Queries follow the requested
-  language, so choosing `tr` does not silently return an all-English playlist.
-- **Candidates are pooled across subtopics.** Every subtopic ranks against the
-  union of all searches, not just its own results — on a 5-subtopic run that is
-  a pool of ~55 unique videos instead of ~12, at zero extra quota. A subtopic
-  whose own search fails is still served from the pool (and the run says so).
-- **Starved queries are widened.** A search returning nothing is retried with the
-  bare subtopic title before giving up.
-- **Subtopics merge on distinctive tokens**, not raw string similarity. "XGBoost ile
-  zaman serisi tahmini" and "LSTM ile zaman serisi tahmini" are 0.885 similar as
-  strings and were being collapsed into one — silently dropping a whole method from
-  the playlist. Comparison now ignores tokens shared with the topic.
+## Resilience
 
-### How ranking works
+**Provider health.** A single video failing — subtitles disabled, private, removed —
+never penalises a provider. Only infrastructure-level failures count toward
+`PROVIDER_FAILURE_THRESHOLD` consecutive errors, after which that provider is skipped for
+`PROVIDER_COOLDOWN_SEC`. A success resets the counter.
 
-Relevance is measured against the **subtopic and the topic separately**, not against
-a single merged query. Merging them let the shared topic tokens dominate, so every
-subtopic produced nearly the same ordering — the ARIMA subtopic and the LSTM subtopic
-would pick the same video.
+**Rate limits are modelled separately.** YouTube throttles unauthenticated transcript
+requests per IP, and retrying deepens the block. `HTTP 429`, `RequestBlocked` and
+`IpBlocked` therefore have their own error class: they are **never retried**, they cool
+the provider down **immediately** without waiting for the failure threshold, and the
+cooldown uses `RATE_LIMIT_COOLDOWN_SEC` or the server's `Retry-After` header. Previously a
+single rate-limit event turned into roughly `workers × attempts × providers` ≈ 24 requests
+against a server already asking for less traffic; it is now bounded by the worker count.
 
-Four things make the score discriminative:
+If you hit this often, authenticate with browser cookies via `YTDLP_COOKIES_FROM_BROWSER=chrome`.
+The playlist still builds without transcripts — they are enrichment, and ranking falls back
+to metadata.
 
-- **Subtopic outweighs topic** (`2.6` vs `1.4` on the title) — the subtopic is what
-  distinguishes one slot in the playlist from another.
-- **Pool-based IDF** — the candidate pool is itself the corpus. `xgboost` appears in one
-  title, `model` in a dozen, so the rare term carries the weight. Without this, a subtopic
-  could be won by a video that matched only its generic words: "Ağaç Tabanlı Modeller ve
-  XGBoost" was going to an LSTM text-generation video on the strength of `tabanlı` and
-  `modeller` alone, with `xgboost` unmatched. When no pool is available the ranker falls
-  back to down-weighting tokens shared with the topic.
-- **A low topic weight** (`0.8` against the subtopic's `3.2`). Discovery already
-  constrains the pool to the topic, so a high topic weight mostly rewards echoing the
-  topic phrasing — which structurally penalised English candidates in Turkish runs,
-  on top of the language score.
-- **Stem-aware matching** — Turkish is agglutinative, so `tahmin`/`tahmini` and
-  `model`/`modelleri` must match; English `filter`/`filters` too. Matching is by common
-  prefix with guards against false friends (`veri` does not match `verimlilikten`).
-- **Pedagogical and structural words are stopwords** — `temelleri`, `giriş`, `basics`,
-  `explained`, `tabanlı`, `based`. They appear in subtopic titles but carry no domain
-  meaning, and being rare they would otherwise score *high* under IDF. A cognitive-science
-  lecture won a time-series subtopic purely on the word "temelleri". Domain words that are
-  merely common (`model`, `yöntem`) are deliberately left in — IDF handles those.
+**Model availability.** Google closes older Gemini models to new projects
+(`gemini-2.5-flash` returns *"no longer available to new users"*). The provider walks a
+chain — configured model → `gemini-3.7-flash` → `gemini-flash-latest` → `gemini-2.5-flash` —
+and retries without `thinking_config` for models that reject it.
 
-A subtopic whose terms appear in no pool title has no signal to rank on, and the
-assignment fills it with whatever maximises the playlist total. Those picks score low and
-the UI labels them a weak match rather than presenting them as good ones.
+**Secrets** are redacted from logs and user-facing warnings: the YouTube API key travels as
+a query parameter, so exception text can contain it.
 
-Channel authority uses the real **subscriber count** (`channels.list`, 1 quota unit per
-search) on a log scale, falling back to name heuristics only when that data is missing
-(the `yt-dlp` path). Engagement is **views per day**, so a two-week-old video is not
-punished against a five-year-old one, and view count is no longer double-counted.
+---
 
-Videos are then assigned to subtopics by **maximising total fit across the whole
-playlist**, not greedily per subtopic. Greedy assignment let an early subtopic take a
-video that a later subtopic needed far more. A small `CHANNEL_REPEAT_PENALTY` breaks
-near-ties in favour of a different channel without overriding a clearly better video.
+## Configuration
 
-### Rate limits and IP blocks
+Every setting below is read from `.env`. Unrecognised keys in `.env` produce a visible
+warning rather than being silently ignored.
 
-YouTube throttles unauthenticated transcript requests per IP. When it does, retrying is
-actively harmful — it deepens the block. So `HTTP 429`, `RequestBlocked` and `IpBlocked`
-are modelled as their own error class, separate from ordinary transient failures:
+### Required
 
-- they are **never retried**,
-- they cool the provider down **immediately**, without waiting for
-  `PROVIDER_FAILURE_THRESHOLD`,
-- the cooldown uses `RATE_LIMIT_COOLDOWN_SEC` (30 min default, longer than the ordinary
-  one) or the server's `Retry-After` header when it sends one.
+| Variable | Default |
+|---|---|
+| `GEMINI_API_KEY` | — |
 
-Previously a single rate-limit event turned into roughly `workers × attempts × providers`
-= ~24 requests against a server already asking for less traffic; it is now bounded by the
-worker count, after which every remaining video skips the provider outright.
+### Models and discovery
 
-If you hit this regularly, authenticate the requests with browser cookies by adding this
-line to `.env`:
+| Variable | Default | Notes |
+|---|---|---|
+| `GEMINI_MODEL` | `gemini-3.7-flash` | falls back through a chain if unavailable |
+| `GEMINI_THINKING_BUDGET` | `-1` | `-1` = don't send the parameter; some models reject it |
+| `YOUTUBE_DATA_API_KEY` | — | without it, `yt-dlp` handles discovery |
+| `MAX_SUBTOPICS` | `6` | hard cap; each subtopic costs a search |
+| `SEARCH_CANDIDATES_PER_SUBTOPIC` | `12` | 10–50 |
+| `METADATA_TOP_K` | `4` | shortlist size per subtopic |
+| `INCLUDE_ENGLISH_BY_DEFAULT` | `true` | default state of the bilingual toggle |
+| `CHANNEL_REPEAT_PENALTY` | `0.6` | diversity nudge, breaks near-ties only |
+
+### Transcripts and ASR
+
+| Variable | Default |
+|---|---|
+| `TRANSCRIPT_ENRICHMENT_TOP_K` | `2` |
+| `ENABLE_ASR_FALLBACK` | `false` |
+| `MAX_ASR_VIDEOS_PER_RUN` | `2` |
+| `ASR_BACKEND` | `auto` — `auto` \| `faster-whisper` \| `whisper.cpp` |
+| `FASTER_WHISPER_MODEL_SIZE` | `base` |
+| `FASTER_WHISPER_DEVICE` | `cpu` |
+| `FASTER_WHISPER_COMPUTE_TYPE` | `int8` |
+| `FASTER_WHISPER_BEAM_SIZE` | `1` |
+| `WHISPER_CPP_CLI_PATH` | — |
+| `WHISPER_CPP_MODEL_PATH` | — |
+| `WHISPER_CPP_TIMEOUT_SEC` | `1800` |
+| `FFMPEG_PATH` | — |
+
+### yt-dlp
+
+| Variable | Default | Notes |
+|---|---|---|
+| `YTDLP_JS_RUNTIME` | — | when empty, `node`/`deno`/`bun`/`quickjs` are auto-detected on `PATH` |
+| `YTDLP_COOKIES_FROM_BROWSER` | — | e.g. `chrome`, `firefox:default` — loosens YouTube rate limits |
+| `YTDLP_COOKIES_FILE` | — | Netscape-format cookie file, alternative to the above |
+| `YTDLP_PROXY` | — | |
+
+### Playlist publishing (OAuth only)
+
+| Variable | Default |
+|---|---|
+| `YOUTUBE_OAUTH_CLIENT_SECRET_FILE` | — |
+| `YOUTUBE_OAUTH_CLIENT_ID` | — |
+| `YOUTUBE_OAUTH_CLIENT_SECRET` | — |
+| `YOUTUBE_OAUTH_TOKEN_FILE` | `data/cache/youtube_oauth_token.json` |
+| `YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER` | `true` — set `false` on headless servers |
+| `YOUTUBE_PLAYLIST_PRIVACY_STATUS` | `private` — `private` \| `unlisted` \| `public` |
+
+### Concurrency, retries, caching
+
+| Variable | Default |
+|---|---|
+| `MAX_SEARCH_WORKERS` | `4` |
+| `MAX_TRANSCRIPT_WORKERS` | `4` |
+| `REQUEST_TIMEOUT_SEC` | `30` |
+| `RETRY_MAX_ATTEMPTS` | `3` |
+| `RETRY_BASE_DELAY_SEC` | `1.0` |
+| `SEARCH_CACHE_TTL_SEC` | `21600` (6 h) |
+| `TRANSCRIPT_CACHE_TTL_SEC` | `2592000` (30 d) |
+| `FAILURE_CACHE_TTL_SEC` | `900` |
+| `PROVIDER_COOLDOWN_SEC` | `900` |
+| `RATE_LIMIT_COOLDOWN_SEC` | `1800` |
+| `PROVIDER_FAILURE_THRESHOLD` | `3` |
+| `DATA_DIR` | `data` |
+| `SQLITE_PATH` | `data/cache/app.db` |
+| `ALLOW_UNSAFE_OPENMP_WORKAROUND` | `true` (Windows/Conda OpenMP clash) |
+
+---
+
+## Output
+
+Per run, under `data/runs/<run_id>/`:
+
+- `result.json` — the full result: subtopics, shortlists, per-signal scores, warnings
+- `study_plan.md` — a readable study plan
+- `run_<timestamp>.log` — the run log, with secrets redacted
+
+SQLite state lives at `data/cache/app.db`:
+
+| Table | Purpose |
+|---|---|
+| `search_cache` | search results per provider/query/filters |
+| `transcript_cache` | transcripts and per-video failures |
+| `provider_health` | cooldowns and consecutive-failure counters |
+| `run`, `run_subtopic`, `run_video` | run history |
+
+Expired rows are purged at the end of each run. The cache key carries a schema version, so
+changing the candidate model invalidates stale entries automatically instead of serving
+records that are missing new fields.
+
+---
+
+## Project layout
 
 ```
-YTDLP_COOKIES_FROM_BROWSER=chrome
+app.py                      Streamlit entry point
+src/
+  config/settings.py        env → validated AppConfig
+  models/domain.py          pydantic domain models
+  providers/                external systems, one module each
+    errors.py               temporary / rate-limited / permanent / video-level
+    llm_provider.py         Gemini, with a model fallback chain
+    youtube_data_api_provider.py
+    ytdlp_provider.py       search, subtitles, audio download
+    youtube_transcript_api_provider.py
+    faster_whisper_provider.py / whisper_cpp_provider.py
+  services/                 orchestration and business logic
+    playlist_service.py     the phased pipeline
+    youtube_search_service.py
+    metadata_ranker.py      scoring
+    recommendation_service.py  global assignment
+    topic_service.py / transcript_service.py / playlist_publish_service.py
+  storage/sqlite_store.py   cache, provider health, run history
+  ui/                       Streamlit components and theme
+  utils/                    text, retry, logging, yt-dlp options
+tests/                      129 tests
 ```
-
-Edit `.env` in a text editor, or on Windows PowerShell use `Add-Content` with an explicit
-encoding. Do **not** append with `>>` or `Out-File`: Windows PowerShell writes UTF-16
-there, and a UTF-16 line inside a UTF-8 `.env` makes `python-dotenv` fail with
-`ValueError: embedded null character`. The app now detects this and says so, but the file
-still has to be repaired.
-
-```powershell
-Add-Content .env "YTDLP_COOKIES_FROM_BROWSER=chrome" -Encoding utf8
-```
-
-The playlist still builds without transcripts — they are enrichment, and the ranking
-falls back to metadata.
-
-### Provider health
-
-A single video failing (subtitles disabled, private, removed) never penalises a
-provider. Only infrastructure-level failures count towards
-`PROVIDER_FAILURE_THRESHOLD` consecutive errors, after which that provider is skipped
-for `PROVIDER_COOLDOWN_SEC`.
-
-## Data Output
-
-Run artifacts are stored under:
-
-- `data/runs/<run_id>/result.json`
-- `data/runs/<run_id>/study_plan.md`
-
-SQLite cache and run metadata are stored at:
-
-- `data/cache/app.db` by default
 
 ## Tests
 
 ```bash
 pytest -q
 ```
+
+129 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+has a regression test named after the behaviour it locks in.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `ValueError: embedded null character` | a UTF-16 line in `.env`, usually from PowerShell `>>`. Rewrite the file as UTF-8 |
+| `429 Too Many Requests`, transcripts empty | YouTube IP rate limit. Wait it out, or set `YTDLP_COOKIES_FROM_BROWSER` |
+| `no longer available to new users` | the configured Gemini model is closed to your project; the fallback chain handles it, or set `GEMINI_MODEL` |
+| `Requested format is not available` | yt-dlp too old or no JS runtime — `pip install -U yt-dlp`, install `node` |
+| Playlist has few recommendations | subtopics could not be matched. Narrow the topic, or enable English content |
+| `RESOURCE_EXHAUSTED` from Gemini | the API key has no quota or credits left |
