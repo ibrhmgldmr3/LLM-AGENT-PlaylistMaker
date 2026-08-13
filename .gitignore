@@ -1,22 +1,85 @@
+# ---------------------------------------------------------------- gizli bilgiler
+# .env TURETILMIS dosyalari da kapsa: .env.bak / .env.broken / .env.local gibi
+# yedekler gercek API anahtarlarini icerir ve kazara commit edilebilir.
 .env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+credentials.json
+client_secret*.json
+token.json
+*oauth*token*.json
+.streamlit/secrets.toml
+
+# ---------------------------------------------------------------- Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-/data/
-/.pytest_cache/
-.vscode/
-build/
-dist/
-*.db
-*.sqlite
-*.sqlite3
-*.log
-.coverage
-.mypy_cache/
-.ruff_cache/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# sanal ortamlar
 .venv/
 venv/
 env/
-.streamlit/secrets.toml
+ENV/
+.conda/
+
+# paketleme / derleme ciktilari
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# ---------------------------------------------------------------- test ve arac onbellekleri
+.pytest_cache/
+.benchmarks/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+.tox/
+.nox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# ---------------------------------------------------------------- uygulama ciktilari
+# calistirma artefaktlari: data/runs/<run_id>/ ve SQLite onbellegi
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+
+# indirilen ses dosyalari (ASR ara ciktilari)
+*.wav
+*.mp3
+*.m4a
+*.webm
+
+# ---------------------------------------------------------------- yerel bagimliliklar
+# whisper.cpp kaynak, derleme ve model dosyalari yerelde kalir
 whisper.cpp/
+models/
+*.bin
+*.gguf
+
+# ---------------------------------------------------------------- editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# ---------------------------------------------------------------- isletim sistemi
+.DS_Store
+Thumbs.db
+desktop.ini

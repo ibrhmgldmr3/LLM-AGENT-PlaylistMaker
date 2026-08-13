@@ -93,21 +93,16 @@ def theme_css(theme_key: str) -> str:
         font-size: 1.02rem;
         line-height: 1.6;
     }}
-    .card {{
+    /* Streamlit'in kendi cerceveli konteynerini temaya bagla.
+       Elle acilan <div class="card"> sarmalayicilari Streamlit'in DOM yapisinda
+       hicbir seyi sarmalamadigi icin stil buraya tasindi. */
+    [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]) {{
         background: var(--surface);
-        border: 1px solid var(--border);
+        border: 1px solid var(--border) !important;
         border-radius: 18px;
-        padding: 1.1rem 1.25rem;
-        margin: 0.95rem 0;
+        padding: 0.35rem 0.25rem;
+        margin: 0.6rem 0;
         box-shadow: 0 10px 26px rgba(31, 25, 17, 0.05);
-    }}
-    .panel {{
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 22px;
-        padding: 1.1rem 1.25rem 1.25rem;
-        margin: 0 0 1.35rem;
-        box-shadow: 0 12px 30px rgba(31, 25, 17, 0.05);
     }}
     .panel__title {{
         margin: 0 0 0.25rem;
@@ -201,9 +196,6 @@ def theme_css(theme_key: str) -> str:
         }}
         .hero__content {{
             padding: 1rem 1rem 1.1rem;
-        }}
-        .panel {{
-            padding: 0.95rem 1rem 1rem;
         }}
     }}
     </style>

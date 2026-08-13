@@ -20,6 +20,10 @@ class FilterOptions(BaseModel):
     difficulty: DifficultyLevel = Field(default="mixed")
     max_duration_minutes: int = Field(default=60)
     freshness_preference: FreshnessPreference = Field(default="balanced")
+    # Ana dilin yaninda Ingilizce arama da yapilsin mi. Turkce gibi icerik havuzu
+    # sig olan dillerde kaliteyi belirgin sekilde arttirir. Acikken Ingilizce
+    # videolar ceza yerine notr-pozitif dil puani alir.
+    include_english: bool = Field(default=False)
 
     @field_validator("max_duration_minutes")
     @classmethod
@@ -39,6 +43,11 @@ class Subtopic(BaseModel):
     title: str
     normalized_title: str
     source_titles: list[str] = Field(default_factory=list)
+    # LLM'in bu alt konu icin urettigi YouTube arama sorgusu. Yoksa
+    # "konu + alt konu" birlesimine geri donulur.
+    search_query: str | None = None
+    # Ayni alt konunun Ingilizce sorgusu (iki dilli keşif icin).
+    search_query_en: str | None = None
 
 
 class VideoCandidate(BaseModel):
@@ -47,6 +56,11 @@ class VideoCandidate(BaseModel):
     title: str
     description: str = ""
     channel: str | None = None
+    channel_id: str | None = None
+    # Gercek otorite sinyalleri. YouTube Data API `channels.list` ile doldurulur;
+    # yt-dlp yolunda bilinmez (None) ve isim ipuclarina geri donulur.
+    subscriber_count: int | None = None
+    channel_video_count: int | None = None
     duration_sec: int | None = None
     view_count: int | None = None
     publish_date: str | None = None
@@ -54,7 +68,6 @@ class VideoCandidate(BaseModel):
     is_live: bool = False
     metadata_score: float = 0.0
     discovery_provider: str | None = None
-    channel_quality_score: float = 0.0
 
 
 class MetadataScore(BaseModel):
