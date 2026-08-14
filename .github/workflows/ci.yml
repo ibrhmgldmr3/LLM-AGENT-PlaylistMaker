@@ -13,17 +13,19 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend (Python ${{ env.PYTHON_VERSION }})
+    # Surum is ADINA gomulemez: `env` baglami `jobs.<id>.name` alaninda gecerli
+    # degil ve boyle bir ifade workflow'u dogrulama asamasinda tumden reddettirir
+    # (kosu kaydi olusur ama HIC is baslamaz, adim hatasi gibi gorunmez).
+    # Surum tek yerde, setup-python adiminda duruyor.
+    name: Backend
     runs-on: ubuntu-latest
-    env:
-      PYTHON_VERSION: "3.13"
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: "3.13"
           cache: pip
 
       - name: Bagimliliklari kur
@@ -119,13 +121,25 @@ jobs:
           # Gecmisi de tara: bir anahtar eski bir commit'te kalmis olabilir.
           fetch-depth: 0
 
-      - name: Takipli dosyalarda API anahtari deseni
+      - name: API anahtari deseni (calisma agaci + gecmis)
         run: |
-          if git grep -I -n -E "AIza[0-9A-Za-z_-]{30,}|BEGIN [A-Z ]*PRIVATE KEY" -- . ; then
-            echo "::error::Takipli dosyalarda gizli bilgi deseni bulundu"
+          PATTERN="AIza[0-9A-Za-z_-]{30,}|BEGIN [A-Z ]*PRIVATE KEY"
+
+          if git grep -I -n -E "$PATTERN" -- . ; then
+            echo "::error::Calisma agacinda gizli bilgi deseni bulundu"
             exit 1
           fi
-          echo "Takipli dosyalar temiz"
+
+          # `git grep` revizyon verilmeden YALNIZCA calisma agacini tarar; yukaridaki
+          # adim tek basina gecmisi kapsamiyordu. Herkese acik bir depoda sonradan
+          # silinen bir anahtar hala sizar, bu yuzden tum commit'ler de taraniyor.
+          # (`fetch-depth: 0` tam da bunun icin; 25 commit'te ~0.1 sn suruyor.)
+          if git grep -I -n -E "$PATTERN" $(git rev-list --all) -- . ; then
+            echo "::error::Gecmiste gizli bilgi deseni bulundu"
+            exit 1
+          fi
+
+          echo "Calisma agaci ve gecmis temiz"
 
       - name: .env commit edilmis mi
         run: |
