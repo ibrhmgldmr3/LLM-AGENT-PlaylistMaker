@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from src.config import AppConfig
 from src.models import PlaylistResult
@@ -14,7 +15,74 @@ class PublishResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def create_youtube_playlist(config: AppConfig, result: PlaylistResult, logger=None) -> PublishResult:
+YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube"]
+
+
+def build_authorization_url(config: AppConfig, redirect_uri: str, state: str) -> str:
+    """Kullanicinin yonlendirilecegi Google onay URL'ini uretir.
+
+    Web akisinin ilk adimi. `run_local_server` sunucuda tarayici acmaya
+    calisiyordu; bir web uygulamasinda bu kavramsal olarak imkansiz.
+    """
+    flow = _build_web_flow(config, redirect_uri)
+    authorization_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        # Yenileme jetonunu garanti altina al: Google bunu yalnizca ilk onayda
+        # gonderiyor, `prompt=consent` her seferinde gondermesini saglar.
+        prompt="consent",
+        state=state,
+    )
+    return authorization_url
+
+
+def exchange_code_for_token(config: AppConfig, redirect_uri: str, code: str) -> str:
+    """Yetkilendirme kodunu jetona cevirir; saklanacak JSON'u dondurur."""
+    flow = _build_web_flow(config, redirect_uri)
+    flow.fetch_token(code=code)
+    return flow.credentials.to_json()
+
+
+def _build_web_flow(config: AppConfig, redirect_uri: str):
+    from google_auth_oauthlib.flow import Flow
+
+    if config.youtube_oauth_client_secret_file:
+        flow = Flow.from_client_secrets_file(
+            config.youtube_oauth_client_secret_file, scopes=YOUTUBE_SCOPES
+        )
+    else:
+        flow = Flow.from_client_config(_web_client_config(config), scopes=YOUTUBE_SCOPES)
+    flow.redirect_uri = redirect_uri
+    return flow
+
+
+def _web_client_config(config: AppConfig) -> dict:
+    if not (config.youtube_oauth_client_id and config.youtube_oauth_client_secret):
+        raise RuntimeError(
+            "YOUTUBE_OAUTH_CLIENT_ID ve YOUTUBE_OAUTH_CLIENT_SECRET tanımlı olmalı"
+        )
+    return {
+        "web": {
+            "client_id": config.youtube_oauth_client_id,
+            "client_secret": config.youtube_oauth_client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+
+
+def create_youtube_playlist(
+    config: AppConfig,
+    result: PlaylistResult,
+    logger=None,
+    token_json: str | None = None,
+    on_token_refresh: Callable[[str], None] | None = None,
+) -> PublishResult:
+    """Playlist'i YouTube'a yayinlar.
+
+    `token_json` verilirse (API yolu) yalnizca o jeton kullanilir; tarayici
+    acilmaz. Verilmezse eski dosya tabanli akisa donulur (Streamlit yolu).
+    """
     # NOT: YOUTUBE_DATA_API_KEY burada ARANMIYOR. Playlist olusturma OAuth
     # kimlik bilgileriyle yapilir; API anahtari bu akista kullanilmaz.
     # Eskiden anahtar zorunlu tutuluyor ve gecerli yapilandirmalar reddediliyordu.
@@ -37,8 +105,12 @@ def create_youtube_playlist(config: AppConfig, result: PlaylistResult, logger=No
             "Google OAuth bağımlılıkları kurulu değil. `pip install -r requirements.txt` çalıştırın."
         ) from exc
 
-    scopes = ["https://www.googleapis.com/auth/youtube"]
-    credentials = _load_credentials(config, scopes, Credentials, Request, logger=logger)
+    if token_json:
+        credentials = _credentials_from_token(
+            token_json, Credentials, Request, on_token_refresh, logger
+        )
+    else:
+        credentials = _load_credentials(config, YOUTUBE_SCOPES, Credentials, Request, logger=logger)
 
     service = build("youtube", "v3", credentials=credentials, cache_discovery=False)
     playlist = (
@@ -88,6 +160,29 @@ def create_youtube_playlist(config: AppConfig, result: PlaylistResult, logger=No
     if logger:
         logger.info("Created YouTube playlist %s with %s/%s items", url, added, len(result.recommendations))
     return PublishResult(url=url, added=added, warnings=warnings)
+
+
+def _credentials_from_token(
+    token_json: str, Credentials, Request, on_token_refresh, logger=None
+):
+    """Saklanan jetondan kimlik kurar; gerekirse yeniler. TARAYICI ACMAZ."""
+    import json
+
+    credentials = Credentials.from_authorized_user_info(json.loads(token_json), YOUTUBE_SCOPES)
+    if credentials.valid:
+        return credentials
+
+    if not (credentials.expired and credentials.refresh_token):
+        raise RuntimeError(
+            "YouTube yetkilendirmesi geçersiz. Ayarlardan hesabı yeniden bağlayın."
+        )
+    credentials.refresh(Request())
+    if on_token_refresh:
+        # Yenilenmis jetonu geri yaz; aksi halde her yayinlamada yenileme gerekir.
+        on_token_refresh(credentials.to_json())
+    if logger:
+        logger.info("YouTube OAuth token refreshed")
+    return credentials
 
 
 def _load_credentials(config: AppConfig, scopes: list[str], Credentials, Request, logger=None):
