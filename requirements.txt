@@ -1,6 +1,10 @@
 # Core
 python-dotenv>=1.0.0,<2.0.0
-pydantic>=2.6.0,<3.0.0
+# Taban 2.8.0: pydantic saf Python ama pinledigi `pydantic-core` derlenmis.
+# cp313 wheel'i olan ilk core surumu 2.20.0 ve onu pinleyen ilk pydantic 2.8.0.
+# Daha eskisinde pip uyarmadan kaynaktan derlemeye kalkip basarisiz oluyor
+# (pydantic metadata'si `Requires-Python >=3.8` diyor, 3.13 uyumsuzlugunu bildirmiyor).
+pydantic>=2.8.0,<3.0.0
 requests>=2.31.0,<3.0.0
 
 # API (arayuz React; bkz. web/)
@@ -13,7 +17,10 @@ google-genai>=1.0.0,<2.0.0
 # YouTube discovery and transcripts
 # `js_runtimes` secenegi (nsig cozumu icin Node/Deno) 2025.11'den itibaren var.
 # Daha eski surumlerde ses indirme YouTube'un guncel player'inda basarisiz olur.
-yt-dlp>=2025.11.0
+# NOT: yt-dlp tarih tabanli surumleniyor; 2025.11.12 gercek bir yayin
+# (2025.11.0 diye bir surum YOK). Ust sinir konmuyor: YouTube degisikliklerini
+# takip etmesi gerektigi icin guncel kalmali.
+yt-dlp>=2025.11.12
 # 1.0 ile API degisti: YouTubeTranscriptApi().fetch(...) kullaniliyor.
 youtube-transcript-api>=1.0.0,<2.0.0
 
