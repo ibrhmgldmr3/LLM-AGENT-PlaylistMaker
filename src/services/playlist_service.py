@@ -26,7 +26,7 @@ from src.services.recommendation_service import assign_recommendations
 from src.services.topic_service import generate_subtopics
 from src.services.transcript_service import RunTranscriptState, get_transcript
 from src.services.youtube_search_service import search_candidates
-from src.storage import SQLiteStore
+from src.storage import DEFAULT_USER_ID, SQLiteStore
 from src.utils.logging_utils import close_logger, redact_secrets, run_log_path, setup_logger
 
 
@@ -82,11 +82,26 @@ def _build_queries(topic: str, subtopic, filters) -> list[str]:
     return queries
 
 
-def build_playlist(config: AppConfig, request: PlaylistRequest, progress_callback=None) -> PlaylistResult:
+def build_playlist(
+    config: AppConfig,
+    request: PlaylistRequest,
+    progress_callback=None,
+    run_id: str | None = None,
+    user_id: str = DEFAULT_USER_ID,
+) -> PlaylistResult:
+    """Playlist uretir.
+
+    `run_id` disaridan verilebilir: API katmani isi arka plana atmadan ONCE
+    kimligi bilmeli ki cagirana hemen bir is numarasi donebilsin. Verilmezse
+    eskisi gibi burada uretilir.
+
+    `user_id` cok kullanicili moda hazirlik; tek kullanicili kurulumda
+    varsayilan degerde kalir.
+    """
     if os.name == "nt" and config.allow_unsafe_openmp_workaround:
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-    run_id = uuid4().hex
+    run_id = run_id or uuid4().hex
     run_dir = config.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -95,7 +110,9 @@ def build_playlist(config: AppConfig, request: PlaylistRequest, progress_callbac
     logger = setup_logger("playlist", log_file)
 
     try:
-        return _run_pipeline(config, request, run_id, run_dir, store, logger, progress_callback)
+        return _run_pipeline(
+            config, request, run_id, run_dir, store, logger, progress_callback, user_id
+        )
     finally:
         close_logger("playlist", log_file)
 
@@ -108,8 +125,9 @@ def _run_pipeline(
     store: SQLiteStore,
     logger,
     progress_callback,
+    user_id: str = DEFAULT_USER_ID,
 ) -> PlaylistResult:
-    store.create_run(run_id, request.topic, request.filters.model_dump())
+    store.create_run(run_id, request.topic, request.filters.model_dump(), user_id=user_id)
 
     def emit(stage: str, message: str, progress: float, current: int | None = None, total: int | None = None) -> None:
         # DIKKAT: yalnizca ana thread'den cagrilir. Worker thread'ler ilerleme

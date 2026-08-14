@@ -103,6 +103,52 @@ def test_playlist_prevents_duplicate_processing_and_exports(monkeypatch, tmp_pat
     assert Path(result.exports.markdown_path).exists()
 
 
+def test_caller_can_supply_run_id_and_user(monkeypatch, tmp_path):
+    """Faz 0: API isi arka plana atmadan ONCE kimligi bilmeli.
+
+    `run_id` disaridan verilebilmeli ki cagirana hemen is numarasi donebilelim.
+    """
+    from src.storage import SQLiteStore
+
+    config = _config(tmp_path)
+    candidates = _candidates()
+
+    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM(["Foundations"]))
+    monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: candidates)
+    monkeypatch.setattr(
+        playlist_service,
+        "rank_candidates",
+        lambda cands, topic, subtopic, filters: [(candidates[0], _score(8.0))],
+    )
+    monkeypatch.setattr(
+        playlist_service,
+        "get_transcript",
+        lambda *a, **k: TranscriptResult(video_id="video-1", status="unavailable", source="none"),
+    )
+
+    result = playlist_service.build_playlist(
+        config,
+        PlaylistRequest(topic="Test", filters=FilterOptions(language="en")),
+        run_id="onceden-belirlenen-id",
+        user_id="ali",
+    )
+
+    assert result.run_id == "onceden-belirlenen-id"
+    store = SQLiteStore(config.sqlite_path)
+    assert store.get_run_summary("onceden-belirlenen-id")["user_id"] == "ali"
+    # Sonuc gecmisten geri okunabilmeli.
+    assert store.get_run("onceden-belirlenen-id").topic == "Test"
+
+
+def test_run_id_is_generated_when_not_supplied(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM([]))
+
+    result = playlist_service.build_playlist(config, PlaylistRequest(topic="Test"))
+
+    assert len(result.run_id) == 32  # uuid4().hex
+
+
 def test_publish_failure_warning_reaches_the_result(monkeypatch, tmp_path):
     """Regresyon: pydantic listeyi kopyaladigi icin uyari `result.warnings`'e ulasmiyordu."""
     config = _config(tmp_path)

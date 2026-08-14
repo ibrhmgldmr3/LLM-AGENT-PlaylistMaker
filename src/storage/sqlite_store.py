@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.models import PlaylistResult, TranscriptResult, VideoCandidate
+from src.storage.crypto import SecretBox
 
 
 # Bir saglayicinin gecici olarak devre disi birakilmasi icin gereken ardisik hata sayisi.
@@ -21,6 +22,11 @@ _BUSY_TIMEOUT_SEC = 30.0
 # icin eski kayitlar otomatik olarak gecersizlesir; aksi halde TTL dolana kadar
 # (saatler) eksik alanli adaylar servis edilir ve siralama sessizce bozulur.
 CACHE_SCHEMA_VERSION = 2
+
+# Tek kullanicili kurulumda tum calistirmalarin sahibi. Cok kullanicili moda
+# gecildiginde gercek kullanici kimligi yazilir. Kolonu BUGUN eklemek tek
+# satirlik; sonradan eklemek mevcut kayitlari ve tum sorgulari elden gecirmek olur.
+DEFAULT_USER_ID = "local"
 
 
 def _utc_now() -> datetime:
@@ -58,8 +64,11 @@ def _is_expired(expires_at: str | None) -> bool:
 
 
 class SQLiteStore:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, encryption_key: str | None = None):
         self.db_path = db_path
+        # Sirlar (OAuth jetonlari) bu kutu ile sifrelenir. Anahtar yoksa duz
+        # metin yazilir ve eski davranis korunur.
+        self._secrets = SecretBox(encryption_key)
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
@@ -114,7 +123,8 @@ class SQLiteStore:
                     topic TEXT NOT NULL,
                     filters_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    result_json TEXT
+                    result_json TEXT,
+                    user_id TEXT NOT NULL DEFAULT 'local'
                 );
                 CREATE TABLE IF NOT EXISTS run_subtopic (
                     run_id TEXT NOT NULL,
@@ -129,6 +139,13 @@ class SQLiteStore:
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (run_id, stage, video_id)
                 );
+                CREATE TABLE IF NOT EXISTS oauth_token (
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    token_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, provider)
+                );
                 CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache (expires_at);
                 CREATE INDEX IF NOT EXISTS idx_transcript_cache_expires ON transcript_cache (expires_at);
                 """
@@ -140,6 +157,13 @@ class SQLiteStore:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
         if "failure_count" not in columns:
             conn.execute("ALTER TABLE provider_health ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
+
+        run_columns = {row["name"] for row in conn.execute("PRAGMA table_info(run)")}
+        if "user_id" not in run_columns:
+            conn.execute(
+                f"ALTER TABLE run ADD COLUMN user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
 
     @staticmethod
     def build_search_cache_key(provider: str, query: str, filters: dict[str, Any]) -> str:
@@ -316,14 +340,16 @@ class SQLiteStore:
                 removed += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
         return removed
 
-    def create_run(self, run_id: str, topic: str, filters: dict[str, Any]) -> None:
+    def create_run(
+        self, run_id: str, topic: str, filters: dict[str, Any], user_id: str = DEFAULT_USER_ID
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO run (run_id, topic, filters_json, created_at, result_json)
-                VALUES (?, ?, ?, ?, NULL)
+                INSERT OR REPLACE INTO run (run_id, topic, filters_json, created_at, result_json, user_id)
+                VALUES (?, ?, ?, ?, NULL, ?)
                 """,
-                (run_id, topic, json.dumps(filters, ensure_ascii=False), _to_iso(_utc_now())),
+                (run_id, topic, json.dumps(filters, ensure_ascii=False), _to_iso(_utc_now()), user_id),
             )
 
     def add_run_subtopic(self, run_id: str, position: int, payload: dict[str, Any]) -> None:
@@ -352,3 +378,129 @@ class SQLiteStore:
                 "UPDATE run SET result_json = ? WHERE run_id = ?",
                 (json.dumps(result.model_dump(), ensure_ascii=False), run_id),
             )
+
+    # ---------------------------------------------------------- OAuth token
+    # Token KULLANICI BASINA saklanir: dosya yolu tek kullanicili varsayimdi ve
+    # cok kullanicili moda gecerken en cok direnc gosteren yerdi.
+    #
+    # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
+    # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
+    # boylece anahtar sonradan eklenebilir.
+
+    def save_oauth_token(self, user_id: str, provider: str, token_json: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO oauth_token (user_id, provider, token_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, provider, self._secrets.encrypt(token_json), _to_iso(_utc_now())),
+            )
+
+    def get_oauth_token(self, user_id: str, provider: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT token_json FROM oauth_token WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
+            ).fetchone()
+        return self._secrets.decrypt(row["token_json"]) if row else None
+
+    def delete_oauth_token(self, user_id: str, provider: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM oauth_token WHERE user_id = ? AND provider = ?", (user_id, provider)
+            )
+        return bool(cursor.rowcount)
+
+    # --------------------------------------------------------------- okuma
+    # `run` tablolari uzun sure yalnizca YAZILIYORDU. Veri zaten duruyordu ama
+    # erisilemiyordu; asagidakiler gecmis listesi ve tekil calistirma goruntuleme
+    # icin gerekli minimum okuma yuzeyi.
+
+    def get_run(self, run_id: str) -> PlaylistResult | None:
+        """Tamamlanmis bir calistirmanin sonucunu dondurur.
+
+        Henuz bitmemis (result_json NULL) calistirmalar icin None doner.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM run WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if not row or not row["result_json"]:
+            return None
+        return PlaylistResult.model_validate(json.loads(row["result_json"]))
+
+    def get_run_summary(self, run_id: str) -> dict[str, Any] | None:
+        """Sonucun tamamini yuklemeden calistirmanin ust bilgisi."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT run_id, user_id, topic, filters_json, created_at,
+                       result_json IS NOT NULL AS is_complete
+                FROM run WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        return _run_summary_row(row) if row else None
+
+    def list_runs(
+        self,
+        user_id: str | None = DEFAULT_USER_ID,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Calistirma gecmisi, yeniden eskiye.
+
+        `user_id=None` tum kullanicilari dondurur (yonetim/tanilama icin).
+        """
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+        query = """
+            SELECT run_id, user_id, topic, filters_json, created_at,
+                   result_json IS NOT NULL AS is_complete
+            FROM run
+        """
+        params: list[Any] = []
+        if user_id is not None:
+            query += " WHERE user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [_run_summary_row(row) for row in rows]
+
+    def count_runs(self, user_id: str | None = DEFAULT_USER_ID) -> int:
+        with self.connect() as conn:
+            if user_id is None:
+                row = conn.execute("SELECT COUNT(*) AS n FROM run").fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS n FROM run WHERE user_id = ?", (user_id,)).fetchone()
+        return int(row["n"]) if row else 0
+
+    def delete_run(self, run_id: str, user_id: str | None = DEFAULT_USER_ID) -> bool:
+        """Bir calistirmayi ve bagli kayitlarini siler."""
+        with self.connect() as conn:
+            if user_id is None:
+                cursor = conn.execute("DELETE FROM run WHERE run_id = ?", (run_id,))
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM run WHERE run_id = ? AND user_id = ?", (run_id, user_id)
+                )
+            if not cursor.rowcount:
+                return False
+            conn.execute("DELETE FROM run_subtopic WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM run_video WHERE run_id = ?", (run_id,))
+        return True
+
+
+def _run_summary_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "run_id": row["run_id"],
+        "user_id": row["user_id"],
+        "topic": row["topic"],
+        "filters": json.loads(row["filters_json"]),
+        "created_at": row["created_at"],
+        "is_complete": bool(row["is_complete"]),
+    }
