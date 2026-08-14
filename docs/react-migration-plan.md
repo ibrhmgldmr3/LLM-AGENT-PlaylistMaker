@@ -169,27 +169,87 @@ bir bileşim kurabilir.
 Doğrulandı: mevcut `data/cache/app.db` sorunsuz migrate oldu (24 kayıt `local`
 kullanıcısına atandı), geçmişten tamamlanmış bir çalıştırma geri okunabiliyor.
 
-### Faz 1 — FastAPI katmanı (Streamlit hâlâ çalışıyor)
+### Faz 1 — FastAPI katmanı ✅ TAMAMLANDI
 
-- [ ] `api/` iskeleti, CORS, hata işleyicileri
-- [ ] `POST /api/runs` + `GET /api/runs/{id}/events` (SSE) + `GET /api/runs/{id}`
-- [ ] `GET /api/config` — yetenek keşfi
-- [ ] `get_current_user` **stub'ı**: şimdilik daima `"local"` döner
-- [ ] OpenAPI şeması üretimi
-- [ ] API entegrasyon testleri (`httpx.AsyncClient`)
+- [x] `api/` iskeleti, CORS (Vite `:5173`), sağlayıcı hatalarını HTTP'ye eşleyen işleyiciler
+- [x] `POST /api/runs` → 202 + `run_id` (**ölçüldü: 207 ms, bloklamıyor**)
+- [x] `GET /api/runs/{id}/events` — SSE, heartbeat'li, bitmiş iş için anında kapanır
+- [x] `GET /api/runs/{id}`, `/status`, `DELETE`, `GET /api/runs` (sayfalı), export indirme
+- [x] `GET /api/config` — yetenek keşfi, **sır sızdırmadığı testle kilitli**
+- [x] `get_current_user` **stub'ı**: daima `"local"` döner
+- [x] OpenAPI şeması üretiliyor (React tipleri buradan gelecek)
+- [x] 17 API testi (toplam **180**, hepsi geçiyor)
 
-Bu noktada Streamlit ve API aynı servisleri çağırıyor; ikisi de çalışıyor.
+**Canlı doğrulama** (gerçek uvicorn + gerçek YouTube/Gemini): POST 202 döndü,
+SSE 11 ilerleme olayı akıttı (monoton), sonuç okunabildi, geçmiş listelendi,
+Markdown indirildi, bilinmeyen çalıştırma 404 verdi, anahtar sızmadı.
 
-### Faz 2 — React arayüzü
+Streamlit ve API aynı servisleri çağırıyor; ikisi de çalışıyor.
 
-- [ ] Vite + React + TS iskeleti, OpenAPI'den tip üretimi
-- [ ] Çalıştırma formu (konu, dil, zorluk, süre, tazelik, İngilizce, ASR)
-- [ ] SSE ile canlı ilerleme (faz adı + yüzde + n/m)
-- [ ] Sonuç kartları: güven puanı, gerekçe, metadata dökümü, zayıf eşleşme etiketi
-- [ ] Alt konu tanılama tablosu
-- [ ] Geçmiş sayfası
-- [ ] `theme.py` paletini CSS değişkenlerine taşı, açık/koyu tema
-- [ ] JSON / Markdown indirme
+```bash
+uvicorn api.main:app --reload --port 8000   # API
+streamlit run app.py                        # eski arayüz, hâlâ çalışıyor
+```
+
+**Bilinen sınır:** her açık SSE akışı bir thread tutuyor (`JobRunner.events()`
+bloklayan kuyruk üzerinde çalışıyor, Starlette senkron üreticiyi thread havuzunda
+döndürüyor). Tek instance için kabul edilebilir; `CeleryJobRunner` ile birlikte
+gözden geçirilecek. `Last-Event-ID` ile tam devam ettirme de Faz 2'ye bırakıldı —
+şu an yeniden bağlanan istemci bitmiş işin son durumunu alıyor, ara olayları değil.
+
+### Faz 2 — React arayüzü ✅ TAMAMLANDI (çekirdek akış)
+
+- [x] Vite + React 18 + TS iskeleti, `npm run typecheck` ve `build` temiz
+- [x] Vite proxy: `/api` → `:8000` (geliştirmede CORS'a hiç takılmıyoruz)
+- [x] Çalıştırma formu (konu, dil, zorluk, süre, tazelik, İngilizce, ASR)
+- [x] `useRunStream` — `EventSource` ile canlı ilerleme
+- [x] Sonuç kartları: güven puanı, gerekçe, metadata dökümü, **zayıf eşleşme etiketi**
+- [x] Alt konu tanılaması (açılır, kısa liste tablosuyla)
+- [x] Geçmiş sekmesi: sayfalama, aç, sil
+- [x] `theme.py` paleti CSS değişkenlerine taşındı, açık/koyu tema
+- [x] JSON / Markdown indirme
+
+**Tarayıcıda uçtan uca doğrulandı** ("Kalman filtresi ile sensör füzyonu"):
+form → `POST` 202 → SSE ilerleme (%2 → %40 → %100) → 6/6 alt konu dolu,
+52 videoluk ortak havuz, 6 öneri, 5'i zayıf eşleşme olarak etiketlendi.
+Geçmiş 10 kayıt listeledi, karanlık tema geçişi çalıştı.
+
+### Faz 2b — SSE dayanıklılığı ✅ TAMAMLANDI
+
+Faz 2 sonrası bir **hata** bulundu ve düzeltildi: olaylar tek bir `queue.Queue`
+üzerinden **yıkıcı** okunuyordu. İki sekme aynı çalıştırmayı izlediğinde olaylar
+aralarında bölünüyordu (A: `m1,m2,m4,m6` / B: `m3,m5`) ve bir dinleyici
+yakalanmamış `queue.Empty` ile ölüyordu.
+
+- [x] Kuyruk → **eklemeli olay günlüğü** (her abonenin kendi imleci)
+- [x] Her SSE olayı `id:` taşıyor
+- [x] `Last-Event-ID` ile devam: yeniden bağlanan istemci yalnızca kaçırdıklarını alır
+- [x] Çoklu abone: her sekme tüm olayları görür
+- [x] 8 yeni test
+
+Ayarlar ekranı (kullanıcı anahtarları) **bilerek Faz 5'e bırakıldı**: kimlik
+doğrulama ve şifreleme olmadan API anahtarı yazan bir ekran güvenlik açığıdır.
+
+### Faz 3 — OAuth yeniden yazımı ✅ TAMAMLANDI
+
+- [x] `run_local_server` yayınlama yolundan kaldırıldı
+- [x] `GET /api/auth/youtube/start` → Google onay URL'i, tek kullanımlık `state` ile CSRF koruması
+- [x] `GET /api/auth/youtube/callback` → kod → jeton → **kullanıcı başına** saklanır
+- [x] `GET /api/auth/youtube/status`, `DELETE /api/auth/youtube`
+- [x] Jeton dosya yerine `oauth_token` tablosunda (kullanıcı + sağlayıcı anahtarlı)
+- [x] Yenilenen jeton geri yazılıyor (`on_token_refresh`)
+- [x] `POST /api/runs/{id}/publish` — **build'den ayrı**
+- [x] React: `PublishPanel` (bağla / yayınla / ayır)
+- [x] 17 test
+
+**Streamlit bozulmadı:** `token_json` verilmezse eski dosya tabanlı akışa dönülüyor.
+
+Canlı doğrulandı: yetkilendirme URL'i üretiliyor, `client_secret` URL'e sızmıyor,
+bağlanmadan yayınlama reddediliyor.
+
+> **Kurulum notu:** Google Cloud Console'da OAuth istemcisine
+> `http://localhost:8000/api/auth/youtube/callback` adresi *authorized redirect URI*
+> olarak eklenmeli. İstemci tipi **Web application** olmalı (Desktop değil).
 
 ### Faz 3 — OAuth yeniden yazımı
 
@@ -201,19 +261,40 @@ Tek gerçek yeniden yazım burada.
 - [ ] Token'ı dosya yerine şifreli olarak DB'de sakla
 - [ ] Yayınlama akışını build'den ayır (`POST /api/runs/{id}/publish`)
 
-### Faz 4 — Streamlit'i emekliye ayır
+### Faz 4 — Streamlit emekliye ayrıldı ✅ TAMAMLANDI
 
-- [ ] `app.py` ve `src/ui/` sil
-- [ ] `streamlit` bağımlılığını kaldır
-- [ ] README ve `.env.example` güncelle
+- [x] `app.py` (163 satır) ve `src/ui/` (338 satır) silindi
+- [x] `streamlit` bağımlılığı kaldırıldı
+- [x] **FastAPI derlenmiş React'i servis ediyor** — üretimde tek süreç yeter
+- [x] README ve `.env.example` güncellendi (0 Streamlit referansı kaldı)
 
-### Faz 5+ — Çok kullanıcıya geçiş (ihtiyaç doğduğunda)
+Canlı doğrulandı: `uvicorn api.main:app` tek başına `/` üzerinden arayüzü,
+`/api/*` üzerinden API'yi, `/docs` üzerinden OpenAPI'yi servis ediyor. Aynı
+köken olduğu için CORS'a gerek kalmıyor.
 
-- [ ] Gerçek kimlik doğrulama (`get_current_user` stub'ının yerine)
-- [ ] Kullanıcı başına anahtar yönetimi arayüzü + şifreleme
-- [ ] `CeleryJobRunner` + Redis
-- [ ] Kullanıcı başına oran sınırlama
-- [ ] `provider_health` kapsamını gözden geçir (aşağıya bakınız)
+### Faz 5 — Kısmen tamamlandı, gerisi bilinçli ertelendi
+
+**Yapıldı (bugün doğru olan):**
+
+- [x] **Jetonlar diskte şifreli** — `SECRET_ENCRYPTION_KEY` ayarlıysa `oauth_token`
+      tablosu HMAC-SHA256 anahtar akışı + kurcalama etiketiyle şifrelenir.
+      Harici bağımlılık yok. Anahtar sonradan eklenebilir: mevcut düz kayıtlar
+      okunmaya devam eder, sonraki yazımda şifrelenir.
+- [x] `get_current_user(request)` — imzası gerçek kimlik doğrulamaya hazır;
+      o gün yalnızca gövdesi değişecek, hiçbir rota elden geçmeyecek.
+
+**Bilinçli ERTELENDİ (bugün yapmak yanlış olurdu):**
+
+| Erteleniyor | Neden |
+|---|---|
+| Gerçek kimlik doğrulama sağlayıcısı | Dağıtım hedefi ve kullanıcı modeli belli değil; şimdi seçilen her şey tahmin olur |
+| Kullanıcı anahtarı yönetim ekranı | Auth olmadan API anahtarı yazan ekran güvenlik açığıdır |
+| `CeleryJobRunner` + Redis | `JobRunner` arayüzü hazır; kullanıcı yokken altyapı kurmak erken optimizasyon |
+| Kullanıcı başına oran sınırlama | Çapraz kesen katman, gerçek trafikle tasarlanmalı |
+| `provider_health` kapsamı | BYOK'a geçince YouTube API sınırları zaten ayrışır; asıl soru sunucu IP'sine bağlı yt-dlp sınırları — gerçek çok kullanıcılı kullanımla ölçülmeli |
+
+Bunların hepsi **arayüzlerin arkasında** duruyor; sıra geldiğinde eklenecekler,
+yeniden yazım gerekmeyecek.
 
 ---
 

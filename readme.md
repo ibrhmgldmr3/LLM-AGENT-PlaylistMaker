@@ -1,15 +1,26 @@
 # Make A Playlist
 
-A Streamlit app that turns one learning goal into an ordered YouTube playlist.
+Turns one learning goal into an ordered YouTube playlist.
 
 Give it a topic. It asks Gemini to break the topic into distinct subtopics, searches
 YouTube for each, ranks candidates on metadata, optionally enriches the shortlist with
 transcripts, and assigns one video per subtopic — then exports the result as JSON and
 Markdown, and can publish it as a real YouTube playlist.
 
+A FastAPI backend with a React frontend.
+
 ```bash
-streamlit run app.py
+# development — two processes, hot reload on both
+uvicorn api.main:app --reload --port 8000   # API      → /docs for OpenAPI
+cd web && npm install && npm run dev        # React UI → localhost:5173
+
+# production — one process serves both
+cd web && npm run build
+uvicorn api.main:app --port 8000            # → localhost:8000
 ```
+
+In development Vite proxies `/api` to port 8000, so start the API first. In production
+the API serves the built frontend from `web/dist`, so a single process is enough.
 
 ---
 
@@ -28,7 +39,7 @@ streamlit run app.py
 **About the JS runtime:** yt-dlp needs one to solve YouTube's `nsig` challenge. Without
 it, audio download fails with *"Requested format is not available"*. This requires
 `yt-dlp >= 2025.11`, where the `js_runtimes` option landed — older versions silently
-ignore the setting. The app shows a sidebar warning if the installed version is too old.
+ignore the setting. The API reports this through `GET /api/config` and the UI surfaces it.
 
 `yt-dlp` tracks YouTube's changes closely. If discovery or audio download starts failing,
 upgrade it first:
@@ -246,14 +257,23 @@ warning rather than being silently ignored.
 
 ### Playlist publishing (OAuth only)
 
-| Variable | Default |
-|---|---|
-| `YOUTUBE_OAUTH_CLIENT_SECRET_FILE` | — |
-| `YOUTUBE_OAUTH_CLIENT_ID` | — |
-| `YOUTUBE_OAUTH_CLIENT_SECRET` | — |
-| `YOUTUBE_OAUTH_TOKEN_FILE` | `data/cache/youtube_oauth_token.json` |
-| `YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER` | `true` — set `false` on headless servers |
-| `YOUTUBE_PLAYLIST_PRIVACY_STATUS` | `private` — `private` \| `unlisted` \| `public` |
+| Variable | Default | Notes |
+|---|---|---|
+| `YOUTUBE_OAUTH_CLIENT_SECRET_FILE` | — | |
+| `YOUTUBE_OAUTH_CLIENT_ID` | — | |
+| `YOUTUBE_OAUTH_CLIENT_SECRET` | — | |
+| `YOUTUBE_OAUTH_TOKEN_FILE` | `data/cache/youtube_oauth_token.json` | legacy file store; the API uses the `oauth_token` table |
+| `YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER` | `true` | legacy desktop flow only; the API uses a redirect flow |
+| `YOUTUBE_PLAYLIST_PRIVACY_STATUS` | `private` | `private` \| `unlisted` \| `public` |
+
+The API uses a proper OAuth redirect flow instead of opening a browser on the server, and
+stores tokens per user in the `oauth_token` table rather than a file. For that path the
+Google Cloud client must be of type **Web application**, with
+`http://localhost:8000/api/auth/youtube/callback` registered as an authorized redirect URI.
+
+> Tokens are encrypted at rest when `SECRET_ENCRYPTION_KEY` is set (generate one with
+> `python -m src.storage.crypto`). Without a key they are stored in plaintext. Adding a key
+> later is safe — existing plaintext rows keep working and are encrypted on next write.
 
 ### Concurrency, retries, caching
 
@@ -272,6 +292,7 @@ warning rather than being silently ignored.
 | `PROVIDER_FAILURE_THRESHOLD` | `3` |
 | `DATA_DIR` | `data` |
 | `SQLITE_PATH` | `data/cache/app.db` |
+| `SECRET_ENCRYPTION_KEY` | — encrypts stored OAuth tokens; generate with `python -m src.storage.crypto` |
 | `ALLOW_UNSAFE_OPENMP_WORKAROUND` | `true` (Windows/Conda OpenMP clash) |
 
 ---
@@ -291,7 +312,8 @@ SQLite state lives at `data/cache/app.db`:
 | `search_cache` | search results per provider/query/filters |
 | `transcript_cache` | transcripts and per-video failures |
 | `provider_health` | cooldowns and consecutive-failure counters |
-| `run`, `run_subtopic`, `run_video` | run history |
+| `run`, `run_subtopic`, `run_video` | run history, scoped by `user_id` |
+| `oauth_token` | YouTube OAuth tokens, per user, encrypted when a key is set |
 
 Expired rows are purged at the end of each run. The cache key carries a schema version, so
 changing the candidate model invalidates stale entries automatically instead of serving
@@ -302,7 +324,18 @@ records that are missing new fields.
 ## Project layout
 
 ```
-app.py                      Streamlit entry point
+api/                        FastAPI layer — the application entry point
+  main.py                   app, CORS, provider-error → HTTP mapping
+  deps.py                   current user (stub), config composition, job runner
+  schemas.py                request/response contracts
+  sse.py                    Server-Sent Events for live progress
+  routers/                  runs, config
+web/                        React + Vite + TypeScript frontend
+  src/api/                  typed client
+  src/hooks/useRunStream.ts EventSource wrapper for live progress
+  src/features/run/         form, progress, results
+  src/features/history/     past runs
+  src/styles.css            palette carried over from src/ui/theme.py
 src/
   config/settings.py        env → validated AppConfig
   models/domain.py          pydantic domain models
@@ -319,10 +352,10 @@ src/
     metadata_ranker.py      scoring
     recommendation_service.py  global assignment
     topic_service.py / transcript_service.py / playlist_publish_service.py
-  storage/sqlite_store.py   cache, provider health, run history
-  ui/                       Streamlit components and theme
+  storage/sqlite_store.py   cache, provider health, run history, OAuth tokens
+  jobs/                     JobRunner abstraction (in-process today)
   utils/                    text, retry, logging, yt-dlp options
-tests/                      129 tests
+tests/                      218 tests
 ```
 
 ## Tests
@@ -331,7 +364,7 @@ tests/                      129 tests
 pytest -q
 ```
 
-129 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+218 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
 has a regression test named after the behaviour it locks in.
 
 ## Troubleshooting
@@ -344,3 +377,4 @@ has a regression test named after the behaviour it locks in.
 | `Requested format is not available` | yt-dlp too old or no JS runtime — `pip install -U yt-dlp`, install `node` |
 | Playlist has few recommendations | subtopics could not be matched. Narrow the topic, or enable English content |
 | `RESOURCE_EXHAUSTED` from Gemini | the API key has no quota or credits left |
+
