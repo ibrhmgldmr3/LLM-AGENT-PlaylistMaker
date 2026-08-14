@@ -52,6 +52,41 @@ def test_js_runtime_is_passed_when_supported(monkeypatch):
     assert js_runtime_warning(_config(ytdlp_js_runtime="node")) is None
 
 
+def test_cookie_decryption_failure_is_a_config_error():
+    """Regresyon: Chrome 127+ cerezleri okunamiyor (yt-dlp#10927).
+
+    Bu hata gecici sayiliyordu; her video icin 3 kez tekrar deneniyor ve
+    saglayici bosuna cooldown'a aliniyordu. Oysa tekrar denemek asla duzeltmez.
+    """
+    from src.providers.errors import ProviderPermanentError
+    from src.providers.ytdlp_provider import _classify_ytdlp_error
+
+    error = _classify_ytdlp_error(
+        Exception("ERROR: Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927")
+    )
+
+    assert isinstance(error, ProviderPermanentError)
+    assert "YTDLP_COOKIES_FROM_BROWSER" in str(error), "kullaniciya ne yapacagi soylenmeli"
+
+
+def test_ordinary_network_error_stays_temporary():
+    from src.providers.errors import ProviderTemporaryError
+    from src.providers.ytdlp_provider import _classify_ytdlp_error
+
+    assert isinstance(
+        _classify_ytdlp_error(Exception("Connection reset by peer")), ProviderTemporaryError
+    )
+
+
+def test_video_level_error_is_not_confused_with_config():
+    from src.providers.errors import VideoUnavailableError
+    from src.providers.ytdlp_provider import _classify_ytdlp_error
+
+    assert isinstance(
+        _classify_ytdlp_error(Exception("ERROR: [youtube] abc: Private video")), VideoUnavailableError
+    )
+
+
 def test_cookie_spec_parsing():
     assert parse_cookies_from_browser("chrome") == ("chrome",)
     assert parse_cookies_from_browser("firefox:default") == ("firefox", "default")

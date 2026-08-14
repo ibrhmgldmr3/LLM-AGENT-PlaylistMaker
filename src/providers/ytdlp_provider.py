@@ -12,7 +12,12 @@ import yt_dlp
 
 from src.config import AppConfig
 from src.models import FilterOptions, TranscriptResult, VideoCandidate
-from src.providers.errors import ProviderRateLimitedError, ProviderTemporaryError, VideoUnavailableError
+from src.providers.errors import (
+    ProviderPermanentError,
+    ProviderRateLimitedError,
+    ProviderTemporaryError,
+    VideoUnavailableError,
+)
 
 
 def _parse_retry_after(value: str | None) -> int | None:
@@ -36,6 +41,18 @@ _NON_SUBTITLE_KEYS = {"live_chat", "rechat"}
 # VTT satir ici etiketleri: <00:00:01.000>, <c.colorE5E5E5>, </c>, <v Speaker>
 _VTT_TAG_RE = re.compile(r"<[^>]*>")
 
+# Yapilandirma kaynakli, tekrar denemekle DUZELMEYECEK hatalar.
+# En sik gorulen: Chrome 127+ cerezleri App-Bound Encryption ile sakliyor ve
+# yt-dlp cozemiyor (yt-dlp#10927). Bu hata gecici sayilirsa her video icin
+# 3 kez tekrar denenip saglayici bosuna cooldown'a aliniyor.
+_CONFIG_ERROR_HINTS = (
+    "failed to decrypt with dpapi",
+    "could not copy chrome cookie database",
+    "unsupported browser",
+    "no such file or directory: 'cookies",
+    "cookies file",
+)
+
 # Videoya ozgu, kalici yt-dlp hatalarini tanimak icin kullanilan ipuclari.
 _VIDEO_LEVEL_HINTS = (
     "private video",
@@ -53,6 +70,15 @@ def _classify_ytdlp_error(exc: Exception) -> Exception:
     lowered = message.lower()
     if any(hint in lowered for hint in _VIDEO_LEVEL_HINTS):
         return VideoUnavailableError(message)
+    if any(hint in lowered for hint in _CONFIG_ERROR_HINTS):
+        # Yapilandirma hatasi: tekrar denemek asla duzeltmez ve saglayiciyi
+        # bosuna cezalandirir. Kullaniciya ne yapacagini soyle.
+        return ProviderPermanentError(
+            f"{message.strip()}\n"
+            "Tarayıcı çerezleri okunamıyor (Chrome 127+ App-Bound Encryption). "
+            "`.env` içinde YTDLP_COOKIES_FROM_BROWSER satırını boşaltın ya da "
+            "çerezleri bir dosyaya aktarıp YTDLP_COOKIES_FILE ile verin."
+        )
     return ProviderTemporaryError(message)
 
 

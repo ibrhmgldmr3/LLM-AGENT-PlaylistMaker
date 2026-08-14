@@ -11,16 +11,20 @@ A FastAPI backend with a React frontend.
 
 ```bash
 # development — two processes, hot reload on both
-uvicorn api.main:app --reload --port 8000   # API      → /docs for OpenAPI
+python -m uvicorn api.main:app --reload --port 8000  # API → /docs for OpenAPI
 cd web && npm install && npm run dev        # React UI → localhost:5173
 
 # production — one process serves both
 cd web && npm run build
-uvicorn api.main:app --port 8000            # → localhost:8000
+python -m uvicorn api.main:app --port 8000           # → localhost:8000
 ```
 
 In development Vite proxies `/api` to port 8000, so start the API first. In production
 the API serves the built frontend from `web/dist`, so a single process is enough.
+
+> Use `python -m uvicorn`, not the bare `uvicorn` command: on Windows the `uvicorn.exe`
+> on `PATH` may belong to a different Python installation than the one your dependencies
+> are installed in.
 
 ---
 
@@ -28,7 +32,7 @@ the API serves the built frontend from `web/dist`, so a single process is enough
 
 | | |
 |---|---|
-| Python | 3.10+ (developed against 3.10 and 3.13) |
+| Python | **3.11+ recommended** — yt-dlp deprecates 3.10. Tested on 3.10 and 3.13. |
 | **Gemini API key** | required, **with available quota/credits** |
 | YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used |
 | YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
