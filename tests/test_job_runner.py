@@ -4,6 +4,7 @@ API katmani isi arka plana atip cagirana hemen is numarasi donebilmeli,
 ilerlemeyi ayri kanaldan akitmali.
 """
 
+import threading
 import time
 
 import pytest
@@ -144,6 +145,74 @@ def test_jobs_run_concurrently(runner):
     elapsed = time.perf_counter() - start
 
     assert elapsed < 0.55, f"isler seri calisti ({elapsed:.2f} sn)"
+
+
+def test_every_subscriber_receives_every_event(runner):
+    """Regresyon: olaylar tek bir `queue.Queue`'dan YIKICI okunuyordu.
+
+    Iki tarayici sekmesi ayni calistirmayi izlediginde olaylar aralarinda
+    bolunuyor ve her biri ilerlemenin yarisini goruyordu.
+    """
+    job_id = new_job_id()
+    ready = threading.Event()
+
+    def work(emit):
+        ready.wait(2)
+        for value in (0.2, 0.4, 0.6, 0.8, 1.0):
+            emit(_event(value))
+            time.sleep(0.02)
+        return "ok"
+
+    runner.submit(job_id, "local", work)
+
+    first: list[float] = []
+    second: list[float] = []
+
+    def collect(sink):
+        for event in runner.events(job_id, timeout=3):
+            sink.append(event.progress)
+
+    threads = [threading.Thread(target=collect, args=(sink,)) for sink in (first, second)]
+    for thread in threads:
+        thread.start()
+    ready.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    expected = [0.2, 0.4, 0.6, 0.8, 1.0]
+    assert first == expected, f"1. abone eksik aldi: {first}"
+    assert second == expected, f"2. abone eksik aldi: {second}"
+
+
+def test_late_subscriber_replays_from_the_beginning(runner):
+    """Gec baglanan abone kacirdigi olaylari gunlukten alabilmeli."""
+    job_id = new_job_id()
+    runner.submit(job_id, "local", lambda emit: [emit(_event(v)) for v in (0.5, 1.0)])
+    runner.result(job_id, timeout=5)
+
+    replayed = [event.progress for event in runner.events(job_id, timeout=2)]
+
+    assert replayed == [0.5, 1.0]
+
+
+def test_events_since_supports_resume(runner):
+    """`Last-Event-ID` bunun uzerine kurulu: imlecten sonrasini ver."""
+    job_id = new_job_id()
+    runner.submit(job_id, "local", lambda emit: [emit(_event(v)) for v in (0.25, 0.5, 0.75, 1.0)])
+    runner.result(job_id, timeout=5)
+
+    tail = runner.events_since(job_id, cursor=2)
+
+    assert [index for index, _ in tail] == [2, 3]
+    assert [event.progress for _, event in tail] == [0.75, 1.0]
+
+
+def test_stream_closes_after_completion(runner):
+    job_id = new_job_id()
+    assert runner.is_stream_closed(job_id) is True  # bilinmeyen is
+    runner.submit(job_id, "local", lambda emit: emit(_event(1.0)))
+    runner.result(job_id, timeout=5)
+    assert runner.is_stream_closed(job_id) is True
 
 
 def test_old_jobs_are_pruned():

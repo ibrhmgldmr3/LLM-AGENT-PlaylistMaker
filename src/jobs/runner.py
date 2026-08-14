@@ -12,7 +12,6 @@ katmanina bilerek SIZDIRILMAZ.
 
 from __future__ import annotations
 
-import queue
 import threading
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -79,8 +78,14 @@ class JobRunner(Protocol):
 
     def result(self, job_id: str, timeout: float | None = None) -> Any: ...
 
-    def events(self, job_id: str, timeout: float | None = None) -> Iterator[ProgressEvent]:
-        """Is bitene kadar ilerleme olaylarini akitir."""
+    def events_since(self, job_id: str, cursor: int) -> list[tuple[int, ProgressEvent]]:
+        """`cursor` indeksinden itibaren BIRIKMIS olaylari dondurur (bloklamaz)."""
+
+    def wait_for_events(self, job_id: str, cursor: int, timeout: float) -> bool:
+        """Yeni olay ya da isin bitmesini bekler. Zaman asiminda False doner."""
+
+    def is_stream_closed(self, job_id: str) -> bool:
+        """Is bitti ve baska olay gelmeyecek mi?"""
 
     def cancel(self, job_id: str) -> bool:
         """Iptal ISTER. Henuz baslamamis is durdurulur; calisan is bir sonraki
@@ -89,6 +94,41 @@ class JobRunner(Protocol):
 
 def new_job_id() -> str:
     return uuid.uuid4().hex
+
+
+class _EventChannel:
+    """Bir isin olay gunlugu.
+
+    Kuyruk DEGIL, EKLEMELI LISTE. Kuyruk yikici okunur: iki abone (ornegin iki
+    tarayici sekmesi) ayni isi izlediginde olaylar aralarinda bolunuyordu ve her
+    biri ilerlemenin yarisini goruyordu. Gunlukte her abonenin kendi imleci var,
+    bu sayede hem coklu abone hem `Last-Event-ID` ile devam etme calisiyor.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[ProgressEvent] = []
+        self.closed = False
+        self._condition = threading.Condition()
+
+    def append(self, event: ProgressEvent) -> None:
+        with self._condition:
+            self.events.append(event)
+            self._condition.notify_all()
+
+    def close(self) -> None:
+        with self._condition:
+            self.closed = True
+            self._condition.notify_all()
+
+    def since(self, cursor: int) -> list[tuple[int, ProgressEvent]]:
+        with self._condition:
+            return list(enumerate(self.events[cursor:], start=cursor))
+
+    def wait(self, cursor: int, timeout: float) -> bool:
+        with self._condition:
+            if cursor < len(self.events) or self.closed:
+                return True
+            return self._condition.wait(timeout)
 
 
 class InProcessJobRunner:
@@ -100,13 +140,11 @@ class InProcessJobRunner:
     cok kullanicili dagitimda `CeleryJobRunner` ile degistirilir.
     """
 
-    _SENTINEL = object()
-
     def __init__(self, max_workers: int = 2, keep_last: int = 100):
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="job")
         self._lock = threading.Lock()
         self._handles: dict[str, JobHandle] = {}
-        self._queues: dict[str, queue.Queue] = {}
+        self._channels: dict[str, _EventChannel] = {}
         self._futures: dict[str, Future] = {}
         self._cancelled: set[str] = set()
         self._keep_last = keep_last
@@ -116,11 +154,11 @@ class InProcessJobRunner:
         self, job_id: str, user_id: str, work: Callable[[Callable[[ProgressEvent], None]], Any]
     ) -> JobHandle:
         handle = JobHandle(job_id=job_id, user_id=user_id)
-        events: queue.Queue = queue.Queue()
+        channel = _EventChannel()
 
         with self._lock:
             self._handles[job_id] = handle
-            self._queues[job_id] = events
+            self._channels[job_id] = channel
             self._prune_locked()
 
         def emit(event: ProgressEvent) -> None:
@@ -128,7 +166,7 @@ class InProcessJobRunner:
             if job_id in self._cancelled:
                 raise JobCancelled(job_id)
             handle.last_event = event
-            events.put(event)
+            channel.append(event)
 
         def run() -> Any:
             handle.state = JobState.RUNNING
@@ -144,7 +182,7 @@ class InProcessJobRunner:
                 handle.error = str(exc)
                 raise
             finally:
-                events.put(self._SENTINEL)
+                channel.close()
 
         with self._lock:
             self._futures[job_id] = self._executor.submit(run)
@@ -161,35 +199,55 @@ class InProcessJobRunner:
             raise KeyError(job_id)
         return future.result(timeout=timeout)
 
-    def events(self, job_id: str, timeout: float | None = None) -> Iterator[ProgressEvent]:
-        with self._lock:
-            events = self._queues.get(job_id)
-        if events is None:
-            return
+    def events_since(self, job_id: str, cursor: int = 0) -> list[tuple[int, ProgressEvent]]:
+        channel = self._channel(job_id)
+        return channel.since(cursor) if channel else []
+
+    def wait_for_events(self, job_id: str, cursor: int, timeout: float) -> bool:
+        channel = self._channel(job_id)
+        return channel.wait(cursor, timeout) if channel else True
+
+    def is_stream_closed(self, job_id: str) -> bool:
+        channel = self._channel(job_id)
+        return channel.closed if channel else True
+
+    def events(self, job_id: str, timeout: float = 30.0) -> Iterator[ProgressEvent]:
+        """Kolaylik sarmalayicisi: is bitene kadar olaylari akitir.
+
+        Testler ve senkron cagiranlar icin; SSE katmani imleci kendisi yonetir.
+        """
+        cursor = 0
         while True:
-            item = events.get(timeout=timeout)
-            if item is self._SENTINEL:
+            for index, event in self.events_since(job_id, cursor):
+                cursor = index + 1
+                yield event
+            if self.is_stream_closed(job_id):
                 return
-            yield item
+            self.wait_for_events(job_id, cursor, timeout)
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
             future = self._futures.get(job_id)
             handle = self._handles.get(job_id)
+            channel = self._channels.get(job_id)
         if future is None or handle is None or handle.state.is_terminal:
             return False
         self._cancelled.add(job_id)
         if future.cancel():
-            # Henuz baslamamisti; kuyrugu kapat ki dinleyiciler takilmasin.
+            # Henuz baslamamisti; akisi kapat ki dinleyiciler takilmasin.
             handle.state = JobState.CANCELLED
-            with self._lock:
-                self._queues[job_id].put(self._SENTINEL)
+            if channel:
+                channel.close()
         return True
 
     def shutdown(self, wait: bool = True) -> None:
         self._executor.shutdown(wait=wait)
 
     # -------------------------------------------------------------- ic isler
+    def _channel(self, job_id: str) -> _EventChannel | None:
+        with self._lock:
+            return self._channels.get(job_id)
+
     def _prune_locked(self) -> None:
         """Bellekte sinirsiz is birikmesini onler."""
         if len(self._handles) <= self._keep_last:
@@ -199,6 +257,6 @@ class InProcessJobRunner:
         ]
         for job_id in terminal[: len(self._handles) - self._keep_last]:
             self._handles.pop(job_id, None)
-            self._queues.pop(job_id, None)
+            self._channels.pop(job_id, None)
             self._futures.pop(job_id, None)
             self._cancelled.discard(job_id)
