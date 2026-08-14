@@ -36,6 +36,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "ALLOW_UNSAFE_OPENMP_WORKAROUND": "allow_unsafe_openmp_workaround",
     "DATA_DIR": "data_dir",
     "SQLITE_PATH": "sqlite_path",
+    "SECRET_ENCRYPTION_KEY": "secret_encryption_key",
     "INCLUDE_ENGLISH_BY_DEFAULT": "include_english_by_default",
     "MAX_SUBTOPICS": "max_subtopics",
     "SEARCH_CANDIDATES_PER_SUBTOPIC": "search_candidates_per_subtopic",
@@ -185,6 +186,9 @@ class ServerConfig(BaseModel):
 
     data_dir: str = Field(default="data")
     sqlite_path: str = Field(default="data/cache/app.db")
+    # Saklanan sirlari (OAuth jetonlari) sifrelemek icin kullanilir. Tanimsizsa
+    # jetonlar duz metin yazilir. `python -m src.storage.crypto` ile uretilebilir.
+    secret_encryption_key: str | None = Field(default=None)
 
     max_search_workers: int = Field(default=4)
     max_transcript_workers: int = Field(default=4)

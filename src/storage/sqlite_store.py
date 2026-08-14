@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.models import PlaylistResult, TranscriptResult, VideoCandidate
+from src.storage.crypto import SecretBox
 
 
 # Bir saglayicinin gecici olarak devre disi birakilmasi icin gereken ardisik hata sayisi.
@@ -63,8 +64,11 @@ def _is_expired(expires_at: str | None) -> bool:
 
 
 class SQLiteStore:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, encryption_key: str | None = None):
         self.db_path = db_path
+        # Sirlar (OAuth jetonlari) bu kutu ile sifrelenir. Anahtar yoksa duz
+        # metin yazilir ve eski davranis korunur.
+        self._secrets = SecretBox(encryption_key)
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
@@ -134,6 +138,13 @@ class SQLiteStore:
                     video_id TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (run_id, stage, video_id)
+                );
+                CREATE TABLE IF NOT EXISTS oauth_token (
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    token_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, provider)
                 );
                 CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache (expires_at);
                 CREATE INDEX IF NOT EXISTS idx_transcript_cache_expires ON transcript_cache (expires_at);
@@ -367,6 +378,39 @@ class SQLiteStore:
                 "UPDATE run SET result_json = ? WHERE run_id = ?",
                 (json.dumps(result.model_dump(), ensure_ascii=False), run_id),
             )
+
+    # ---------------------------------------------------------- OAuth token
+    # Token KULLANICI BASINA saklanir: dosya yolu tek kullanicili varsayimdi ve
+    # cok kullanicili moda gecerken en cok direnc gosteren yerdi.
+    #
+    # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
+    # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
+    # boylece anahtar sonradan eklenebilir.
+
+    def save_oauth_token(self, user_id: str, provider: str, token_json: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO oauth_token (user_id, provider, token_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, provider, self._secrets.encrypt(token_json), _to_iso(_utc_now())),
+            )
+
+    def get_oauth_token(self, user_id: str, provider: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT token_json FROM oauth_token WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
+            ).fetchone()
+        return self._secrets.decrypt(row["token_json"]) if row else None
+
+    def delete_oauth_token(self, user_id: str, provider: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM oauth_token WHERE user_id = ? AND provider = ?", (user_id, provider)
+            )
+        return bool(cursor.rowcount)
 
     # --------------------------------------------------------------- okuma
     # `run` tablolari uzun sure yalnizca YAZILIYORDU. Veri zaten duruyordu ama
