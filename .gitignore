@@ -71,6 +71,17 @@ models/
 *.bin
 *.gguf
 
+# ---------------------------------------------------------------- frontend (web/)
+node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+# OpenAPI'den URETILEN tipler; `npm run gen:types` ile yeniden olusturulur
+web/src/api/schema.d.ts
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
 # ---------------------------------------------------------------- editor / IDE
 .vscode/
 .idea/
