@@ -109,6 +109,42 @@ def test_start_registers_a_state_for_csrf(client, monkeypatch):
 
 # --------------------------------------------------------------------- PKCE
 
+def test_flow_asks_for_a_pkce_verifier_explicitly(monkeypatch):
+    """Regresyon: PKCE'yi kutuphanenin varsayilanina birakmak surume bagimliydi.
+
+    `Flow.__init__` `autogenerate_code_verifier=True` diyor ama fabrika metotlari
+    kwargs'tan pop ederken kendi varsayilanini dayatiyor: google-auth-oauthlib
+    1.2.0'da `None` (dogrulayici URETILMIYOR), 1.4.0'da `True`. Ayni kod kurulu
+    surume gore ya calisiyor ya `invalid_grant: Missing code verifier` donuyordu.
+
+    Kurulan nesnenin bayragina bakmak YETMEZ: varsayilani True olan bir surumde
+    kwarg silinse bile boyle bir iddia gecerdi. Bu yuzden bayragin fabrikaya
+    ACIKCA gecildigini dogruluyoruz -- kurulu surumden bagimsiz tek kontrol bu.
+    """
+    from google_auth_oauthlib.flow import Flow
+
+    from src.config import AppConfig
+    from src.services.playlist_publish_service import _build_web_flow
+
+    seen = {}
+    original = Flow.from_client_config
+
+    def spy(client_config, scopes, **kwargs):
+        seen.update(kwargs)
+        return original(client_config, scopes, **kwargs)
+
+    monkeypatch.setattr(Flow, "from_client_config", spy)
+
+    config = AppConfig(
+        gemini_api_key="x",
+        youtube_oauth_client_id="id",
+        youtube_oauth_client_secret="secret",
+    )
+    _build_web_flow(config, "http://localhost:8000/api/auth/youtube/callback")
+
+    assert seen.get("autogenerate_code_verifier") is True
+
+
 def test_real_authorization_url_carries_pkce(client):
     """Kutuphane PKCE'yi varsayilan olarak aciyor; dogrulayici geri gelmeli."""
     from urllib.parse import parse_qsl, urlparse

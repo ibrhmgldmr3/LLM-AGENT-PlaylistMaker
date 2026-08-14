@@ -60,12 +60,24 @@ def exchange_code_for_token(
 def _build_web_flow(config: AppConfig, redirect_uri: str):
     from google_auth_oauthlib.flow import Flow
 
+    # `autogenerate_code_verifier` ACIKCA geciliyor. `Flow.__init__` bunu True
+    # varsayiyor ama fabrika metotlari kwargs'tan pop ederken kendi varsayilanini
+    # dayatiyor: google-auth-oauthlib 1.2.0'da bu `None` (yani PKCE dogrulayicisi
+    # URETILMIYOR), 1.4.0'da `True`. Belirtmezsek kurulu surume gore sessizce
+    # degisiyor ve eski surumde Google `invalid_grant: Missing code verifier`
+    # donuyor. Ikisinde de dogru olan tek davranis: acikca istemek.
     if config.youtube_oauth_client_secret_file:
         flow = Flow.from_client_secrets_file(
-            config.youtube_oauth_client_secret_file, scopes=YOUTUBE_SCOPES
+            config.youtube_oauth_client_secret_file,
+            scopes=YOUTUBE_SCOPES,
+            autogenerate_code_verifier=True,
         )
     else:
-        flow = Flow.from_client_config(_web_client_config(config), scopes=YOUTUBE_SCOPES)
+        flow = Flow.from_client_config(
+            _web_client_config(config),
+            scopes=YOUTUBE_SCOPES,
+            autogenerate_code_verifier=True,
+        )
     flow.redirect_uri = redirect_uri
     return flow
 

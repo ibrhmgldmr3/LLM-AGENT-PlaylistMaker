@@ -32,7 +32,7 @@ the API serves the built frontend from `web/dist`, so a single process is enough
 
 | | |
 |---|---|
-| Python | **3.11+ recommended** — yt-dlp deprecates 3.10. Tested on 3.10 and 3.13. |
+| Python | **3.13** — the version CI tests and development targets. 3.11/3.12 should work but are not verified. |
 | **Gemini API key** | required, **with available quota/credits** |
 | YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used |
 | YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
@@ -368,8 +368,29 @@ tests/                      218 tests
 pytest -q
 ```
 
-218 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
-has a regression test named after the behaviour it locks in.
+224 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+has a regression test named after the behaviour it locks in. The suite runs without a `.env`
+and without any API key — CI has neither.
+
+### CI
+
+`.github/workflows/ci.yml` runs four jobs on push and pull request:
+
+| Job | What it protects |
+|---|---|
+| `backend` | Python 3.13: import check, `pyflakes`, full test suite |
+| `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
+| `frontend` | `web/`: TypeScript typecheck and production build |
+| `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
+
+The import check runs before the tests on purpose: some breakage happens at import time, and
+only a standalone import step reports it as itself rather than as 200 collection errors.
+
+`minimum-deps` exists because development always runs at the *top* of a declared range while
+`requirements.txt` promises the *bottom*. Two real bugs came from that gap: FastAPI 0.116
+rejected `-> None` on a 204 route while the installed 0.118 did not, and
+`google-auth-oauthlib` 1.2.0 silently skipped PKCE verifier generation while the installed
+1.4.0 did it by default. Both were invisible until the lower bounds were actually installed.
 
 ## Troubleshooting
 
