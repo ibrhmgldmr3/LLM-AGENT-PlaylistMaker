@@ -173,6 +173,39 @@ def test_event_stream_delivers_progress_then_done(client, monkeypatch):
     assert events[-1][1]["state"] == "done"
 
 
+def test_done_event_body_matches_the_published_contract(client, monkeypatch):
+    """Regresyon: `done` govdesi is katmaninin IC adlarini tasiyordu.
+
+    Govde dogrudan `JobHandle.snapshot()` sozlugu olarak yollaniyordu; icinde
+    `run_id` degil `job_id` vardi ve istemcinin isine yaramayan `user_id` da
+    gidiyordu. Arayuz `run_id` bekledigi icin o alan calisma zamaninda
+    `undefined` kaliyor, TypeScript ise `string` oldugunu iddia ediyordu.
+
+    Anahtar kumesi TAM olarak karsilastiriliyor: eksik alan kadar fazla alan da
+    hatadir, cunku `web/src/api/contract.ts` bu govdeyi OpenAPI'den uretilen
+    `RunSnapshotBody` ile derleme zamaninda esitliyor.
+    """
+    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(1.0,)))
+
+    run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
+    with client.stream("GET", f"/api/runs/{run_id}/events") as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    name, body = events[-1]
+    assert name == "done"
+    assert set(body) == {
+        "run_id",
+        "state",
+        "created_at",
+        "progress",
+        "stage",
+        "message",
+        "error",
+    }
+    assert body["run_id"] == run_id, "ic ad `job_id` degil, API'nin adlandirmasi"
+    assert "user_id" not in body, "kullanici kimligi tel uzerine cikmamali"
+
+
 def test_event_stream_closes_for_finished_run(client, monkeypatch):
     """Yeniden baglanan istemci sonsuza kadar beklememeli.
 

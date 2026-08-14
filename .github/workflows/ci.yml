@@ -102,8 +102,26 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # Uretilen `schema.d.ts` guncel mi diye bakabilmek icin backend'i import
+      # edip OpenAPI'yi dokmek gerekiyor; bu yuzden bu iste Python da var.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Python bagimliliklari
+        working-directory: .
+        run: pip install -r requirements.txt
+
       - name: Bagimliliklari kur
         run: npm ci
+
+      - name: Uretilen tipler guncel mi
+        # `--check` semayi yeniden uretip commit'lenmis dosyayla karsilastirir.
+        # Backend'de bir alan degisip `schema.d.ts` yenilenmediyse burasi kirmizi
+        # yanar; yenilendiyse de `contract.ts` iddialari tip kontrolunde patlar.
+        run: npm run check:types
 
       - name: Tip kontrolu
         run: npm run typecheck

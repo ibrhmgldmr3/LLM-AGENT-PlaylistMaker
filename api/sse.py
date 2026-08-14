@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Iterator
 
+from api.schemas import RunSnapshotBody
 from src.jobs import JobRunner
 
 # Proxy'ler ve yuk dengeleyiciler sessiz baglantiyi kapatir. Bu araliklarla
@@ -79,4 +80,20 @@ def run_event_stream(runner: JobRunner, run_id: str, cursor: int = 0) -> Iterato
 
     final = runner.get(run_id)
     if final is not None:
-        yield format_event("done", final.snapshot())
+        # Sozlugu OLDUGU GIBI yollamiyoruz: `snapshot()` is katmaninin ic
+        # adlarini tasiyor (`job_id`) ve istemcinin isine yaramayan `user_id`yi
+        # iceriyor. Model, tel uzerindeki sozlesmeyi API'nin geri kalaniyla
+        # ayni adlandirmaya (`run_id`) sabitliyor.
+        snapshot = final.snapshot()
+        yield format_event(
+            "done",
+            RunSnapshotBody(
+                run_id=snapshot["job_id"],
+                state=snapshot["state"],
+                created_at=snapshot["created_at"],
+                progress=snapshot["progress"],
+                stage=snapshot["stage"],
+                message=snapshot["message"],
+                error=snapshot["error"],
+            ).model_dump(),
+        )

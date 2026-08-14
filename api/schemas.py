@@ -14,6 +14,13 @@ from pydantic import BaseModel, Field
 from src.models import FilterOptions, PlaylistResult
 
 
+# `JobState` degerlerinin tel uzerindeki karsiligi. Eskiden bu alanlar duz `str`
+# idi; bu bir davranis degil, kesinlik eksikligiydi -- API yalnizca bu bes degeri
+# donuyor. Literal yazmak OpenAPI'ye enum olarak yansiyor ve uretilen TypeScript
+# tipi de daralarak istemcide `switch` kapsama kontrolunu mumkun kiliyor.
+RunState = Literal["pending", "running", "done", "failed", "cancelled"]
+
+
 class RunOptionsOverride(BaseModel):
     """Calistirma basina ezilebilen ayarlar. Verilmeyenler sunucu varsayilaninda kalir."""
 
@@ -39,14 +46,34 @@ class RunAccepted(BaseModel):
     """202 yaniti: is kuyruga alindi, kimlik hazir."""
 
     run_id: str
-    state: str
+    state: RunState
     events_url: str
     result_url: str
 
 
+class RunSnapshotBody(BaseModel):
+    """SSE `done` olayinin govdesi.
+
+    REST yaniti DEGIL, bu yuzden FastAPI onu kendiliginden OpenAPI'ye koymuyor;
+    `scripts/dump_openapi.py` acikca ekliyor. Boyle bir modele bagli olmasinin
+    sebebi: govde eskiden dogrudan `JobHandle.snapshot()` sozlugu olarak
+    yollaniyordu ve is katmaninin IC alan adlari (`job_id`) tel uzerine
+    siziyordu. Frontend `run_id` bekledigi icin o alan calisma zamaninda
+    `undefined` kaliyordu; TypeScript ise `string` oldugunu iddia ediyordu.
+    """
+
+    run_id: str
+    state: RunState
+    created_at: str
+    progress: float = 0.0
+    stage: str | None = None
+    message: str | None = None
+    error: str | None = None
+
+
 class RunStatus(BaseModel):
     run_id: str
-    state: str
+    state: RunState
     progress: float = 0.0
     stage: str | None = None
     message: str | None = None
@@ -70,7 +97,7 @@ class RunListResponse(BaseModel):
 
 class RunResultResponse(BaseModel):
     run_id: str
-    state: str
+    state: RunState
     result: PlaylistResult | None = None
 
 

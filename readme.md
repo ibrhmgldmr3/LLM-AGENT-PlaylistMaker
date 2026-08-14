@@ -368,7 +368,7 @@ tests/                      218 tests
 pytest -q
 ```
 
-224 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+225 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
 has a regression test named after the behaviour it locks in. The suite runs without a `.env`
 and without any API key — CI has neither.
 
@@ -380,8 +380,36 @@ and without any API key — CI has neither.
 |---|---|
 | `backend` | Python 3.13: import check, `pyflakes`, full test suite |
 | `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
-| `frontend` | `web/`: TypeScript typecheck and production build |
+| `frontend` | `web/`: generated types are current, TypeScript typecheck, production build |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
+
+### The API contract
+
+`web/src/api/types.ts` is hand-written and readable; `web/src/api/schema.d.ts` is generated
+from the backend's OpenAPI document and committed. `web/src/api/contract.ts` asserts one
+against the other at compile time, so renaming a backend field breaks `npm run typecheck`.
+
+```bash
+cd web && npm run gen:types
+```
+
+The check is **directional**, because the two directions are not the same claim. For request
+bodies the UI may be *narrower* than the API — it offers `"en" | "tr"` while the API accepts
+any language string — so the assertion only requires that what the UI sends is acceptable.
+For response bodies narrowing is unsafe: anything the API can return must fit the UI's type.
+A plain equality check would fail the first case for no reason and is why this is not one.
+
+Two wrinkles are worth knowing before editing the generator:
+
+- **SSE bodies are not in OpenAPI.** FastAPI derives schemas from route responses, and the
+  events endpoint returns a `StreamingResponse`, so the `progress` and `done` payloads are
+  invisible to it — which is exactly where drift had grown. `scripts/dump_openapi.py` adds
+  them explicitly.
+- **Response fields with defaults are marked required.** Pydantic treats a field with a
+  default as not-required, which is right for requests and misleading for responses: FastAPI
+  serializes defaults, so the key is always on the wire. The script marks them required for
+  schemas not reachable from a `requestBody`. Without this the generated types are
+  pessimistic in a way that buries real drift in noise.
 
 > Editing the workflow: expressions are only valid in fields that allow the context they use.
 > `${{ env.* }}` works in a step's `with:` but **not** in `jobs.<id>.name` — and an illegal
