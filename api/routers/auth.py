@@ -14,6 +14,7 @@ import secrets
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import Response
 from fastapi.responses import RedirectResponse
 
 from api.deps import build_run_config, get_current_user, get_default_run_options, get_server_config, get_store, get_user_credentials
@@ -125,10 +126,15 @@ def youtube_callback(
     return RedirectResponse("/?youtube_auth=ok")
 
 
-@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+# `response_class=Response` ACIK olarak veriliyor: FastAPI 0.116'da `-> None`
+# donus anotasyonu yanit modeli sayiliyor ve 204 govde kabul etmedigi icin
+# uygulama IMPORT ZAMANINDA patliyor. 0.118'de bu davranis degismis; iki surumde
+# de calissin diye yanit sinifi elle belirtiliyor.
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def disconnect(
     user_id: str = Depends(get_current_user),
     store: SQLiteStore = Depends(get_store),
-) -> None:
+) -> Response:
     if not store.delete_oauth_token(user_id, PROVIDER):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bağlı hesap yok")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from api import sse
@@ -147,18 +147,19 @@ def get_run(
     return RunResultResponse(run_id=run_id, state=state, result=store.get_run(run_id))
 
 
-@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+# `response_class=Response` icin bkz. `api/routers/auth.py` — FastAPI 0.116'da
+# `-> None` + 204 birlesimi uygulamayi import zamaninda kiriyor.
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def cancel_or_delete_run(
     run_id: str,
     user_id: str = Depends(get_current_user),
     runner: JobRunner = Depends(get_job_runner),
     store: SQLiteStore = Depends(get_store),
-) -> None:
+) -> Response:
     """Calisan isi iptal eder; bitmis calistirmayi gecmisten siler."""
-    if runner.cancel(run_id):
-        return
-    if not store.delete_run(run_id, user_id=user_id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
+    if runner.cancel(run_id) or store.delete_run(run_id, user_id=user_id):
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
 
 
 @router.get("", response_model=RunListResponse)
