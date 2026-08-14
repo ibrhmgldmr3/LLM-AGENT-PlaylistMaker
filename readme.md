@@ -380,7 +380,7 @@ and without any API key — CI has neither.
 |---|---|
 | `backend` | Python 3.13: import check, `pyflakes`, full test suite |
 | `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
-| `frontend` | `web/`: generated types are current, TypeScript typecheck, production build |
+| `frontend` | `web/`: regenerates types from the backend, TypeScript typecheck, production build |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
 
 ### The API contract
@@ -410,6 +410,14 @@ Two wrinkles are worth knowing before editing the generator:
   serializes defaults, so the key is always on the wire. The script marks them required for
   schemas not reachable from a `requestBody`. Without this the generated types are
   pessimistic in a way that buries real drift in noise.
+- **CI regenerates the types rather than byte-comparing them.** The generated schema depends
+  on the installed pydantic version — 2.11 emits `additionalProperties: true` for free-form
+  dicts and 2.8 does not, which turns `Record<string, unknown>` into `Record<string, never>`
+  downstream. Since the project deliberately supports a version *range*, a byte-exact check
+  can never be stable; the first CI run failed on exactly that. The assertions are semantic
+  and were verified to hold against schemas generated at both ends of the range. The
+  committed `schema.d.ts` is a local convenience — typecheck without installing Python — and
+  CI warns, rather than fails, when it has fallen behind.
 
 > Editing the workflow: expressions are only valid in fields that allow the context they use.
 > `${{ env.* }}` works in a step's `with:` but **not** in `jobs.<id>.name` — and an illegal

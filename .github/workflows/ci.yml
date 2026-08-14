@@ -117,13 +117,26 @@ jobs:
       - name: Bagimliliklari kur
         run: npm ci
 
-      - name: Uretilen tipler guncel mi
-        # `--check` semayi yeniden uretip commit'lenmis dosyayla karsilastirir.
-        # Backend'de bir alan degisip `schema.d.ts` yenilenmediyse burasi kirmizi
-        # yanar; yenilendiyse de `contract.ts` iddialari tip kontrolunde patlar.
-        run: npm run check:types
+      - name: Tipleri backend'den yeniden uret
+        # BYTE KARSILASTIRMASI DEGIL. Ilk hali `--check` ile commit'lenmis
+        # dosyayla birebir kiyasliyordu ve bu yapisal olarak kararsizdi: uretilen
+        # sema kurulu pydantic surumune gore degisiyor (2.11 serbest sozlukler
+        # icin `additionalProperties: true` yaziyor, 2.8 yazmiyor -- ikincisinde
+        # uretilen TS `Record<string, never>` gibi bozuk bir tip oluyor). Bu depo
+        # bilerek bir surum ARALIGI destekledigi icin byte esitligi hicbir zaman
+        # saglanamaz; nitekim ilk kosuda tam da burasi kirildi.
+        #
+        # Gercek koruma `contract.ts` iddialarinda ve o ANLAMSAL: iki semayla da
+        # sinandi, ikisinde de gecti. Bu yuzden burada taze uretip asagida tip
+        # kontrolu kosuyoruz. Commit'li kopya yalnizca yerel kolaylik (Python
+        # kurmadan `npm run typecheck` yapilabilsin diye); eskimisse uyariyoruz.
+        run: |
+          npm run gen:types
+          if ! git diff --quiet -- src/api/schema.d.ts; then
+            echo "::warning::Commit'li schema.d.ts taze uretimden farkli; 'npm run gen:types' calistirip commit edin"
+          fi
 
-      - name: Tip kontrolu
+      - name: Tip kontrolu (taze uretilen semaya karsi)
         run: npm run typecheck
 
       - name: Derleme

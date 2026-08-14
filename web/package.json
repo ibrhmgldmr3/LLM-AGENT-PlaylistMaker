@@ -9,8 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "gen:openapi": "python ../scripts/dump_openapi.py",
-    "gen:types": "npm run gen:openapi && openapi-typescript openapi.json -o src/api/schema.d.ts --default-non-nullable false",
-    "check:types": "npm run gen:openapi && openapi-typescript openapi.json -o src/api/schema.d.ts --default-non-nullable false --check"
+    "gen:types": "npm run gen:openapi && openapi-typescript openapi.json -o src/api/schema.d.ts --default-non-nullable false"
   },
   "dependencies": {
     "react": "^18.3.1",
