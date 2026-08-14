@@ -383,6 +383,11 @@ and without any API key — CI has neither.
 | `frontend` | `web/`: TypeScript typecheck and production build |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
 
+> Editing the workflow: expressions are only valid in fields that allow the context they use.
+> `${{ env.* }}` works in a step's `with:` but **not** in `jobs.<id>.name` — and an illegal
+> context there is rejected at validation time, so the run appears with *zero jobs* rather than
+> a failing step. `yaml.safe_load` will not catch it; the syntax is fine, the context is not.
+
 The import check runs before the tests on purpose: some breakage happens at import time, and
 only a standalone import step reports it as itself rather than as 200 collection errors.
 
