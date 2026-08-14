@@ -28,27 +28,25 @@ router = APIRouter(prefix="/api/auth/youtube", tags=["auth"])
 PROVIDER = "youtube"
 STATE_TTL_SECONDS = 600
 
-# CSRF `state` degerleri. Surec-ici: tek instance icin yeterli, cok kullanicili
-# dagitimda paylasimli bir depoya (Redis) tasinmali.
-_pending_states: dict[str, tuple[str, float]] = {}
+# Bekleyen yetkilendirmeler: state -> (user_id, code_verifier, son kullanma).
+# `code_verifier` PKCE icin ZORUNLU olarak burada tutuluyor; yalnizca URL'i
+# ureten `Flow` nesnesinde yasadigi icin callback'e baska turlu tasinamiyor.
+# Surec-ici: tek instance icin yeterli, cok kullanicili dagitimda paylasimli
+# bir depoya (Redis) tasinmali.
+_pending_states: dict[str, tuple[str, str | None, float]] = {}
 
 
-def _remember_state(user_id: str) -> str:
-    _expire_states()
-    state = secrets.token_urlsafe(24)
-    _pending_states[state] = (user_id, time.monotonic() + STATE_TTL_SECONDS)
-    return state
-
-
-def _consume_state(state: str) -> str | None:
+def _consume_state(state: str) -> tuple[str, str | None] | None:
+    """State'i TEK KULLANIMLIK olarak tuketir; (user_id, code_verifier) doner."""
     _expire_states()
     entry = _pending_states.pop(state, None)
-    return entry[0] if entry else None
+    return (entry[0], entry[1]) if entry else None
 
 
 def _expire_states() -> None:
     now = time.monotonic()
-    for key in [key for key, (_user, expiry) in _pending_states.items() if expiry < now]:
+    expired = [key for key, (_user, _verifier, expiry) in _pending_states.items() if expiry < now]
+    for key in expired:
         _pending_states.pop(key, None)
 
 
@@ -84,12 +82,21 @@ def start_authorization(
 ) -> dict:
     """Google onay URL'ini uretir. Tarayici bu adrese YONLENDIRILIR."""
     config = build_run_config(credentials, defaults, server)
-    state = _remember_state(user_id)
+    # State'i URL uretildikten SONRA kaydediyoruz: `code_verifier` ancak o zaman
+    # olusuyor ve callback'te ayni degerin geri verilmesi gerekiyor.
+    placeholder = secrets.token_urlsafe(24)
     try:
-        url = build_authorization_url(config, _redirect_uri(request), state)
+        url, code_verifier = build_authorization_url(config, _redirect_uri(request), placeholder)
     except Exception as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, redact_secrets(str(exc))) from exc
-    return {"authorization_url": url, "state": state}
+
+    _expire_states()
+    _pending_states[placeholder] = (
+        user_id,
+        code_verifier,
+        time.monotonic() + STATE_TTL_SECONDS,
+    )
+    return {"authorization_url": url, "state": placeholder}
 
 
 @router.get("/callback", name="youtube_callback")
@@ -110,13 +117,16 @@ def youtube_callback(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Eksik `code` veya `state`")
 
     # `state` dogrulamasi CSRF korumasi: bu akisi biz baslatmis olmaliyiz.
-    user_id = _consume_state(state)
-    if user_id is None:
+    pending = _consume_state(state)
+    if pending is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Geçersiz veya süresi dolmuş `state`")
+    user_id, code_verifier = pending
 
     config = build_run_config(credentials, defaults, server)
     try:
-        token_json = exchange_code_for_token(config, _redirect_uri(request), code)
+        token_json = exchange_code_for_token(
+            config, _redirect_uri(request), code, code_verifier=code_verifier
+        )
     except Exception as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, redact_secrets(f"Jeton alınamadı: {exc}")

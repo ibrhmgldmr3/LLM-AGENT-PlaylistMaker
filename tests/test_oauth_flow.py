@@ -87,7 +87,12 @@ def test_status_reports_unconfigured_without_client_credentials(tmp_path, monkey
 
 def test_start_returns_google_consent_url(client, monkeypatch):
     monkeypatch.setattr(
-        auth_router, "build_authorization_url", lambda config, redirect, state: f"https://accounts.google.com/o/oauth2/auth?state={state}"
+        auth_router,
+        "build_authorization_url",
+        lambda config, redirect, state: (
+            f"https://accounts.google.com/o/oauth2/auth?state={state}",
+            "verifier-abc",
+        ),
     )
 
     body = client.get("/api/auth/youtube/start").json()
@@ -97,17 +102,62 @@ def test_start_returns_google_consent_url(client, monkeypatch):
 
 
 def test_start_registers_a_state_for_csrf(client, monkeypatch):
-    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: "https://x")
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: ("https://x", "v"))
     state = client.get("/api/auth/youtube/start").json()["state"]
     assert state in auth_router._pending_states
+
+
+# --------------------------------------------------------------------- PKCE
+
+def test_real_authorization_url_carries_pkce(client):
+    """Kutuphane PKCE'yi varsayilan olarak aciyor; dogrulayici geri gelmeli."""
+    from urllib.parse import parse_qsl, urlparse
+
+    body = client.get("/api/auth/youtube/start").json()
+    params = dict(parse_qsl(urlparse(body["authorization_url"]).query))
+
+    assert params.get("code_challenge_method") == "S256"
+    assert params.get("code_challenge")
+    # Dogrulayici sunucu tarafinda saklanmis olmali, URL'de DEGIL.
+    _user, verifier, _expiry = auth_router._pending_states[body["state"]]
+    assert verifier
+    assert verifier not in body["authorization_url"]
+
+
+def test_code_verifier_reaches_the_token_exchange(client, monkeypatch):
+    """Regresyon: `invalid_grant: Missing code verifier`.
+
+    `/start` ve `/callback` ayri `Flow` nesneleri kuruyor; dogrulayici yalnizca
+    ilkinde yasadigi icin kaybolup Google tarafindan reddediliyordu.
+    """
+    seen = {}
+
+    def spy(config, redirect_uri, code, code_verifier=None):
+        seen["code"] = code
+        seen["verifier"] = code_verifier
+        return '{"token": "ok"}'
+
+    monkeypatch.setattr(auth_router, "exchange_code_for_token", spy)
+
+    body = client.get("/api/auth/youtube/start").json()
+    state = body["state"]
+    expected_verifier = auth_router._pending_states[state][1]
+
+    client.get(f"/api/auth/youtube/callback?code=kod&state={state}", follow_redirects=False)
+
+    assert seen["code"] == "kod"
+    assert seen["verifier"] == expected_verifier, "dogrulayici callback'e tasinmali"
+    assert seen["verifier"] is not None
 
 
 # ------------------------------------------------------------------ callback
 
 def test_callback_stores_token_and_redirects(client, monkeypatch):
-    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: "https://x")
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: ("https://x", "v"))
     monkeypatch.setattr(
-        auth_router, "exchange_code_for_token", lambda config, redirect, code: '{"token": "abc"}'
+        auth_router,
+        "exchange_code_for_token",
+        lambda config, redirect, code, code_verifier=None: '{"token": "abc"}',
     )
     state = client.get("/api/auth/youtube/start").json()["state"]
 
@@ -127,8 +177,10 @@ def test_callback_rejects_unknown_state(client):
 
 
 def test_state_is_single_use(client, monkeypatch):
-    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: "https://x")
-    monkeypatch.setattr(auth_router, "exchange_code_for_token", lambda c, r, code: "{}")
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: ("https://x", "v"))
+    monkeypatch.setattr(
+        auth_router, "exchange_code_for_token", lambda c, r, code, code_verifier=None: "{}"
+    )
     state = client.get("/api/auth/youtube/start").json()["state"]
 
     client.get(f"/api/auth/youtube/callback?code=k&state={state}", follow_redirects=False)

@@ -18,11 +18,17 @@ class PublishResult:
 YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
 
-def build_authorization_url(config: AppConfig, redirect_uri: str, state: str) -> str:
-    """Kullanicinin yonlendirilecegi Google onay URL'ini uretir.
+def build_authorization_url(config: AppConfig, redirect_uri: str, state: str) -> tuple[str, str]:
+    """Google onay URL'ini ve PKCE dogrulayicisini uretir.
 
     Web akisinin ilk adimi. `run_local_server` sunucuda tarayici acmaya
     calisiyordu; bir web uygulamasinda bu kavramsal olarak imkansiz.
+
+    `code_verifier` DE dondurulur: kutuphane PKCE'yi varsayilan olarak aciyor
+    ve URL'e `code_challenge` koyuyor, ama dogrulayici yalnizca bu `Flow`
+    nesnesinde yasiyor. Callback'te yeni bir `Flow` kuruldugunda kayboluyor ve
+    Google `invalid_grant: Missing code verifier` donuyor. Cagiran bunu `state`
+    ile birlikte saklamali.
     """
     flow = _build_web_flow(config, redirect_uri)
     authorization_url, _ = flow.authorization_url(
@@ -33,12 +39,20 @@ def build_authorization_url(config: AppConfig, redirect_uri: str, state: str) ->
         prompt="consent",
         state=state,
     )
-    return authorization_url
+    return authorization_url, flow.code_verifier
 
 
-def exchange_code_for_token(config: AppConfig, redirect_uri: str, code: str) -> str:
-    """Yetkilendirme kodunu jetona cevirir; saklanacak JSON'u dondurur."""
+def exchange_code_for_token(
+    config: AppConfig, redirect_uri: str, code: str, code_verifier: str | None = None
+) -> str:
+    """Yetkilendirme kodunu jetona cevirir; saklanacak JSON'u dondurur.
+
+    `code_verifier`, yetkilendirmeyi baslatan istekten tasinmali; PKCE dogrulamasi
+    bunsuz tamamlanmaz.
+    """
     flow = _build_web_flow(config, redirect_uri)
+    if code_verifier:
+        flow.code_verifier = code_verifier
     flow.fetch_token(code=code)
     return flow.credentials.to_json()
 
