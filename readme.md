@@ -368,9 +368,21 @@ tests/                      218 tests
 pytest -q
 ```
 
-225 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+225 backend tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
 has a regression test named after the behaviour it locks in. The suite runs without a `.env`
 and without any API key — CI has neither.
+
+```bash
+cd web && npm test
+```
+
+13 frontend tests, covering `useRunStream` — the SSE hook, which holds the most intricate
+logic on that side. They run against a fake `EventSource`, which is what makes them
+deterministic: the test decides when `progress`, `done`, or a bodiless `error` arrives, so
+nothing waits on a timer. The fake mirrors the browser contract in two details that matter —
+a closed source delivers nothing, and a dropped connection is a bodiless `Event` rather than
+a `MessageEvent` — because the hook distinguishes exactly those cases, and a sloppy fake
+would verify behaviour that cannot occur.
 
 ### CI
 
@@ -380,7 +392,7 @@ and without any API key — CI has neither.
 |---|---|
 | `backend` | Python 3.13: import check, `pyflakes`, full test suite |
 | `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
-| `frontend` | `web/`: regenerates types from the backend, TypeScript typecheck, production build |
+| `frontend` | `web/`: regenerates types from the backend, typecheck, tests, production build |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
 
 ### The API contract

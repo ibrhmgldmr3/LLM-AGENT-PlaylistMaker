@@ -139,6 +139,11 @@ jobs:
       - name: Tip kontrolu (taze uretilen semaya karsi)
         run: npm run typecheck
 
+      - name: Testler
+        # `useRunStream` sahte bir `EventSource` uzerinde kosuluyor: ag yok,
+        # zamanlamaya dayali bekleme yok.
+        run: npm test
+
       - name: Derleme
         run: npm run build
 
