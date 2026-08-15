@@ -38,6 +38,25 @@ from src.utils.logging_utils import redact_secrets
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 
+def _owned_handle(runner: JobRunner, run_id: str, user_id: str):
+    """Istegin sahibine ait is tutamaci; degilse `None`.
+
+    Baskasinin isi "bilinmeyen" gibi davraniliyor. Ayri bir "yetkisiz" yaniti,
+    var olmayan bir calistirma kimligiyle BASKASINA ait olani ayirt edilebilir
+    kilardi; 404 ikisini de ayni gosteriyor.
+
+    `JobRunner.cancel()` yalnizca `job_id` aliyor ve sahiplige bakmiyor, bu
+    yuzden kontrol cagiran tarafta. Bugun somut bir acik degil -- tek kullanicili
+    kurulumda `get_current_user` sabit donuyor -- ama `api/deps.py` "gercek kimlik
+    dogrulama gelince yalnizca o fonksiyonun govdesi degisir, rotalar elden
+    gecirilmez" diyor. Bagimligi hic almayan bir rota icin bu vaat gecersizdi.
+    """
+    handle = runner.get(run_id)
+    if handle is None or handle.user_id != user_id:
+        return None
+    return handle
+
+
 @router.post("", response_model=RunAccepted, status_code=status.HTTP_202_ACCEPTED)
 def create_run(
     payload: CreateRunRequest,
@@ -87,6 +106,7 @@ def create_run(
 def stream_events(
     request: Request,
     run_id: str,
+    user_id: str = Depends(get_current_user),
     runner: JobRunner = Depends(get_job_runner),
 ) -> StreamingResponse:
     """Ilerleme olaylarini SSE olarak akitir.
@@ -97,16 +117,20 @@ def stream_events(
     """
     cursor = sse.parse_last_event_id(request.headers.get("Last-Event-ID"))
     return StreamingResponse(
-        sse.run_event_stream(runner, run_id, cursor),
+        sse.run_event_stream(runner, run_id, cursor, user_id=user_id),
         media_type="text/event-stream",
         headers=sse.SSE_HEADERS,
     )
 
 
 @router.get("/{run_id}/status", response_model=RunStatus)
-def get_status(run_id: str, runner: JobRunner = Depends(get_job_runner)) -> RunStatus:
+def get_status(
+    run_id: str,
+    user_id: str = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+) -> RunStatus:
     """SSE kullanmayan istemciler icin yoklama ucu."""
-    handle = runner.get(run_id)
+    handle = _owned_handle(runner, run_id, user_id)
     if handle is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
     snapshot = handle.snapshot()
@@ -156,8 +180,16 @@ def cancel_or_delete_run(
     runner: JobRunner = Depends(get_job_runner),
     store: SQLiteStore = Depends(get_store),
 ) -> Response:
-    """Calisan isi iptal eder; bitmis calistirmayi gecmisten siler."""
-    if runner.cancel(run_id) or store.delete_run(run_id, user_id=user_id):
+    """Calisan isi iptal eder; bitmis calistirmayi gecmisten siler.
+
+    Iptal dali SAHIPLIK KONTROLUNDEN geciyor. Onceki hali dogrudan
+    `runner.cancel(run_id)` cagiriyordu; silme dali `user_id` suzuyor olsa da
+    iptal dali sizmiyordu, yani cok kullanicili kuruluma gecildiginde kimligi
+    bilen herkes baskasinin calisan isini durdurabilirdi.
+    """
+    if _owned_handle(runner, run_id, user_id) is not None and runner.cancel(run_id):
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if store.delete_run(run_id, user_id=user_id):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
 

@@ -201,6 +201,47 @@ describe("useRunStream", () => {
     expect(source.closed).toBe(true);
   });
 
+  it("`cancel` sunucuya iptal gonderir ve akisi ACIK BIRAKIR", async () => {
+    // Akisi burada kapatmak cazip ama yanlis olurdu: sunucu isi iptal edince
+    // `done` olayini `state: "cancelled"` ile gonderiyor. Erken kapatilirsa o
+    // son durum hic gorulmez ve arayuz "calisiyor"da asili kalir.
+    const cancelRun = vi.spyOn(api, "cancelRun").mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useRunStream());
+    act(() => result.current.watch("kosu-1"));
+    const source = FakeEventSource.last;
+
+    await act(() => result.current.cancel());
+
+    expect(cancelRun).toHaveBeenCalledWith("kosu-1");
+    expect(source.closed).toBe(false);
+    expect(result.current.state).toBe("running");
+
+    // Durum gecisini sunucunun `done` olayi yapiyor.
+    act(() => source.emit("done", snapshot({ state: "cancelled", error: null })));
+    expect(result.current.state).toBe("cancelled");
+  });
+
+  it("izlenen calistirma yokken `cancel` istek atmaz", async () => {
+    const cancelRun = vi.spyOn(api, "cancelRun");
+    const { result } = renderHook(() => useRunStream());
+
+    await act(() => result.current.cancel());
+
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("iptal istegi basarisiz olursa hatayi gosterir", async () => {
+    vi.spyOn(api, "cancelRun").mockRejectedValue(new Error("404 Bilinmeyen çalıştırma"));
+
+    const { result } = renderHook(() => useRunStream());
+    act(() => result.current.watch("kosu-1"));
+
+    await act(() => result.current.cancel());
+
+    expect(result.current.error).toBe("404 Bilinmeyen çalıştırma");
+  });
+
   it("`reset` durumu bosaltir ve akisi kapatir", () => {
     const { result } = renderHook(() => useRunStream());
     act(() => result.current.watch("kosu-1"));

@@ -29,8 +29,8 @@ def _titles(items):
 def test_parse_subtopics_accepts_plain_array():
     """Model duz metin listesi donerse sorgu alanlari bos kalir."""
     assert _parse_subtopics('["A", "B"]') == [
-        {"title": "A", "query": "", "query_en": ""},
-        {"title": "B", "query": "", "query_en": ""},
+        {"title": "A", "query": "", "query_en": "", "terms": []},
+        {"title": "B", "query": "", "query_en": "", "terms": []},
     ]
 
 
@@ -46,7 +46,9 @@ def test_parse_subtopics_extracts_titles_from_dicts():
 def test_parse_subtopics_keeps_the_search_query():
     """Istenen bicim: her alt konu kendi arama sorgusunu tasir."""
     parsed = _parse_subtopics('[{"title": "ARIMA modeli", "query": "arima zaman serisi"}]')
-    assert parsed == [{"title": "ARIMA modeli", "query": "arima zaman serisi", "query_en": ""}]
+    assert parsed == [
+        {"title": "ARIMA modeli", "query": "arima zaman serisi", "query_en": "", "terms": []}
+    ]
 
 
 def test_parse_subtopics_keeps_the_english_query():
@@ -59,7 +61,7 @@ def test_parse_subtopics_keeps_the_english_query():
 
 def test_parse_subtopics_accepts_alternative_key_names():
     parsed = _parse_subtopics('[{"subtopic": "A", "search_query": "a tutorial", "english_query": "a en"}]')
-    assert parsed == [{"title": "A", "query": "a tutorial", "query_en": "a en"}]
+    assert parsed == [{"title": "A", "query": "a tutorial", "query_en": "a en", "terms": []}]
 
 
 def test_parse_subtopics_rejects_non_json():

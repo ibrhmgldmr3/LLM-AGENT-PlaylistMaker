@@ -117,7 +117,7 @@ def test_both_queries_run_and_pools_are_merged(monkeypatch, tmp_path):
     monkeypatch.setattr(playlist_service, "search_candidates", fake_search)
     monkeypatch.setattr(
         playlist_service, "rank_candidates",
-        lambda cands, t, s, f: [(c, _score(5.0 - i)) for i, c in enumerate(cands)],
+        lambda cands, t, s, f, **kw: [(c, _score(5.0 - i)) for i, c in enumerate(cands)],
     )
     monkeypatch.setattr(
         playlist_service, "get_transcript",
@@ -146,7 +146,7 @@ def test_only_one_query_runs_when_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: BilingualLLM())
     monkeypatch.setattr(playlist_service, "search_candidates", fake_search)
     monkeypatch.setattr(
-        playlist_service, "rank_candidates", lambda cands, t, s, f: [(cands[0], _score(5.0))]
+        playlist_service, "rank_candidates", lambda cands, t, s, f, **kw: [(cands[0], _score(5.0))]
     )
     monkeypatch.setattr(
         playlist_service, "get_transcript",

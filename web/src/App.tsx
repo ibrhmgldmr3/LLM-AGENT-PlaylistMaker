@@ -86,7 +86,12 @@ export default function App() {
           {run.error && <p className="alert alert--error">{run.error}</p>}
 
           {busy && (
-            <RunProgress progress={run.progress} stage={run.stage} message={run.message} />
+            <RunProgress
+              progress={run.progress}
+              stage={run.stage}
+              message={run.message}
+              onCancel={run.cancel}
+            />
           )}
 
           {shownResult && <RunResult result={shownResult} />}

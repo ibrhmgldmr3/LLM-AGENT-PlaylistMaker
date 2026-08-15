@@ -105,10 +105,28 @@ export function useRunStream() {
     setState(IDLE);
   }, [close]);
 
-  // `stopWatching`, eskiden `cancel` adiyla disa veriliyordu ve bu yanilticiydi:
-  // yalnizca YEREL akisi kapatiyor, sunucudaki calistirma devam ediyor. Gercek
-  // bir iptal ucu da yok -- is yurutucusu `JobCancelled` destekliyor ama hicbir
-  // HTTP ucu onu acmiyor. Hicbir bilesen cagirmiyordu, yani "iptal" dugmesi
-  // sanilip baglansaydi kullaniciya calismayan bir soz verilmis olurdu.
-  return { ...state, watch, reset, stopWatching: close };
+  /**
+   * Calistirmayi SUNUCUDA durdurur.
+   *
+   * Akis burada bilerek KAPATILMIYOR: sunucu isi iptal edince akis `done`
+   * olayini `state: "cancelled"` ile gonderiyor ve durumu o gecis yonetiyor.
+   * Burada kapatsaydik son durumu hic gormez, arayuz "calisiyor"da asili
+   * kalirdi. Isin iptali bir sonraki ilerleme bildiriminde gerceklestigi icin
+   * arada kisa bir bekleme olabilir; mesaj bunu gorunur kiliyor.
+   */
+  const cancel = useCallback(async () => {
+    const runId = state.runId;
+    if (!runId) return;
+    try {
+      await api.cancelRun(runId);
+      setState((previous) => ({ ...previous, message: "İptal ediliyor…" }));
+    } catch (error) {
+      setState((previous) => ({ ...previous, error: (error as Error).message }));
+    }
+  }, [state.runId]);
+
+  // `stopWatching` eskiden `cancel` adiyla disa veriliyordu ve bu yanilticiydi:
+  // yalnizca YEREL akisi kapatiyor, sunucudaki calistirma devam ediyordu.
+  // Gercek iptal artik `cancel`; ikisi ayri seyler ve adlari da oyle.
+  return { ...state, watch, reset, cancel, stopWatching: close };
 }

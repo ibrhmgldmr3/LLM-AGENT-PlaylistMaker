@@ -51,8 +51,22 @@ class RunAccepted(BaseModel):
     result_url: str
 
 
-class RunSnapshotBody(BaseModel):
-    """SSE `done` olayinin govdesi.
+class RunStatus(BaseModel):
+    """Bir calistirmanin o anki durumu; `/{run_id}/status` yaniti."""
+
+    run_id: str
+    state: RunState
+    progress: float = 0.0
+    stage: str | None = None
+    message: str | None = None
+    error: str | None = None
+
+
+class RunSnapshotBody(RunStatus):
+    """SSE `done` olayinin govdesi: durum + `created_at`.
+
+    `RunStatus`tan TUREMESI kasitli -- alanlari elle tekrarlamak ikisinin
+    sessizce ayrisabilecegi anlamina geliyordu.
 
     REST yaniti DEGIL, bu yuzden FastAPI onu kendiliginden OpenAPI'ye koymuyor;
     `scripts/dump_openapi.py` acikca ekliyor. Boyle bir modele bagli olmasinin
@@ -62,22 +76,7 @@ class RunSnapshotBody(BaseModel):
     `undefined` kaliyordu; TypeScript ise `string` oldugunu iddia ediyordu.
     """
 
-    run_id: str
-    state: RunState
     created_at: str
-    progress: float = 0.0
-    stage: str | None = None
-    message: str | None = None
-    error: str | None = None
-
-
-class RunStatus(BaseModel):
-    run_id: str
-    state: RunState
-    progress: float = 0.0
-    stage: str | None = None
-    message: str | None = None
-    error: str | None = None
 
 
 class RunSummary(BaseModel):
@@ -117,7 +116,3 @@ class CapabilitiesResponse(BaseModel):
     cookies_configured: bool
     defaults: dict[str, Any] = Field(default_factory=dict)
 
-
-class ErrorResponse(BaseModel):
-    detail: str
-    code: str | None = None

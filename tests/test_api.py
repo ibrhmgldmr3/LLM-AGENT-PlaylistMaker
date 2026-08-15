@@ -7,6 +7,7 @@ degistiriliyor. Amac API sozlesmesini ve is/SSE akisini dogrulamak.
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 import pytest
@@ -35,6 +36,55 @@ def client(tmp_path, monkeypatch):
     with TestClient(app) as test_client:
         test_client.app_config = config
         yield test_client
+
+
+@pytest.fixture
+def as_other_user(client):
+    """Istegin sahibini gecici olarak baska bir kullaniciya cevirir.
+
+    `get_current_user` bagimliligini ezmek, gercek kimlik dogrulama eklendiginde
+    olacak seyi taklit etmenin en yakin yolu: rotalar degismiyor, yalnizca o
+    bagimliligin dondurdugu kimlik degisiyor.
+    """
+    from api.main import app
+
+    def switch(user_id: str = "baska-kullanici"):
+        app.dependency_overrides[deps.get_current_user] = lambda: user_id
+
+    yield switch
+    app.dependency_overrides.pop(deps.get_current_user, None)
+
+
+def _blocking_build(release):
+    """Serbest birakilana kadar suren sahte calistirma.
+
+    Iptal testleri isin GERCEKTEN ucusta olmasini gerektiriyor; uyku ile
+    zamanlamaya guvenmek yerine bir `threading.Event` ile bekletiliyor.
+    """
+
+    def build(config, request, progress_callback=None, run_id=None, user_id="local"):
+        from src.storage import SQLiteStore
+
+        store = SQLiteStore(config.sqlite_path)
+        store.create_run(run_id, request.topic, request.filters.model_dump(), user_id=user_id)
+        if progress_callback:
+            progress_callback(ProgressEvent(stage="test", message="basladi", progress=0.1))
+        release.wait(timeout=10)
+        # Iptal talebi bir sonraki ilerleme bildiriminde `JobCancelled` olarak gelir.
+        if progress_callback:
+            progress_callback(ProgressEvent(stage="test", message="bitti", progress=1.0))
+        result = PlaylistResult(
+            run_id=run_id,
+            topic=request.topic,
+            filters=request.filters,
+            subtopics=[],
+            recommendations=[],
+            exports=ExportArtifacts(json_path="x.json", markdown_path="y.md"),
+        )
+        store.finalize_run(run_id, result)
+        return result
+
+    return build
 
 
 def _fake_build(recommendations=0, events=(0.3, 0.7, 1.0), fail_with=None, delay=0.0):
@@ -378,3 +428,78 @@ def test_capabilities_never_leak_secrets(client):
 
     assert "test-key" not in raw
     assert "yt-key" not in raw
+
+
+# ---------------------------------------------------------------- sahiplik
+#
+# Bu uc test `/events`, `/status` ve `DELETE` icin sahiplik kontrolunu kilitler.
+# Tek kullanicili kurulumda `get_current_user` sabit donduğu icin acik somut
+# degildi; ama `api/deps.py` "gercek kimlik dogrulama gelince yalnizca o
+# fonksiyonun govdesi degisir, rotalar elden gecirilmez" diyor ve ilk ikisi o
+# bagimliligi HIC almiyordu -- yani o gun sessizce acikta kalirlardi.
+
+
+def test_event_stream_hides_another_users_run(client, monkeypatch, as_other_user):
+    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(1.0,)))
+    run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
+
+    as_other_user()
+    with client.stream("GET", f"/api/runs/{run_id}/events") as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    # 404 DEGIL: `EventSource` HTTP hatasini govdesiz sayip sonsuza kadar yeniden
+    # baglanir. Akis icinde `error` gonderilip kapatiliyor.
+    assert response.status_code == 200
+    assert [name for name, _ in events] == ["error"]
+    assert events[0][1]["detail"] == "Bilinmeyen çalıştırma"
+
+
+def test_status_hides_another_users_run(client, monkeypatch, as_other_user):
+    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(1.0,)))
+    run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
+
+    assert client.get(f"/api/runs/{run_id}/status").status_code == 200
+
+    as_other_user()
+    response = client.get(f"/api/runs/{run_id}/status")
+
+    # "Yetkisiz" yerine "bilinmeyen": aksi halde var olan bir kimlik, var
+    # olmayandan ayirt edilebilir hale gelirdi.
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Bilinmeyen çalıştırma"
+
+
+def test_another_user_cannot_cancel_a_running_job(client, monkeypatch, as_other_user):
+    """Regresyon: iptal dali sahiplik suzgecinden gecmiyordu.
+
+    `DELETE` silme dalinda `user_id` suzuyordu ama once cagrilan
+    `runner.cancel(run_id)` yalnizca kimlige bakiyordu.
+    """
+    release = threading.Event()
+    monkeypatch.setattr(runs_router, "build_playlist", _blocking_build(release))
+    try:
+        run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
+        _wait_for_state(client, run_id, "running")
+
+        as_other_user()
+        assert client.delete(f"/api/runs/{run_id}").status_code == 404
+
+        as_other_user(deps.DEFAULT_USER_ID)
+        assert client.get(f"/api/runs/{run_id}/status").json()["state"] == "running"
+
+        # Sahibi iptal EDEBILMELI: kontrol erisimi kisitlamali, ozelligi degil.
+        assert client.delete(f"/api/runs/{run_id}").status_code == 204
+    finally:
+        release.set()
+
+    assert _wait_for(client, run_id)["state"] == "cancelled"
+
+
+def _wait_for_state(client, run_id, state, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body = client.get(f"/api/runs/{run_id}/status")
+        if body.status_code == 200 and body.json()["state"] == state:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"`{state}` durumuna {timeout}s icinde ulasilmadi")

@@ -27,6 +27,23 @@ TITLE_TOPIC_WEIGHT = 0.8
 DESCRIPTION_SUBTOPIC_WEIGHT = 1.6
 DESCRIPTION_TOPIC_WEIGHT = 0.4
 
+# Populerlik sinyallerinin (kanal otoritesi, tazelik, etkilesim) tam agirlikla
+# sayilmasi icin gereken alaka esigi: `baslik + aciklama` alakasi bu degere
+# ulasinca kapi tamamen aciliyor, sifirken tamamen kapali, arada dogrusal.
+#
+# Deger 13 kayitli kosu (42 secim) uzerinde olcuklerek secildi. Esik taramasi:
+#
+#   kapali -> ortanca alaka 1.30, sinyalsiz secim 6/42
+#   0.75   -> 1.30, 6/42   (hicbir sey degismiyor)
+#   1.00   -> 1.30, 6/42   (hicbir sey degismiyor)
+#   1.50   -> 1.39, 4/42   <-- en kucuk etkili deger
+#   2.00   -> 1.39, 4/42   (1.5 ile ayni)
+#   3.00   -> 1.44, 4/42   (kazanci yok, riski var)
+#
+# 1.5 kazanci saglayan EN KUCUK esik; daha yukarisi ayni sonucu verirken dogru
+# secimleri de cezalandirma riskini buyutuyor.
+POPULARITY_GATE_FULL = 1.5
+
 # Aciklamanin ilk bolumu konuyu anlatir; devami genelde link/reklam yigini olur.
 DESCRIPTION_SAMPLE_CHARS = 1200
 
@@ -45,6 +62,7 @@ def rank_candidates(
     topic: str,
     subtopic: str,
     filters: FilterOptions,
+    subtopic_terms: list[str] | None = None,
 ) -> list[tuple[VideoCandidate, MetadataScore]]:
     """Adaylari puanlar ve siralar.
 
@@ -60,7 +78,14 @@ def rank_candidates(
     weights = CorpusWeights(candidate.title for candidate in candidates)
 
     for original in candidates:
-        score = score_candidate(original, topic, filters, subtopic=subtopic, weights=weights)
+        score = score_candidate(
+            original,
+            topic,
+            filters,
+            subtopic=subtopic,
+            weights=weights,
+            subtopic_terms=subtopic_terms,
+        )
         # KOPYA uzerinde calis: ayni aday havuzu birden fazla alt konu icin
         # siralandiginda `metadata_score` alani birbirinin uzerine yaziliyordu ve
         # tanilama ciktisi yanlis puan gosteriyordu.
@@ -81,16 +106,19 @@ def score_candidate(
     filters: FilterOptions,
     subtopic: str | None = None,
     weights: CorpusWeights | None = None,
+    subtopic_terms: list[str] | None = None,
 ) -> MetadataScore:
     topic_text = normalize_text(topic)
     subtopic_text = normalize_text(subtopic or "")
     description = candidate.description[:DESCRIPTION_SAMPLE_CHARS]
 
+    terms = [normalize_text(term) for term in (subtopic_terms or []) if normalize_text(term)]
+
     title_relevance = _weighted_relevance(
-        candidate.title, topic_text, subtopic_text, TITLE_SUBTOPIC_WEIGHT, TITLE_TOPIC_WEIGHT, weights
+        candidate.title, topic_text, subtopic_text, TITLE_SUBTOPIC_WEIGHT, TITLE_TOPIC_WEIGHT, weights, terms
     )
     description_relevance = _weighted_relevance(
-        description, topic_text, subtopic_text, DESCRIPTION_SUBTOPIC_WEIGHT, DESCRIPTION_TOPIC_WEIGHT, weights
+        description, topic_text, subtopic_text, DESCRIPTION_SUBTOPIC_WEIGHT, DESCRIPTION_TOPIC_WEIGHT, weights, terms
     )
     channel_quality = _channel_quality_score(candidate)
     duration_fit = _duration_fit_score(candidate.duration_sec, filters.max_duration_minutes)
@@ -100,15 +128,30 @@ def score_candidate(
     engagement = _engagement_score(candidate)
     penalty = -2.0 if candidate.is_live else 0.0
 
+    # Populerlik sinyalleri ALAKAYA BAGLI olarak aciliyor.
+    #
+    # Olculen sorun: alaka disi sinyallerin tavani (kanal 2.2 + sure 2.0 + dil 1.5
+    # + tazelik 1.5 + etkilesim 1.0 = 8.2) alaka sinyallerininkinden (baslik 3.2 +
+    # aciklama 1.6 = 4.8) YUKSEKTI. Sonuc: konuyla hic eslesmeyen ama populer bir
+    # video slotu kazanabiliyordu. Kayitli 42 oneride 10'u boyle secilmisti --
+    # ornegin "Ivmeolcer ve Jiroskop Veri Birlestirme" alt basligina "Kalman
+    # Filtresi ve BORSA Uygulamasi" atanmisti (baslik alakasi 0.12, toplam 5.32,
+    # yani 5.2'si alaka disi sinyallerden).
+    #
+    # Kapi yalnizca POPULERLIK sinyallerine uygulaniyor (kanal otoritesi, tazelik,
+    # etkilesim). Sure/dil/zorluk KULLANICI KISITI; onlari alakaya baglamak
+    # "60 dakikayi asmasin" gibi bir tercihi sessizce zayiflatirdi.
+    relevance = title_relevance + description_relevance
+    gate = min(1.0, relevance / POPULARITY_GATE_FULL) if POPULARITY_GATE_FULL else 1.0
+    popularity = (channel_quality + freshness + engagement) * gate
+
     total = (
         title_relevance
         + description_relevance
-        + channel_quality
+        + popularity
         + duration_fit
         + difficulty_fit
         + language_match
-        + freshness
-        + engagement
         + penalty
     )
 
@@ -153,6 +196,7 @@ def _weighted_relevance(
     subtopic_weight: float,
     topic_weight: float,
     weights: CorpusWeights | None = None,
+    terms: list[str] | None = None,
 ) -> float:
     topic_coverage = coverage_score(text, topic, weights=weights) if topic else 0.0
     if not subtopic:
@@ -161,6 +205,19 @@ def _weighted_relevance(
     # Havuz istatistigi varsa IDF, yoksa konu tokenlarini "arka plan" sayan
     # kaba yontem kullanilir; her iki durumda da ayirt edici terimler agirligi tasir.
     subtopic_coverage = coverage_score(text, subtopic, background=topic, weights=weights)
+
+    # Esdeger terimler: ayni kavramin BASKA ADLARI (Ingilizce karsiligi,
+    # kisaltmasi). Leksik eslestirme "Kokusuz" ile "Unscented"i birbirine
+    # baglayamiyordu ve o alt konu ingilizce videolarla hic eslesmiyordu.
+    #
+    # TOPLAMA DEGIL EN IYISINI ALMA: terimler ayni kavrami anlattigi icin
+    # toplamak, cok adi olan kavramlari yapay olarak one cikarirdi. Videonun
+    # kavrami hangi adla andigi onemli degil; onemli olan andigi.
+    for term in terms or []:
+        subtopic_coverage = max(
+            subtopic_coverage, coverage_score(text, term, background=topic, weights=weights)
+        )
+
     return subtopic_weight * subtopic_coverage + topic_weight * topic_coverage
 
 

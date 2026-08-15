@@ -73,6 +73,12 @@ export const api = {
   listRuns: (limit = 20, offset = 0) =>
     request<RunListResponse>(`/api/runs?limit=${limit}&offset=${offset}`),
 
+  // `cancelRun` ve `deleteRun` AYNI uca gidiyor: sunucu calisan bir isi iptal
+  // ediyor, bitmis olani gecmisten siliyor. Tek isim kullanmak cagri yerinde
+  // niyeti gizliyordu -- ilerleme ekraninda "sil", gecmis listesinde "iptal et"
+  // gibi okunuyordu. Ayni uc, iki niyet, iki ad.
+  cancelRun: (runId: string) => request<void>(`/api/runs/${runId}`, { method: "DELETE" }),
+
   deleteRun: (runId: string) => request<void>(`/api/runs/${runId}`, { method: "DELETE" }),
 
   exportUrl: (runId: string, artifact: "json" | "markdown") =>

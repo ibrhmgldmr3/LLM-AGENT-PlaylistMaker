@@ -37,7 +37,7 @@ def _score(total):
     )
 
 
-def _fake_rank(candidates, topic, subtopic, filters):
+def _fake_rank(candidates, topic, subtopic, filters, **kw):
     """Alt konuya DUYARLI sahte siralayici.
 
     Alt konuyu yok sayan bir sahte siralayici, havuzlama sonrasi butun alt
@@ -78,12 +78,15 @@ def test_searches_actually_run_in_parallel(monkeypatch, tmp_path):
 
     _install(monkeypatch, subtopics, slow_search)
 
-    start = time.perf_counter()
     result = playlist_service.build_playlist(config, PlaylistRequest(topic="Konu"))
-    elapsed = time.perf_counter() - start
 
-    assert peak[0] >= 2, "aramalar es zamanli calismadi"
-    assert elapsed < 1.0, f"paralellik kazanc saglamadi ({elapsed:.2f} sn)"
+    # Olculen sey "es zamanlilik", ve `peak` onu DOGRUDAN olcuyor: ayni anda kac
+    # arama ucusta oldugunu sayiyor. Burada eskiden bir de `elapsed < 1.0` iddiasi
+    # vardi; o dolayli bir olcumdu ve makine hizina baglilikti -- yerelde 0.65 sn
+    # surerken yuk altinda 1 sn'yi asip yanlis alarm veriyordu. Paylasimli bir CI
+    # runner'i rahatca iki kat yavas olabilecegi icin mutlak duvar saati esigi
+    # paralelligi degil, makinenin o anki yukunu olcer.
+    assert peak[0] >= 3, f"aramalar es zamanli calismadi (en yuksek es zamanlilik: {peak[0]})"
     assert len(result.recommendations) == 4
 
 

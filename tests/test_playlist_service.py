@@ -78,7 +78,7 @@ def test_playlist_prevents_duplicate_processing_and_exports(monkeypatch, tmp_pat
     monkeypatch.setattr(
         playlist_service,
         "rank_candidates",
-        lambda cands, topic, subtopic, filters: [(candidates[0], _score(8.0)), (candidates[1], _score(7.0))],
+        lambda cands, topic, subtopic, filters, **kw: [(candidates[0], _score(8.0)), (candidates[1], _score(7.0))],
     )
 
     def fake_get_transcript(config, store, candidate, run_dir, state, logger=None, preferred_language=None):
@@ -118,7 +118,7 @@ def test_caller_can_supply_run_id_and_user(monkeypatch, tmp_path):
     monkeypatch.setattr(
         playlist_service,
         "rank_candidates",
-        lambda cands, topic, subtopic, filters: [(candidates[0], _score(8.0))],
+        lambda cands, topic, subtopic, filters, **kw: [(candidates[0], _score(8.0))],
     )
     monkeypatch.setattr(
         playlist_service,
@@ -159,7 +159,7 @@ def test_publish_failure_warning_reaches_the_result(monkeypatch, tmp_path):
     monkeypatch.setattr(
         playlist_service,
         "rank_candidates",
-        lambda cands, topic, subtopic, filters: [(candidates[0], _score(8.0))],
+        lambda cands, topic, subtopic, filters, **kw: [(candidates[0], _score(8.0))],
     )
     monkeypatch.setattr(
         playlist_service,
@@ -210,7 +210,7 @@ def test_selection_falls_back_beyond_the_shortlist(monkeypatch, tmp_path):
     monkeypatch.setattr(
         playlist_service,
         "rank_candidates",
-        lambda cands, topic, subtopic, filters: [(pool[i], _score(9.0 - i)) for i in range(3)],
+        lambda cands, topic, subtopic, filters, **kw: [(pool[i], _score(9.0 - i)) for i in range(3)],
     )
     monkeypatch.setattr(
         playlist_service,
@@ -238,7 +238,7 @@ def test_transcript_enrichment_is_capped(monkeypatch, tmp_path):
     monkeypatch.setattr(
         playlist_service,
         "rank_candidates",
-        lambda cands, topic, subtopic, filters: [(pool[i], _score(9.0 - i)) for i in range(4)],
+        lambda cands, topic, subtopic, filters, **kw: [(pool[i], _score(9.0 - i)) for i in range(4)],
     )
 
     def fake_get_transcript(config, store, candidate, run_dir, state, logger=None, preferred_language=None):
@@ -267,7 +267,7 @@ def test_subtopic_count_respects_config_cap(monkeypatch, tmp_path):
 
     monkeypatch.setattr(playlist_service, "search_candidates", fake_search)
     monkeypatch.setattr(
-        playlist_service, "rank_candidates", lambda cands, t, s, f: [(pool[0], _score(5.0))]
+        playlist_service, "rank_candidates", lambda cands, t, s, f, **kw: [(pool[0], _score(5.0))]
     )
     monkeypatch.setattr(
         playlist_service,

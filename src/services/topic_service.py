@@ -43,7 +43,7 @@ def generate_subtopics(
 
     results: list[Subtopic] = []
     for item in raw_items or []:
-        title, search_query, search_query_en = _unpack(item)
+        title, search_query, search_query_en, match_terms = _unpack(item)
         title = normalize_text(title)
         if not title:
             continue
@@ -64,6 +64,7 @@ def generate_subtopics(
                 source_titles=[title],
                 search_query=normalize_text(search_query) or None,
                 search_query_en=normalize_text(search_query_en) or None,
+                match_terms=[normalize_text(term) for term in match_terms if normalize_text(term)],
             )
         )
         if len(results) >= max_items:
@@ -74,14 +75,18 @@ def generate_subtopics(
     return results
 
 
-def _unpack(item) -> tuple[str, str, str]:
-    """Hem duz metin hem {"title", "query", "query_en"} bicimini kabul eder."""
+def _unpack(item) -> tuple[str, str, str, list[str]]:
+    """Hem duz metin hem {"title", "query", "query_en", "terms"} bicimini kabul eder."""
     if isinstance(item, dict):
         title = item.get("title") or item.get("subtopic") or item.get("name") or ""
         query = item.get("query") or item.get("search_query") or ""
         query_en = item.get("query_en") or item.get("english_query") or ""
-        return str(title), str(query), str(query_en)
-    return str(item), "", ""
+        raw_terms = item.get("terms") or item.get("aliases") or []
+        if isinstance(raw_terms, str):
+            raw_terms = raw_terms.split(",")
+        terms = [str(x).strip() for x in raw_terms if str(x).strip()] if isinstance(raw_terms, list) else []
+        return str(title), str(query), str(query_en), terms
+    return str(item), "", "", []
 
 
 def _find_duplicate(

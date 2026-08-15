@@ -165,6 +165,11 @@ export interface paths {
         /**
          * Cancel Or Delete Run
          * @description Calisan isi iptal eder; bitmis calistirmayi gecmisten siler.
+         *
+         *     Iptal dali SAHIPLIK KONTROLUNDEN geciyor. Onceki hali dogrudan
+         *     `runner.cancel(run_id)` cagiriyordu; silme dali `user_id` suzuyor olsa da
+         *     iptal dali sizmiyordu, yani cok kullanicili kuruluma gecildiginde kimligi
+         *     bilen herkes baskasinin calisan isini durdurabilirdi.
          */
         delete: operations["cancel_or_delete_run_api_runs__run_id__delete"];
         options?: never;
@@ -497,7 +502,10 @@ export interface components {
         };
         /**
          * RunSnapshotBody
-         * @description SSE `done` olayinin govdesi.
+         * @description SSE `done` olayinin govdesi: durum + `created_at`.
+         *
+         *     `RunStatus`tan TUREMESI kasitli -- alanlari elle tekrarlamak ikisinin
+         *     sessizce ayrisabilecegi anlamina geliyordu.
          *
          *     REST yaniti DEGIL, bu yuzden FastAPI onu kendiliginden OpenAPI'ye koymuyor;
          *     `scripts/dump_openapi.py` acikca ekliyor. Boyle bir modele bagli olmasinin
@@ -537,7 +545,10 @@ export interface components {
              */
             state: "pending" | "running" | "done" | "failed" | "cancelled";
         };
-        /** RunStatus */
+        /**
+         * RunStatus
+         * @description Bir calistirmanin o anki durumu; `/{run_id}/status` yaniti.
+         */
         RunStatus: {
             /** Error */
             error: string | null;
@@ -575,6 +586,8 @@ export interface components {
         };
         /** Subtopic */
         Subtopic: {
+            /** Match Terms */
+            match_terms: string[];
             /** Normalized Title */
             normalized_title: string;
             /** Search Query */

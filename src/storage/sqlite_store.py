@@ -63,6 +63,27 @@ def _is_expired(expires_at: str | None) -> bool:
     return parsed <= _utc_now()
 
 
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """WAL'i acar; baska bir baglanti ayni anda aciyorsa sessizce gecer.
+
+    `journal_mode` degisimi dosya duzeyinde ozel kilit istiyor ve SQLite bu
+    islemde `busy_timeout`u BEKLEMEDEN `SQLITE_BUSY` dondurebiliyor. Es zamanli
+    acilislarda (her istek kendi store'unu kuruyor, is parcaciklari da) bu
+    "database is locked" olarak disari vuruyordu.
+
+    WAL dosyanin KALICI bir ozelligi: bir kez ayarlandiginda oyle kaliyor.
+    Dolayisiyla "su anda baskasi ayarliyor" durumunda baglantiyi dusurmek
+    yanlis -- sonuc yine WAL olacak. Yalnizca kilit/mesgul hatasi yutuluyor;
+    digerleri yukseliyor.
+    """
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if "locked" not in message and "busy" not in message:
+            raise
+
+
 class SQLiteStore:
     def __init__(self, db_path: str, encryption_key: str | None = None):
         self.db_path = db_path
@@ -77,10 +98,10 @@ class SQLiteStore:
         conn = sqlite3.connect(self.db_path, timeout=_BUSY_TIMEOUT_SEC)
         conn.row_factory = sqlite3.Row
         try:
-            # WAL + busy_timeout: Streamlit'te es zamanli oturumlarda
-            # "database is locked" hatasini onler.
-            conn.execute("PRAGMA journal_mode=WAL")
+            # SIRA ONEMLI: once `busy_timeout`, sonra `journal_mode`. Ikincisi
+            # kilit bekleyebiliyor ve zaman asimi once kurulmus olmali.
             conn.execute("PRAGMA busy_timeout=%d" % int(_BUSY_TIMEOUT_SEC * 1000))
+            _enable_wal(conn)
             conn.execute("PRAGMA synchronous=NORMAL")
             yield conn
             conn.commit()
@@ -153,16 +174,37 @@ class SQLiteStore:
             self._migrate(conn)
 
     @staticmethod
-    def _migrate(conn: sqlite3.Connection) -> None:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
-        if "failure_count" not in columns:
-            conn.execute("ALTER TABLE provider_health ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
+    def _add_column_if_missing(
+        conn: sqlite3.Connection, table: str, column: str, definition: str
+    ) -> None:
+        """Sutunu ekler; baska bir baglanti onceden eklediyse sessizce gecer.
 
-        run_columns = {row["name"] for row in conn.execute("PRAGMA table_info(run)")}
-        if "user_id" not in run_columns:
-            conn.execute(
-                f"ALTER TABLE run ADD COLUMN user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
-            )
+        "Once bak, sonra ekle" YARIS ICERIYOR: semayi ayni anda kuran iki
+        baglanti da sutunu eksik gorur ve ikisi de `ALTER` calistirir; ikincisi
+        `duplicate column name` ile patlar. SQLite'ta `ALTER` icin baglantilar
+        arasi bir kilit yok, dolayisiyla kontrolu genisletmek cozmez.
+
+        Hatanin kendisi zaten "baskasi uygulamis" sinyali oldugu icin dogru
+        davranis onu yutmak. Yalnizca O hata yutuluyor; baska bir
+        `OperationalError` (yazma izni, bozuk dosya) yukselmeye devam ediyor.
+        """
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column in columns:
+            return
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
+    @classmethod
+    def _migrate(cls, conn: sqlite3.Connection) -> None:
+        cls._add_column_if_missing(
+            conn, "provider_health", "failure_count", "failure_count INTEGER NOT NULL DEFAULT 0"
+        )
+        cls._add_column_if_missing(
+            conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
 
     @staticmethod
