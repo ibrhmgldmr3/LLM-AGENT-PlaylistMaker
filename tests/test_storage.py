@@ -115,3 +115,128 @@ def test_schema_has_no_orphan_metadata_table(tmp_path):
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "video_metadata_cache" not in tables
     assert {"search_cache", "transcript_cache", "provider_health", "run"} <= tables
+
+
+def test_schema_setup_is_safe_from_several_threads_at_once(tmp_path):
+    """Regresyon: `duplicate column name: failure_count`.
+
+    `_migrate` "once bak, sonra ekle" yapiyordu. Semayi ayni anda kuran iki
+    baglanti da sutunu eksik gorup ikisi de `ALTER` calistiriyor, ikincisi
+    patliyordu. CI'da tam olarak boyle kirildi: bir istek parcacigi ile arka
+    plandaki is parcacigi ayni anda store aciyordu. Windows'ta zamanlama denk
+    gelmedigi icin yerelde hic gorulmedi.
+
+    Ayni anlik acilis burada bir bariyerle ZORLANIYOR, uykuyla degil.
+    """
+    import sqlite3
+    import threading
+
+    db_path = tmp_path / "cache" / "app.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ESKI semayla basla: `failure_count` ve `user_id` yok. Taze bir veritabaninda
+    # `ALTER` yolu cogu parcacik icin hic calismaz ve yaris ortaya cikmaz --
+    # goc tam da MEVCUT bir veritabani acilirken kosuyor, kirilma da oradaydi.
+    legacy = sqlite3.connect(db_path)
+    legacy.executescript(
+        """
+        CREATE TABLE provider_health (
+            provider TEXT PRIMARY KEY,
+            cooldown_until TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE run (
+            run_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            filters_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            result_json TEXT
+        );
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    db_path = str(db_path)
+    workers = 8
+    start = threading.Barrier(workers)
+    errors: list[BaseException] = []
+
+    def open_store():
+        try:
+            start.wait(timeout=10)
+            SQLiteStore(db_path)
+        except BaseException as exc:  # noqa: BLE001 - hepsi rapor edilmeli
+            errors.append(exc)
+
+    threads = [threading.Thread(target=open_store) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+
+    assert not errors, f"es zamanli sema kurulumu patladi: {errors[:3]}"
+
+    # Sema gercekten eksiksiz olmali; hatayi yutmak yeterli degil.
+    store = SQLiteStore(db_path)
+    with store.connect() as conn:
+        health = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
+        run = {row["name"] for row in conn.execute("PRAGMA table_info(run)")}
+    assert "failure_count" in health
+    assert "user_id" in run
+
+
+def test_column_migration_tolerates_a_concurrent_writer(tmp_path):
+    """Regresyon: `duplicate column name: failure_count` (CI'da kirilan tam bu).
+
+    `_add_column_if_missing` "once bak, sonra ekle" yapiyor. Iki baglanti ayni
+    anda goc calistirdiginda ikisi de sutunu eksik gorup ikisi de `ALTER`
+    deniyor; ikincisi patliyordu.
+
+    Yaris parcaciklarla ZORLANAMIYOR -- pencere cok dar ve makineye gore
+    kesismiyor (Windows'ta hic kesismedi, Linux'ta CI'da kesisti). Bu yuzden
+    kosul dogrudan kuruluyor: PRAGMA kontrolu ile `ALTER` ARASINDA baska bir
+    baglanti sutunu ekliyor. Testin gecmesi, hatanin "zaten uygulanmis" sinyali
+    olarak dogru yorumlandigi anlamina geliyor.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "app.db"
+    setup = sqlite3.connect(db_path)
+    setup.execute("CREATE TABLE provider_health (provider TEXT PRIMARY KEY)")
+    setup.commit()
+    setup.close()
+
+    ddl = "ALTER TABLE provider_health ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0"
+
+    class RacingConnection:
+        """PRAGMA'dan hemen sonra sutunu baska bir baglantiya ekleten sarmalayici."""
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args):
+            if sql.startswith("PRAGMA table_info"):
+                rows = self._conn.execute(sql, *args).fetchall()
+                other = sqlite3.connect(db_path)
+                other.execute(ddl)
+                other.commit()
+                other.close()
+                return rows
+            return self._conn.execute(sql, *args)
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        SQLiteStore._add_column_if_missing(
+            RacingConnection(conn),
+            "provider_health",
+            "failure_count",
+            "failure_count INTEGER NOT NULL DEFAULT 0",
+        )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
+    finally:
+        conn.close()
+
+    assert "failure_count" in columns
