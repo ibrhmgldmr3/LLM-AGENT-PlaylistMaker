@@ -163,9 +163,27 @@ order — greedy assignment let an early subtopic take a video a later one neede
 A small `CHANNEL_REPEAT_PENALTY` breaks near-ties toward a different channel without
 overriding a clearly better video.
 
-A subtopic whose terms appear in no pool title has no signal to rank on; the assignment
-fills it with whatever maximises the total. Those picks score low and the UI labels them a
-**weak match** instead of presenting them as good ones.
+**Popularity is gated on relevance.** Channel authority, freshness and engagement only count
+in full once title-and-description relevance reaches a threshold; at zero relevance they
+contribute nothing. Without the gate the off-topic signals summed higher (8.2) than the
+relevance signals (4.8), so a popular video could take a slot it did not match. Measured
+across 13 stored runs (42 picks): one viral video had won *three different subtopics* at
+once; gating changed 3 picks, all of them toward a better lexical match and none away from
+one, and cut zero-signal picks from 6/42 to 4/42. Duration, language and difficulty are left
+ungated — those are user constraints, not popularity.
+
+```bash
+python scripts/measure_ranking.py
+```
+
+That script produced the numbers above and the threshold sweep recorded next to
+`POPULARITY_GATE_FULL`. It reads `data/runs/`, so it measures re-ranking *within each run's
+stored shortlist* — not whether a better video existed in the wider pool.
+
+The remaining 4 weak picks are a different problem: the pool has no lexical match at all,
+often because Turkish and English terms for the same concept never meet (`Kokusuz` is
+Turkish for `Unscented`). Fixing that needs semantic matching, not reweighting. Those picks
+score low and the UI labels them a **weak match** instead of presenting them as good ones.
 
 ### ASR is off by default
 

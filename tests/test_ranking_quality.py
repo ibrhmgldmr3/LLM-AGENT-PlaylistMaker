@@ -410,3 +410,76 @@ def test_selected_channel_is_recorded():
     select_recommendation("konu", ranked, {}, set(), 1, used_channel_ids=used_channels, channel_repeat_penalty=0.6)
 
     assert used_channels == {"chan-X"}
+
+
+def test_popular_but_offtopic_video_cannot_win_on_popularity_alone():
+    """Regresyon: populerlik sinyalleri alaka sinyallerinden AGIR basiyordu.
+
+    Alaka disi sinyallerin tavani (kanal 2.2 + sure 2.0 + dil 1.5 + tazelik 1.5
+    + etkilesim 1.0 = 8.2) alaka sinyallerininkinden (baslik 3.2 + aciklama 1.6
+    = 4.8) yuksekti. Sonuc: konuyla hic eslesmeyen ama populer bir video slotu
+    kazanabiliyordu.
+
+    Kayitli kosularda olculdu: 42 secimin 10'u leksik sinyali olmadan yapilmisti
+    ve TEK bir viral video uc ayri alt basligi birden kapmisti. Populerlik
+    sinyalleri artik alakaya bagli aciliyor.
+    """
+    subtopic = "ARIMA modeli ile tahmin"
+    fresh = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+
+    # Konudan hicbir ayirt edici kelime tasimiyor ama her populerlik sinyali tavanda.
+    viral = _video(
+        "viral123456",
+        "PARA KAZANMANIN 10 YOLU",
+        subscriber_count=5_000_000,
+        view_count=8_000_000,
+        publish_date=fresh,
+    )
+    # Alt basligi KISMEN karsiliyor -- gercek kirilmalar burada oluyor. Tam
+    # eslesen bir baslik (alaka ~3.7) kapi olmadan da kazaniyor, dolayisiyla
+    # onunla yazilan bir test hicbir seyi korumaz. Bu baslik 1.39 aliyor;
+    # olculen basarisiz secimler de bu bantta (0.12-0.43 kazananla).
+    relevant = _video(
+        "arima1234567",
+        "Ekonometri dersleri 12: ARIMA",
+        subscriber_count=900,
+        view_count=1_200,
+        publish_date=(datetime.now(timezone.utc) - timedelta(days=900)).isoformat(),
+    )
+
+    ranked = rank_candidates([viral, relevant], TOPIC, subtopic, _filters())
+
+    assert ranked[0][0].video_id == "arima1234567", (
+        "alt basligi karsilayan video, yalnizca populer olana yenilmemeli: "
+        f"{[(c.video_id, round(s.total, 2)) for c, s in ranked]}"
+    )
+
+
+def test_popularity_still_decides_between_equally_relevant_videos():
+    """Kapi populerligi YOK ETMIYOR, alakaya BAGLIYOR.
+
+    Iki video da alt basligi karsiladiginda kanal otoritesi/tazelik yine
+    ayirt edici olmali; aksi halde duzeltme, kaliteli kanallari one cikaran
+    davranisi da birlikte goturmus olurdu.
+    """
+    subtopic = "ARIMA modeli ile tahmin"
+    recent = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+
+    big = _video(
+        "arimabig1234",
+        "ARIMA modeli ile zaman serisi tahmini",
+        subscriber_count=400_000,
+        view_count=250_000,
+        publish_date=recent,
+    )
+    small = _video(
+        "arimasml1234",
+        "ARIMA modeli ile zaman serisi tahmini",
+        subscriber_count=300,
+        view_count=400,
+        publish_date=recent,
+    )
+
+    ranked = rank_candidates([small, big], TOPIC, subtopic, _filters())
+
+    assert ranked[0][0].video_id == "arimabig1234"

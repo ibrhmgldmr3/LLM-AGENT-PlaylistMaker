@@ -27,6 +27,23 @@ TITLE_TOPIC_WEIGHT = 0.8
 DESCRIPTION_SUBTOPIC_WEIGHT = 1.6
 DESCRIPTION_TOPIC_WEIGHT = 0.4
 
+# Populerlik sinyallerinin (kanal otoritesi, tazelik, etkilesim) tam agirlikla
+# sayilmasi icin gereken alaka esigi: `baslik + aciklama` alakasi bu degere
+# ulasinca kapi tamamen aciliyor, sifirken tamamen kapali, arada dogrusal.
+#
+# Deger 13 kayitli kosu (42 secim) uzerinde olcuklerek secildi. Esik taramasi:
+#
+#   kapali -> ortanca alaka 1.30, sinyalsiz secim 6/42
+#   0.75   -> 1.30, 6/42   (hicbir sey degismiyor)
+#   1.00   -> 1.30, 6/42   (hicbir sey degismiyor)
+#   1.50   -> 1.39, 4/42   <-- en kucuk etkili deger
+#   2.00   -> 1.39, 4/42   (1.5 ile ayni)
+#   3.00   -> 1.44, 4/42   (kazanci yok, riski var)
+#
+# 1.5 kazanci saglayan EN KUCUK esik; daha yukarisi ayni sonucu verirken dogru
+# secimleri de cezalandirma riskini buyutuyor.
+POPULARITY_GATE_FULL = 1.5
+
 # Aciklamanin ilk bolumu konuyu anlatir; devami genelde link/reklam yigini olur.
 DESCRIPTION_SAMPLE_CHARS = 1200
 
@@ -100,15 +117,30 @@ def score_candidate(
     engagement = _engagement_score(candidate)
     penalty = -2.0 if candidate.is_live else 0.0
 
+    # Populerlik sinyalleri ALAKAYA BAGLI olarak aciliyor.
+    #
+    # Olculen sorun: alaka disi sinyallerin tavani (kanal 2.2 + sure 2.0 + dil 1.5
+    # + tazelik 1.5 + etkilesim 1.0 = 8.2) alaka sinyallerininkinden (baslik 3.2 +
+    # aciklama 1.6 = 4.8) YUKSEKTI. Sonuc: konuyla hic eslesmeyen ama populer bir
+    # video slotu kazanabiliyordu. Kayitli 42 oneride 10'u boyle secilmisti --
+    # ornegin "Ivmeolcer ve Jiroskop Veri Birlestirme" alt basligina "Kalman
+    # Filtresi ve BORSA Uygulamasi" atanmisti (baslik alakasi 0.12, toplam 5.32,
+    # yani 5.2'si alaka disi sinyallerden).
+    #
+    # Kapi yalnizca POPULERLIK sinyallerine uygulaniyor (kanal otoritesi, tazelik,
+    # etkilesim). Sure/dil/zorluk KULLANICI KISITI; onlari alakaya baglamak
+    # "60 dakikayi asmasin" gibi bir tercihi sessizce zayiflatirdi.
+    relevance = title_relevance + description_relevance
+    gate = min(1.0, relevance / POPULARITY_GATE_FULL) if POPULARITY_GATE_FULL else 1.0
+    popularity = (channel_quality + freshness + engagement) * gate
+
     total = (
         title_relevance
         + description_relevance
-        + channel_quality
+        + popularity
         + duration_fit
         + difficulty_fit
         + language_match
-        + freshness
-        + engagement
         + penalty
     )
 
