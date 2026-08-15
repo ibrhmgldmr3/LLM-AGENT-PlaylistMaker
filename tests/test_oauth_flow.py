@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from api import deps
 from api.routers import auth as auth_router
+from src.services.playlist_publish_service import ExchangedToken
 from api.routers import runs as runs_router
 from src.config import AppConfig
 from src.models import ExportArtifacts, FilterOptions, PlaylistResult, Recommendation, VideoCandidate
@@ -89,7 +90,7 @@ def test_start_returns_google_consent_url(client, monkeypatch):
     monkeypatch.setattr(
         auth_router,
         "build_authorization_url",
-        lambda config, redirect, state: (
+        lambda config, redirect, state, **kw: (
             f"https://accounts.google.com/o/oauth2/auth?state={state}",
             "verifier-abc",
         ),
@@ -102,7 +103,7 @@ def test_start_returns_google_consent_url(client, monkeypatch):
 
 
 def test_start_registers_a_state_for_csrf(client, monkeypatch):
-    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: ("https://x", "v"))
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s, **kw: ("https://x", "v"))
     state = client.get("/api/auth/youtube/start").json()["state"]
     assert state in auth_router._pending_states
 
@@ -168,10 +169,10 @@ def test_code_verifier_reaches_the_token_exchange(client, monkeypatch):
     """
     seen = {}
 
-    def spy(config, redirect_uri, code, code_verifier=None):
+    def spy(config, redirect_uri, code, code_verifier=None, **kw):
         seen["code"] = code
         seen["verifier"] = code_verifier
-        return '{"token": "ok"}'
+        return ExchangedToken(token_json='{"token": "ok"}')
 
     monkeypatch.setattr(auth_router, "exchange_code_for_token", spy)
 
@@ -189,11 +190,13 @@ def test_code_verifier_reaches_the_token_exchange(client, monkeypatch):
 # ------------------------------------------------------------------ callback
 
 def test_callback_stores_token_and_redirects(client, monkeypatch):
-    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: ("https://x", "v"))
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s, **kw: ("https://x", "v"))
     monkeypatch.setattr(
         auth_router,
         "exchange_code_for_token",
-        lambda config, redirect, code, code_verifier=None: '{"token": "abc"}',
+        lambda config, redirect, code, code_verifier=None, **kw: ExchangedToken(
+            token_json='{"token": "abc"}'
+        ),
     )
     state = client.get("/api/auth/youtube/start").json()["state"]
 
@@ -213,9 +216,11 @@ def test_callback_rejects_unknown_state(client):
 
 
 def test_state_is_single_use(client, monkeypatch):
-    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s: ("https://x", "v"))
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s, **kw: ("https://x", "v"))
     monkeypatch.setattr(
-        auth_router, "exchange_code_for_token", lambda c, r, code, code_verifier=None: "{}"
+        auth_router,
+        "exchange_code_for_token",
+        lambda c, r, code, code_verifier=None, **kw: ExchangedToken(token_json="{}"),
     )
     state = client.get("/api/auth/youtube/start").json()["state"]
 

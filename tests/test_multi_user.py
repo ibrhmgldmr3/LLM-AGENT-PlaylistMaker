@@ -202,3 +202,118 @@ def test_runs_are_isolated_between_sessions(multi_user_client):
 
     assert [item["run_id"] for item in ali["items"]] == ["kosu-ali"]
     assert veli["items"] == []
+
+
+# ------------------------------------------------------------- giris akisi
+
+def test_id_token_payload_is_decoded():
+    """Kimlik ID token'dan cikariliyor; `to_json()` onu tasimiyor."""
+    import base64
+    import json as _json
+
+    from src.services.playlist_publish_service import decode_id_token
+
+    payload = base64.urlsafe_b64encode(
+        _json.dumps({"sub": "123", "email": "a@b.c"}).encode()
+    ).decode().rstrip("=")  # Google dolgusuz gonderiyor
+
+    claims = decode_id_token(f"basli.{payload}.imza")
+
+    assert claims["sub"] == "123"
+    assert claims["email"] == "a@b.c"
+
+
+@pytest.mark.parametrize("bad", [None, "", "tekparca", "iki.parca"])
+def test_broken_id_token_yields_no_claims(bad):
+    """Bozuk jeton istisna DEGIL bos sozluk uretmeli; cagiran girisi reddediyor."""
+    from src.services.playlist_publish_service import decode_id_token
+
+    assert decode_id_token(bad) == {}
+
+
+def test_start_needs_no_session(multi_user_client, monkeypatch):
+    """Tavuk-yumurta: giris yapmak icin giris yapmis olmak GEREKMEZ."""
+    from api.routers import auth as auth_router
+
+    monkeypatch.setattr(
+        auth_router, "build_authorization_url", lambda *a, **k: ("https://accounts.google.com/x", "v")
+    )
+
+    response = multi_user_client.get("/api/auth/youtube/start")
+
+    assert response.status_code == 200
+    assert response.json()["authorization_url"].startswith("https://accounts.google.com/")
+
+
+def test_callback_creates_a_session_keyed_by_google_sub(multi_user_client, monkeypatch):
+    from api.routers import auth as auth_router
+    from src.services.playlist_publish_service import ExchangedToken
+
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda *a, **k: ("https://x", "v"))
+    monkeypatch.setattr(
+        auth_router,
+        "exchange_code_for_token",
+        lambda *a, **k: ExchangedToken(
+            token_json='{"token": "t"}', google_sub="9876", email="ali@example.com"
+        ),
+    )
+    state = multi_user_client.get("/api/auth/youtube/start").json()["state"]
+
+    response = multi_user_client.get(
+        f"/api/auth/youtube/callback?code=kod&state={state}", follow_redirects=False
+    )
+
+    assert response.status_code == 307
+    assert "map_session" in response.cookies
+    # Jeton kalici kimlige baglanmali; e-posta degisebilir, `sub` degismez.
+    assert multi_user_client.store.get_oauth_token("google:9876", "youtube") == '{"token": "t"}'
+
+
+def test_callback_refuses_when_google_gave_no_identity(multi_user_client, monkeypatch):
+    """`openid` izni verilmemisse oturum ACILMAMALI."""
+    from api.routers import auth as auth_router
+    from src.services.playlist_publish_service import ExchangedToken
+
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda *a, **k: ("https://x", "v"))
+    monkeypatch.setattr(
+        auth_router,
+        "exchange_code_for_token",
+        lambda *a, **k: ExchangedToken(token_json="{}", google_sub=None),
+    )
+    state = multi_user_client.get("/api/auth/youtube/start").json()["state"]
+
+    response = multi_user_client.get(
+        f"/api/auth/youtube/callback?code=kod&state={state}", follow_redirects=False
+    )
+
+    assert response.status_code == 400
+
+
+def test_me_reports_no_session(multi_user_client):
+    body = multi_user_client.get("/api/auth/me").json()
+
+    assert body == {"signed_in": False, "user_id": None, "email": None, "auth_required": True}
+
+
+def test_me_reports_the_signed_in_user(multi_user_client):
+    multi_user_client.store.create_session("jeton", "google:9876", "ali@example.com", ttl_sec=3600)
+    multi_user_client.cookies.set("map_session", "jeton")
+
+    body = multi_user_client.get("/api/auth/me").json()
+
+    assert body["signed_in"] is True
+    assert body["email"] == "ali@example.com"
+
+
+def test_logout_revokes_the_session_on_the_server(multi_user_client):
+    """Yalnizca cerezi silmek YETMEZ.
+
+    Cerez silinip kayit dursaydi, jetonun bir kopyasini ele geciren biri
+    oturumu kullanmaya devam ederdi. Sunucu tarafli oturumun varlik sebebi
+    iptal edilebilir olmasi.
+    """
+    multi_user_client.store.create_session("jeton", "google:9876", None, ttl_sec=3600)
+    multi_user_client.cookies.set("map_session", "jeton")
+
+    assert multi_user_client.post("/api/auth/logout").status_code == 204
+    assert multi_user_client.store.get_session("jeton") is None

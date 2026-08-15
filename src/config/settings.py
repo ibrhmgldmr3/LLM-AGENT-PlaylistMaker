@@ -78,9 +78,6 @@ class UserCredentials(BaseModel):
 
     gemini_api_key: str = Field(..., description="Gemini API key")
     youtube_data_api_key: str | None = Field(default=None)
-    youtube_oauth_client_secret_file: str | None = Field(default=None)
-    youtube_oauth_client_id: str | None = Field(default=None)
-    youtube_oauth_client_secret: str | None = Field(default=None)
     youtube_oauth_token_file: str = Field(default="data/cache/youtube_oauth_token.json")
     ytdlp_proxy: str | None = Field(default=None)
     ytdlp_cookies_from_browser: str | None = Field(default=None)
@@ -202,6 +199,14 @@ class ServerConfig(BaseModel):
     # kurulum sahibinin YouTube kotasini harcardi (kota proje basina gunde
     # 10.000 birim ve bir calistirma ~1.200 birim).
     auth_mode: Literal["single_user", "multi_user"] = Field(default="single_user")
+
+    # OAuth ISTEMCISI kuruluma ait, kullaniciya degil: uygulamanin Google'a
+    # kayitli kimligi bu. Kullanici basina olsaydi herkesin kendi Google Cloud
+    # OAuth istemcisini acip kendi yonlendirme adresini eklemesi gerekirdi.
+    # Kullanicidan gelen sey JETON (yayin izni), istemci degil.
+    youtube_oauth_client_secret_file: str | None = Field(default=None)
+    youtube_oauth_client_id: str | None = Field(default=None)
+    youtube_oauth_client_secret: str | None = Field(default=None)
 
     # Oturum omru. Varsayilan 14 gun: kullaniciyi her gun Google'a geri
     # gondermeyecek kadar uzun, calinan bir cerezin suresiz gecerli olmayacagi
