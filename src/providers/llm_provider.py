@@ -16,6 +16,35 @@ DEFAULT_SUBTOPIC_COUNT = 6
 # bir yedek model bu durumda yetmiyor.
 FALLBACK_MODELS = ("gemini-3.7-flash", "gemini-flash-latest", "gemini-2.5-flash")
 
+# Cikti SEMASI. Istem tek basina yetmiyordu: dort anahtar istendiginde model
+# sonuncusunu (`terms`) sessizce atliyordu -- olculdu, 3 denemede 18 alt
+# konunun 18'inde de eksikti. Ustelik yanit zaman zaman JSON'un ortasinda
+# kesiliyor ve ayristirma patliyordu (5 denemenin 1'i).
+#
+# Sema, alanlarin varligini ISTEM DEGIL PROTOKOL duzeyinde zorunlu kiliyor.
+SUBTOPIC_SCHEMA: dict[str, Any] = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "title": {"type": "STRING"},
+            "query": {"type": "STRING"},
+            "query_en": {"type": "STRING"},
+            "terms": {"type": "ARRAY", "items": {"type": "STRING"}},
+        },
+        "required": ["title", "query", "query_en", "terms"],
+    },
+}
+
+# DUSUNME TOKENLARI DA BU BUTCEDEN HARCANIYOR -- olculdu: 6 alt konu icin
+# `thoughts_token_count` 1288-1474, cevabin kendisi ise yalnizca ~400-470 token.
+# Sinir 2048 iken toplam ona dayaniyor ve dusunme uzun surdugu denemelerde
+# cevap JSON'un ORTASINDAN kesiliyordu; `finish_reason` yine STOP donduğu icin
+# bu bir hata gibi de gorunmuyor, yalnizca ayristirma patliyordu.
+#
+# Genis birakildi: dusunme + cevap toplami ~2000, buradaki pay dort kati.
+MAX_OUTPUT_TOKENS = 8192
+
 
 class LLMProvider(Protocol):
     def generate_subtopics(self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT) -> list[str]:
@@ -102,6 +131,8 @@ class GeminiLLMProvider:
     def _generation_config(self, model_name: str) -> dict[str, Any]:
         config: dict[str, Any] = {
             "response_mime_type": "application/json",
+            "response_schema": SUBTOPIC_SCHEMA,
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
             "system_instruction": "Return only valid JSON. No prose, no markdown fences.",
             "temperature": 0.4,
         }

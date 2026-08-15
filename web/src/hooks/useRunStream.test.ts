@@ -95,13 +95,25 @@ describe("useRunStream", () => {
     expect(getRun).not.toHaveBeenCalled();
   });
 
-  it("hata metni olmadan biterse yerine anlasilir bir mesaj koyar", () => {
+  it("iptali basarisizlik gibi anlatmaz", () => {
+    // Uctan uca denemede gorundu: kullanici "Iptal et"e bastiginda kirmizi hata
+    // kutusunda "Çalıştırma tamamlanamadı" yaziyordu -- kendi karari bir ariza
+    // gibi okunuyordu.
     const { result } = renderHook(() => useRunStream());
     act(() => result.current.watch("kosu-1"));
 
     act(() => FakeEventSource.last.emit("done", snapshot({ state: "cancelled", error: null })));
 
     expect(result.current.state).toBe("cancelled");
+    expect(result.current.error).toBe("Çalıştırma iptal edildi.");
+  });
+
+  it("iptal disinda hata metni yoksa genel mesaji korur", () => {
+    const { result } = renderHook(() => useRunStream());
+    act(() => result.current.watch("kosu-1"));
+
+    act(() => FakeEventSource.last.emit("done", snapshot({ state: "failed", error: null })));
+
     expect(result.current.error).toBe("Çalıştırma tamamlanamadı");
   });
 

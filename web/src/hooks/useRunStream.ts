@@ -81,7 +81,14 @@ export function useRunStream() {
           setState((previous) => ({
             ...previous,
             state: snapshot.state,
-            error: snapshot.error ?? "Çalıştırma tamamlanamadı",
+            // Iptal bir BASARISIZLIK degil, kullanicinin kendi karari. Ortak
+            // geri-dusus metni ("tamamlanamadi") uctan uca denemede kirmizi
+            // hata kutusunda cikip bir seyin bozuldugunu ima ediyordu.
+            error:
+              snapshot.error ??
+              (snapshot.state === "cancelled"
+                ? "Çalıştırma iptal edildi."
+                : "Çalıştırma tamamlanamadı"),
           }));
         }
       });
