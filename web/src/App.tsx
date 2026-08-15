@@ -83,7 +83,13 @@ export default function App() {
           <RunForm capabilities={capabilities} busy={busy} onSubmit={start} />
 
           {submitError && <p className="alert alert--error">{submitError}</p>}
-          {run.error && <p className="alert alert--error">{run.error}</p>}
+          {/* Iptal kirmizi kutuda gosterilmiyor: kullanicinin kendi karari,
+              bozulan bir sey degil. */}
+          {run.error && (
+            <p className={run.state === "cancelled" ? "alert" : "alert alert--error"}>
+              {run.error}
+            </p>
+          )}
 
           {busy && (
             <RunProgress
