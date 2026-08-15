@@ -1,15 +1,22 @@
 """FastAPI bagimliliklari.
 
-Cok kullanicili moda gecisin ana kaldiraci burasi: `get_current_user` bugun
-sabit bir deger donuyor, yarin gercek kimlik dogrulamayla degistirilecek.
-Imzasi degismeyecegi icin rota kodu ayni kalir.
+Kimlik ve kullanici anahtarlari BURADA cozuluyor; rotalarin hicbiri oturum
+mekanigini ya da anahtarlarin nereden geldigini bilmiyor. `ServerConfig.auth_mode`
+iki kurulumu ayiriyor:
+
+- `single_user` (varsayilan): her istek `DEFAULT_USER_ID`'ye ait, anahtarlar
+  `.env`'den. Tek kisilik kurulum ve gelistirme akisi.
+- `multi_user`: istek bir oturum cerezi tasimali, anahtarlar kullanici basina
+  sifreli olarak veritabanindan okunur.
+
+Vaat tutuldu: cok kullanicili moda gecerken rota imzalari hic degismedi.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 
 from src.config import AppConfig, RunOptions, ServerConfig, UserCredentials, load_config
 from src.jobs import JobRunner
@@ -26,27 +33,64 @@ def get_server_config() -> ServerConfig:
     return _base_config().server_config()
 
 
+SESSION_COOKIE = "map_session"
+
+
 def get_current_user(request: Request) -> str:
     """Istegin sahibi olan kullanici.
 
-    Su an tek kullanicili: her istek `DEFAULT_USER_ID`'ye ait. Gercek kimlik
-    dogrulama eklendiginde YALNIZCA bu fonksiyonun govdesi degisir — rotalar
-    `Depends(get_current_user)` kullandigi icin hicbiri elden gecirilmez.
+    `single_user` modunda (varsayilan) her istek `DEFAULT_USER_ID`'ye ait --
+    tek kisilik kurulum ve gelistirme akisi boyle calisiyor.
 
-    `request` bilerek imzada: gercek bir uygulamanin `Authorization` basligina
-    ya da oturum cerezine ihtiyaci olacak ve o gun imza degistirmek gerekmesin.
+    `multi_user` modunda istek gecerli bir oturum cerezi tasimali. Cerezdeki
+    jeton veritabaninda OZETIYLE aranir; kayit yoksa ya da suresi gecmisse
+    401 doner.
+
+    Kimligi yalnizca burada cozmek bilincli: rotalarin hicbiri oturum
+    mekanigini bilmiyor, `Depends(get_current_user)` yeterli.
     """
-    del request  # tek kullanicili kurulumda gerekmiyor
-    return DEFAULT_USER_ID
+    server = _base_config().server_config()
+    if server.auth_mode == "single_user":
+        return DEFAULT_USER_ID
+
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+        session = store.get_session(token)
+        if session:
+            return session["user_id"]
+
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Oturum açmanız gerekiyor")
 
 
-def get_user_credentials(user_id: str = Depends(get_current_user)) -> UserCredentials:
+def get_user_credentials(
+    user_id: str = Depends(get_current_user),
+    server: ServerConfig = Depends(get_server_config),
+) -> UserCredentials:
     """Kullanicinin API anahtarlari.
 
-    Bugun `.env`'den geliyor (tek kullanici). BYOK'a gecince kullanici basina
-    sifreli olarak veritabanindan okunacak; imza ayni kalir.
+    `single_user` modunda `.env`'den geliyor.
+
+    `multi_user` modunda YALNIZCA kullanicinin kendi kayitli anahtarlari
+    kullaniliyor; `.env` degerleri yedege DUSMUYOR. Duseydi, anahtarini
+    girmemis bir kullanici sessizce kurulum sahibinin YouTube kotasini
+    harcardi -- kota proje basina gunde 10.000 birim ve bir calistirma ~1.200
+    birim tuketiyor, yani ikinci kullanici gunu bitirirdi.
+
+    Anahtari olmayan kullanici 400 aliyor: sessizce baskasinin kotasindan
+    harcamaktansa acik bir hata daha dogru.
     """
-    return _base_config().credentials()
+    if server.auth_mode == "single_user":
+        return _base_config().credentials()
+
+    store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+    stored = store.get_user_credentials(user_id)
+    if not stored.get("gemini_api_key"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Gemini API anahtarınızı ayarlardan girmeniz gerekiyor",
+        )
+    return UserCredentials(**stored)
 
 
 def get_default_run_options() -> RunOptions:

@@ -167,6 +167,21 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, provider)
                 );
+                CREATE TABLE IF NOT EXISTS user_credential (
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, name)
+                );
+                CREATE TABLE IF NOT EXISTS session (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    email TEXT,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_session_expires ON session (expires_at);
                 CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache (expires_at);
                 CREATE INDEX IF NOT EXISTS idx_transcript_cache_expires ON transcript_cache (expires_at);
                 """
@@ -428,6 +443,89 @@ class SQLiteStore:
     # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
     # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
     # boylece anahtar sonradan eklenebilir.
+
+    # ------------------------------------------------- kullanici anahtarlari
+    #
+    # BYOK: cok kullanicili kurulumda her kullanici kendi API anahtarini
+    # getiriyor. Paylasimli anahtar mumkun degil -- YouTube Data API kotasi
+    # PROJE basina gunde 10.000 birim ve bir calistirma ~1.200 birim tuketiyor,
+    # yani ikinci kullanici gunu bitiriyor.
+    #
+    # Degerler jetonlarla AYNI kutuyla sifreleniyor; anahtar yoksa duz metin
+    # yazilir ve eski davranis korunur.
+
+    def save_user_credential(self, user_id: str, name: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO user_credential (user_id, name, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, name, self._secrets.encrypt(value), _to_iso(_utc_now())),
+            )
+
+    def get_user_credentials(self, user_id: str) -> dict[str, str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT name, value FROM user_credential WHERE user_id = ?", (user_id,)
+            ).fetchall()
+        return {row["name"]: self._secrets.decrypt(row["value"]) for row in rows}
+
+    def delete_user_credential(self, user_id: str, name: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_credential WHERE user_id = ? AND name = ?", (user_id, name)
+            )
+            return cursor.rowcount > 0
+
+    # ------------------------------------------------------------- oturumlar
+    #
+    # Jetonun KENDISI degil, SHA-256 ozeti saklaniyor: veritabani sizsa bile
+    # oturumlar devralinamaz. Ayni sebeple jeton yalnizca uretildigi anda,
+    # cagirana bir kez donuyor.
+
+    @staticmethod
+    def hash_session_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def create_session(self, token: str, user_id: str, email: str | None, ttl_sec: int) -> None:
+        now = _utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO session (token_hash, user_id, email, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    self.hash_session_token(token),
+                    user_id,
+                    email,
+                    _to_iso(now),
+                    _to_iso(now + timedelta(seconds=ttl_sec)),
+                ),
+            )
+
+    def get_session(self, token: str) -> dict[str, str] | None:
+        """Suresi gecmemis oturumu dondurur; gecmisse silip `None` doner."""
+        token_hash = self.hash_session_token(token)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT user_id, email, expires_at FROM session WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if row is None:
+                return None
+            if _is_expired(row["expires_at"]):
+                conn.execute("DELETE FROM session WHERE token_hash = ?", (token_hash,))
+                return None
+        return {"user_id": row["user_id"], "email": row["email"]}
+
+    def delete_session(self, token: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM session WHERE token_hash = ?", (self.hash_session_token(token),)
+            )
+            return cursor.rowcount > 0
 
     def save_oauth_token(self, user_id: str, provider: str, token_json: str) -> None:
         with self.connect() as conn:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values, find_dotenv, load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -37,6 +38,8 @@ ENV_TO_FIELD: dict[str, str] = {
     "DATA_DIR": "data_dir",
     "SQLITE_PATH": "sqlite_path",
     "SECRET_ENCRYPTION_KEY": "secret_encryption_key",
+    "AUTH_MODE": "auth_mode",
+    "SESSION_TTL_SEC": "session_ttl_sec",
     "INCLUDE_ENGLISH_BY_DEFAULT": "include_english_by_default",
     "MAX_SUBTOPICS": "max_subtopics",
     "SEARCH_CANDIDATES_PER_SUBTOPIC": "search_candidates_per_subtopic",
@@ -189,6 +192,21 @@ class ServerConfig(BaseModel):
     # Saklanan sirlari (OAuth jetonlari) sifrelemek icin kullanilir. Tanimsizsa
     # jetonlar duz metin yazilir. `python -m src.storage.crypto` ile uretilebilir.
     secret_encryption_key: str | None = Field(default=None)
+
+    # `single_user` (VARSAYILAN): her istek `DEFAULT_USER_ID`'ye ait, anahtarlar
+    # `.env`'den okunur. Bugunku kurulum ve gelistirme akisi boyle calisiyor.
+    #
+    # `multi_user`: istek bir oturum cerezi tasimali, anahtarlar KULLANICI
+    # BASINA veritabanindan okunur. `.env` anahtarlari bu modda YEDEK OLARAK
+    # KULLANILMAZ -- kullanilsaydi anahtarini girmeyen bir kullanici sessizce
+    # kurulum sahibinin YouTube kotasini harcardi (kota proje basina gunde
+    # 10.000 birim ve bir calistirma ~1.200 birim).
+    auth_mode: Literal["single_user", "multi_user"] = Field(default="single_user")
+
+    # Oturum omru. Varsayilan 14 gun: kullaniciyi her gun Google'a geri
+    # gondermeyecek kadar uzun, calinan bir cerezin suresiz gecerli olmayacagi
+    # kadar kisa.
+    session_ttl_sec: int = Field(default=14 * 24 * 3600, ge=300)
 
     max_search_workers: int = Field(default=4)
     max_transcript_workers: int = Field(default=4)
