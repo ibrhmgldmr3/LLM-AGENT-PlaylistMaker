@@ -139,13 +139,20 @@ def _parse_subtopics(text: str) -> list[dict[str, str]]:
     if not isinstance(payload, list):
         raise ProviderTemporaryError("Gemini response did not contain a JSON array")
 
-    items: list[dict[str, str]] = []
+    items: list[dict[str, object]] = []
     for entry in payload:
         query_en = ""
+        terms: list[str] = []
         if isinstance(entry, dict):
             title = entry.get("title") or entry.get("subtopic") or entry.get("name") or ""
             query = entry.get("query") or entry.get("search_query") or ""
             query_en = entry.get("query_en") or entry.get("english_query") or ""
+            raw_terms = entry.get("terms") or entry.get("aliases") or []
+            if isinstance(raw_terms, str):
+                # Model bazen dizi yerine virgullu tek metin donuyor.
+                raw_terms = [part for part in raw_terms.split(",")]
+            if isinstance(raw_terms, list):
+                terms = [str(x).strip() for x in raw_terms if str(x).strip()]
             if not title:
                 # Sadece tek bir metin alani varsa onu baslik say.
                 title = next((v for v in entry.values() if isinstance(v, str)), "")
@@ -154,7 +161,12 @@ def _parse_subtopics(text: str) -> list[dict[str, str]]:
         title = str(title).strip()
         if title:
             items.append(
-                {"title": title, "query": str(query).strip(), "query_en": str(query_en).strip()}
+                {
+                    "title": title,
+                    "query": str(query).strip(),
+                    "query_en": str(query_en).strip(),
+                    "terms": terms,
+                }
             )
     return items
 

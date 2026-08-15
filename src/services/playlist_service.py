@@ -198,7 +198,13 @@ def _run_pipeline(
 
     emit("metadata_ranking", f"{len(pooled)} aday sıralanıyor", _P_RANKING)
     for item in work:
-        item.ranked = rank_candidates(pooled, request.topic, item.subtopic.title, request.filters)
+        item.ranked = rank_candidates(
+            pooled,
+            request.topic,
+            item.subtopic.title,
+            request.filters,
+            subtopic_terms=item.subtopic.match_terms,
+        )
         item.pool_size = len(pooled)
 
     # ---------------------------------------------------------------- FAZ 3

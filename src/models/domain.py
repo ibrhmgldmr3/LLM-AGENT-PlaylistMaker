@@ -48,6 +48,14 @@ class Subtopic(BaseModel):
     search_query: str | None = None
     # Ayni alt konunun Ingilizce sorgusu (iki dilli keşif icin).
     search_query_en: str | None = None
+    # Ayni kavramin BASKA ADLARI: Ingilizce karsiligi, kisaltmasi, yaygin es
+    # anlamlisi. Siralamada baslik/aciklama bunlara karsi da olculuyor.
+    #
+    # Neden gerekli: leksik eslestirme ayni kavramin iki dildeki adini
+    # birbirine baglayamiyordu. Olculdu -- "Kokusuz Kalman Filtresi" alt konusu
+    # ("Kokusuz" = "Unscented") ingilizce "Unscented Kalman Filter" videolariyla
+    # hic eslesmiyordu ve o slot alakasiz bir videoya gidiyordu.
+    match_terms: list[str] = Field(default_factory=list)
 
 
 class VideoCandidate(BaseModel):

@@ -10,7 +10,6 @@ from .domain import (
     SubtopicResult,
     TranscriptResult,
     VideoCandidate,
-    now_utc_iso,
 )
 
 __all__ = [
@@ -25,5 +24,4 @@ __all__ = [
     "SubtopicResult",
     "TranscriptResult",
     "VideoCandidate",
-    "now_utc_iso",
 ]

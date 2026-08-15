@@ -502,7 +502,10 @@ export interface components {
         };
         /**
          * RunSnapshotBody
-         * @description SSE `done` olayinin govdesi.
+         * @description SSE `done` olayinin govdesi: durum + `created_at`.
+         *
+         *     `RunStatus`tan TUREMESI kasitli -- alanlari elle tekrarlamak ikisinin
+         *     sessizce ayrisabilecegi anlamina geliyordu.
          *
          *     REST yaniti DEGIL, bu yuzden FastAPI onu kendiliginden OpenAPI'ye koymuyor;
          *     `scripts/dump_openapi.py` acikca ekliyor. Boyle bir modele bagli olmasinin
@@ -542,7 +545,10 @@ export interface components {
              */
             state: "pending" | "running" | "done" | "failed" | "cancelled";
         };
-        /** RunStatus */
+        /**
+         * RunStatus
+         * @description Bir calistirmanin o anki durumu; `/{run_id}/status` yaniti.
+         */
         RunStatus: {
             /** Error */
             error: string | null;
@@ -580,6 +586,8 @@ export interface components {
         };
         /** Subtopic */
         Subtopic: {
+            /** Match Terms */
+            match_terms: string[];
             /** Normalized Title */
             normalized_title: string;
             /** Search Query */

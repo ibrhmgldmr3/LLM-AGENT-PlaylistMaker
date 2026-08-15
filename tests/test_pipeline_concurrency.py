@@ -37,7 +37,7 @@ def _score(total):
     )
 
 
-def _fake_rank(candidates, topic, subtopic, filters):
+def _fake_rank(candidates, topic, subtopic, filters, **kw):
     """Alt konuya DUYARLI sahte siralayici.
 
     Alt konuyu yok sayan bir sahte siralayici, havuzlama sonrasi butun alt

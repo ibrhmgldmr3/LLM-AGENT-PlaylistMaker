@@ -2,8 +2,25 @@ import { api } from "../../api/client";
 import { PublishPanel } from "../publish/PublishPanel";
 import type { PlaylistResult, Recommendation, SubtopicResult } from "../../api/types";
 
-/** Bu esigin altindaki oneriler "zayif eslesme" olarak isaretlenir (Streamlit ile ayni). */
-const WEAK_MATCH_THRESHOLD = 7;
+/**
+ * "Zayif eslesme" iki ayri kosulun BIRLESIMI.
+ *
+ * Once yalnizca `confidence_score < 7` bakiliyordu ve bu yanlis soruyu
+ * yanitliyordu: guven puani TOPLAM puandan turuyor, toplam ise sure/dil/kanal
+ * gibi alt konuyla ilgisiz sinyalleri de iceriyor. Sonuc: alt basliktan hicbir
+ * kelime eslesmeyen bir video, uzun/guncel/populer oldugu icin 8.6 guven alip
+ * kullaniciya UYARISIZ gosterilebiliyordu.
+ *
+ * Kayitli 13 kosuda olculdu: baslik alakasi ~0 olan 6 secimin 3'u eski kuralla
+ * hic isaretlenmiyordu. Alaka esigi eklenince 42 secimin 3'u yerine 6'si
+ * isaretleniyor -- yani kacirilanlar yakalaniyor, geri kalan sel gibi
+ * etiketlenmiyor.
+ *
+ * Yanlis pozitif ucuz (yalnizca bir uyari), yanlis negatif pahali (alakasiz
+ * video guvenilir gorunuyor); esikler bilerek o yone egimli.
+ */
+const WEAK_CONFIDENCE = 7;
+const WEAK_TITLE_RELEVANCE = 0.5;
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "?";
@@ -19,8 +36,15 @@ function compact(value: number | null): string {
   return String(value);
 }
 
+export function isWeakMatch(item: Recommendation): boolean {
+  return (
+    item.confidence_score < WEAK_CONFIDENCE ||
+    item.metadata_score.title_relevance < WEAK_TITLE_RELEVANCE
+  );
+}
+
 function RecommendationCard({ item }: { item: Recommendation }) {
-  const weak = item.confidence_score < WEAK_MATCH_THRESHOLD;
+  const weak = isWeakMatch(item);
   return (
     <article className="card">
       <div className="card__head">

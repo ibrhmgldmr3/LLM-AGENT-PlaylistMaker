@@ -90,7 +90,8 @@ Parallelising phases 2 and 4 measured a **~3.5x end-to-end speedup** on a 4-subt
 The candidate pool is deliberately built wider than any single search:
 
 - **The LLM writes the search queries, not the code.** One call returns
-  `{title, query, query_en}` per subtopic, so the extra queries cost no extra LLM calls.
+  `{title, query, query_en, terms}` per subtopic, so the extra queries — and the equivalent
+  terms used later in ranking — cost no extra LLM calls.
   Mechanically concatenating topic and subtopic produced unnatural, repetitive strings
   (*"Makine öğrenmesi ile zaman serisi tahmini XGBoost ile zaman serisi tahmini"*); the
   model instead emits what people actually search for (*"XGBoost LightGBM zaman serisi
@@ -180,10 +181,23 @@ That script produced the numbers above and the threshold sweep recorded next to
 `POPULARITY_GATE_FULL`. It reads `data/runs/`, so it measures re-ranking *within each run's
 stored shortlist* — not whether a better video existed in the wider pool.
 
-The remaining 4 weak picks are a different problem: the pool has no lexical match at all,
-often because Turkish and English terms for the same concept never meet (`Kokusuz` is
-Turkish for `Unscented`). Fixing that needs semantic matching, not reweighting. Those picks
-score low and the UI labels them a **weak match** instead of presenting them as good ones.
+**Equivalent terms bridge the language gap.** Lexical matching could not connect a concept's
+Turkish and English names — `Kokusuz` *is* `Unscented`, but no amount of stemming will say
+so. In one stored run the subtopic "Kokusuz Kalman Filtresi" matched nothing and its slot
+went to a generic Kalman video, while the pool's *"Unscented Kalman Filter Design"* was
+handed to a different subtopic entirely. The LLM now returns a `terms` array per subtopic —
+the English equivalent, the acronym, common synonyms — alongside the title and queries it
+already produced, so this costs no extra call. Relevance takes the **best** match across the
+title and those terms rather than the sum: naming the same concept twice should not outscore
+naming it once. Replayed on that run, the pick changed to the correct video and its relevance
+went from 1.39 to 3.31.
+
+A pick can still be weak when the pool genuinely holds nothing on the subtopic. The UI marks
+those a **weak match** — and marks them on *relevance*, not on the confidence score alone.
+Confidence is derived from the total, which includes duration, language and channel signals,
+so a long, recent, popular video with zero topical overlap used to score 8.6 and be presented
+without any warning. Measured across the stored runs, 3 of 6 zero-relevance picks were
+unmarked under the old rule.
 
 ### ASR is off by default
 
@@ -386,7 +400,7 @@ tests/                      218 tests
 pytest -q
 ```
 
-225 backend tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+234 backend tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
 has a regression test named after the behaviour it locks in. The suite runs without a `.env`
 and without any API key — CI has neither.
 
@@ -394,7 +408,7 @@ and without any API key — CI has neither.
 cd web && npm test
 ```
 
-13 frontend tests, covering `useRunStream` — the SSE hook, which holds the most intricate
+20 frontend tests. Most cover `useRunStream` — the SSE hook, which holds the most intricate
 logic on that side. They run against a fake `EventSource`, which is what makes them
 deterministic: the test decides when `progress`, `done`, or a bodiless `error` arrives, so
 nothing waits on a timer. The fake mirrors the browser contract in two details that matter —

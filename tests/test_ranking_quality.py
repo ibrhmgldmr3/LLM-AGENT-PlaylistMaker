@@ -483,3 +483,53 @@ def test_popularity_still_decides_between_equally_relevant_videos():
     ranked = rank_candidates([small, big], TOPIC, subtopic, _filters())
 
     assert ranked[0][0].video_id == "arimabig1234"
+
+
+def test_equivalent_terms_bridge_the_language_gap():
+    """Regresyon: ayni kavramin Turkce ve Ingilizce adi birbirine baglanmiyordu.
+
+    Leksik eslestirme "Kokusuz" ile "Unscented"i eslestiremiyor; ikisi ayni
+    kavram ("Unscented Kalman Filter"). Kayitli bir kosuda olculdu: alt konu
+    "Kokusuz Kalman Filtresi" iken havuzdaki "Unscented Kalman Filter Design"
+    videosu hic eslesmiyor, slot genel bir Kalman videosuna gidiyordu.
+
+    LLM alt konu uretirken bu esdeger adlari da donduruyor (`terms`), ek bir
+    cagri maliyeti yok.
+    """
+    subtopic = "Kokusuz Kalman Filtresi"
+    unscented = _video("unscented123", "Unscented Kalman Filter Design - UKF Implementation")
+    generic = _video("generic12345", "Kalman Filtresi - Sensör Füzyon Uygulaması")
+    pool = [generic, unscented]
+    topic = "Kalman filtresi ile sensör füzyonu"
+
+    without_terms = rank_candidates(pool, topic, subtopic, _filters())
+    with_terms = rank_candidates(
+        pool, topic, subtopic, _filters(), subtopic_terms=["Unscented Kalman Filter", "UKF"]
+    )
+
+    assert without_terms[0][0].video_id == "generic12345", (
+        "on kosul: terimler olmadan Ingilizce video eslesmiyor"
+    )
+    assert with_terms[0][0].video_id == "unscented123"
+    assert with_terms[0][1].title_relevance > without_terms[0][1].title_relevance
+
+
+def test_equivalent_terms_take_the_best_match_not_the_sum():
+    """Terimler TOPLANMIYOR, en iyisi aliniyor.
+
+    Toplama olsaydi cok adi olan kavramlar yapay olarak one cikardi: ayni
+    videoyu iki farkli adla iki kez odullendirmek, tek adi olan bir kavrama
+    karsi haksiz avantaj yaratirdi. Videonun kavrami hangi adla andigi onemli
+    degil; onemli olan andigi.
+    """
+    subtopic = "Kokusuz Kalman Filtresi"
+    topic = "Kalman filtresi ile sensör füzyonu"
+    video = _video("both12345678", "Unscented Kalman Filter (UKF) tutorial")
+    pool = [video, _video("filler123456", "Alakasız video")]
+
+    one_term = rank_candidates(pool, topic, subtopic, _filters(), subtopic_terms=["Unscented Kalman Filter"])
+    two_terms = rank_candidates(pool, topic, subtopic, _filters(), subtopic_terms=["Unscented Kalman Filter", "UKF"])
+
+    scores = {c.video_id: s.title_relevance for c, s in one_term}
+    doubled = {c.video_id: s.title_relevance for c, s in two_terms}
+    assert doubled["both12345678"] <= scores["both12345678"] + 0.01, "ikinci ad puani sismemeli"
