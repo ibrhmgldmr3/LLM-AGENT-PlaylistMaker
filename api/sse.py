@@ -51,16 +51,27 @@ def parse_last_event_id(raw: str | None) -> int:
         return 0
 
 
-def run_event_stream(runner: JobRunner, run_id: str, cursor: int = 0) -> Iterator[str]:
+def run_event_stream(
+    runner: JobRunner, run_id: str, cursor: int = 0, user_id: str | None = None
+) -> Iterator[str]:
     """Bir isin ilerlemesini SSE olarak akitir.
 
     Senkron uretici bilerek: olay gunlugu bloklayan bir bekleme uzerinde
     calisiyor ve Starlette senkron ureticileri thread havuzunda dondurur. Her
     acik akis bir thread tutar — tek instance icin kabul edilebilir, cok
     kullanicili dagitimda `CeleryJobRunner` ile birlikte gozden gecirilecek.
+
+    `user_id` verildiginde BASKASININ isi "bilinmeyen" gibi davraniliyor: ayri
+    bir "yetkisiz" yaniti, var olmayan bir kimlikle var olan bir kimligi ayirt
+    edilebilir kilar ve calistirma kimliklerini sizdirir.
+
+    Burada 404 DONULMUYOR, akis icinde `error` olayi gonderilip kapatiliyor:
+    `EventSource` HTTP hata kodunu govdesiz bir hata sayip SONSUZA KADAR yeniden
+    baglanmaya calisir. Olay olarak gonderildiginde istemci durumu okuyup
+    duruyor.
     """
     handle = runner.get(run_id)
-    if handle is None:
+    if handle is None or (user_id is not None and handle.user_id != user_id):
         yield format_event("error", {"run_id": run_id, "detail": "Bilinmeyen çalıştırma"})
         return
 
