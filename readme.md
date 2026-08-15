@@ -368,9 +368,21 @@ tests/                      218 tests
 pytest -q
 ```
 
-224 tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+225 backend tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
 has a regression test named after the behaviour it locks in. The suite runs without a `.env`
 and without any API key — CI has neither.
+
+```bash
+cd web && npm test
+```
+
+13 frontend tests, covering `useRunStream` — the SSE hook, which holds the most intricate
+logic on that side. They run against a fake `EventSource`, which is what makes them
+deterministic: the test decides when `progress`, `done`, or a bodiless `error` arrives, so
+nothing waits on a timer. The fake mirrors the browser contract in two details that matter —
+a closed source delivers nothing, and a dropped connection is a bodiless `Event` rather than
+a `MessageEvent` — because the hook distinguishes exactly those cases, and a sloppy fake
+would verify behaviour that cannot occur.
 
 ### CI
 
@@ -380,8 +392,44 @@ and without any API key — CI has neither.
 |---|---|
 | `backend` | Python 3.13: import check, `pyflakes`, full test suite |
 | `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
-| `frontend` | `web/`: TypeScript typecheck and production build |
+| `frontend` | `web/`: regenerates types from the backend, typecheck, tests, production build |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
+
+### The API contract
+
+`web/src/api/types.ts` is hand-written and readable; `web/src/api/schema.d.ts` is generated
+from the backend's OpenAPI document and committed. `web/src/api/contract.ts` asserts one
+against the other at compile time, so renaming a backend field breaks `npm run typecheck`.
+
+```bash
+cd web && npm run gen:types
+```
+
+The check is **directional**, because the two directions are not the same claim. For request
+bodies the UI may be *narrower* than the API — it offers `"en" | "tr"` while the API accepts
+any language string — so the assertion only requires that what the UI sends is acceptable.
+For response bodies narrowing is unsafe: anything the API can return must fit the UI's type.
+A plain equality check would fail the first case for no reason and is why this is not one.
+
+Two wrinkles are worth knowing before editing the generator:
+
+- **SSE bodies are not in OpenAPI.** FastAPI derives schemas from route responses, and the
+  events endpoint returns a `StreamingResponse`, so the `progress` and `done` payloads are
+  invisible to it — which is exactly where drift had grown. `scripts/dump_openapi.py` adds
+  them explicitly.
+- **Response fields with defaults are marked required.** Pydantic treats a field with a
+  default as not-required, which is right for requests and misleading for responses: FastAPI
+  serializes defaults, so the key is always on the wire. The script marks them required for
+  schemas not reachable from a `requestBody`. Without this the generated types are
+  pessimistic in a way that buries real drift in noise.
+- **CI regenerates the types rather than byte-comparing them.** The generated schema depends
+  on the installed pydantic version — 2.11 emits `additionalProperties: true` for free-form
+  dicts and 2.8 does not, which turns `Record<string, unknown>` into `Record<string, never>`
+  downstream. Since the project deliberately supports a version *range*, a byte-exact check
+  can never be stable; the first CI run failed on exactly that. The assertions are semantic
+  and were verified to hold against schemas generated at both ends of the range. The
+  committed `schema.d.ts` is a local convenience — typecheck without installing Python — and
+  CI warns, rather than fails, when it has fallen behind.
 
 > Editing the workflow: expressions are only valid in fields that allow the context they use.
 > `${{ env.* }}` works in a step's `with:` but **not** in `jobs.<id>.name` — and an illegal

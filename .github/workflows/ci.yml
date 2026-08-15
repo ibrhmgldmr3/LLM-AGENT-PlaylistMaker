@@ -102,11 +102,47 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # Uretilen `schema.d.ts` guncel mi diye bakabilmek icin backend'i import
+      # edip OpenAPI'yi dokmek gerekiyor; bu yuzden bu iste Python da var.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Python bagimliliklari
+        working-directory: .
+        run: pip install -r requirements.txt
+
       - name: Bagimliliklari kur
         run: npm ci
 
-      - name: Tip kontrolu
+      - name: Tipleri backend'den yeniden uret
+        # BYTE KARSILASTIRMASI DEGIL. Ilk hali `--check` ile commit'lenmis
+        # dosyayla birebir kiyasliyordu ve bu yapisal olarak kararsizdi: uretilen
+        # sema kurulu pydantic surumune gore degisiyor (2.11 serbest sozlukler
+        # icin `additionalProperties: true` yaziyor, 2.8 yazmiyor -- ikincisinde
+        # uretilen TS `Record<string, never>` gibi bozuk bir tip oluyor). Bu depo
+        # bilerek bir surum ARALIGI destekledigi icin byte esitligi hicbir zaman
+        # saglanamaz; nitekim ilk kosuda tam da burasi kirildi.
+        #
+        # Gercek koruma `contract.ts` iddialarinda ve o ANLAMSAL: iki semayla da
+        # sinandi, ikisinde de gecti. Bu yuzden burada taze uretip asagida tip
+        # kontrolu kosuyoruz. Commit'li kopya yalnizca yerel kolaylik (Python
+        # kurmadan `npm run typecheck` yapilabilsin diye); eskimisse uyariyoruz.
+        run: |
+          npm run gen:types
+          if ! git diff --quiet -- src/api/schema.d.ts; then
+            echo "::warning::Commit'li schema.d.ts taze uretimden farkli; 'npm run gen:types' calistirip commit edin"
+          fi
+
+      - name: Tip kontrolu (taze uretilen semaya karsi)
         run: npm run typecheck
+
+      - name: Testler
+        # `useRunStream` sahte bir `EventSource` uzerinde kosuluyor: ag yok,
+        # zamanlamaya dayali bekleme yok.
+        run: npm test
 
       - name: Derleme
         run: npm run build

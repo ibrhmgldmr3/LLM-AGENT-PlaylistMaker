@@ -105,5 +105,10 @@ export function useRunStream() {
     setState(IDLE);
   }, [close]);
 
-  return { ...state, watch, reset, cancel: close };
+  // `stopWatching`, eskiden `cancel` adiyla disa veriliyordu ve bu yanilticiydi:
+  // yalnizca YEREL akisi kapatiyor, sunucudaki calistirma devam ediyor. Gercek
+  // bir iptal ucu da yok -- is yurutucusu `JobCancelled` destekliyor ama hicbir
+  // HTTP ucu onu acmiyor. Hicbir bilesen cagirmiyordu, yani "iptal" dugmesi
+  // sanilip baglansaydi kullaniciya calismayan bir soz verilmis olurdu.
+  return { ...state, watch, reset, stopWatching: close };
 }

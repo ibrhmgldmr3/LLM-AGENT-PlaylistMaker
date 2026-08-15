@@ -14,6 +14,20 @@ export interface FilterOptions {
   include_english: boolean;
 }
 
+/**
+ * Yanitta geri yansiyan filtreler.
+ *
+ * `language` burada BILEREK dar degil: istek tarafindaki `Language` arayuzun
+ * SUNDUGU secenekleri anlatiyor, API ise alani `str` olarak kabul ediyor ve
+ * ne gonderildiyse sonucta aynen geri veriyor. Baska bir istemci "de" gonderip
+ * o calistirma gecmisten okundugunda buraya "de" gelir. Ikisini ayni tiple
+ * anlatmak, TypeScript'in imkansiz dedigi bir degerin calisma zamaninda
+ * gelmesi demekti.
+ */
+export interface FilterOptionsEcho extends Omit<FilterOptions, "language"> {
+  language: string;
+}
+
 export interface RunOptionsOverride {
   max_subtopics?: number;
   enable_asr_fallback?: boolean;
@@ -42,10 +56,18 @@ export interface ProgressEvent {
   total: number | null;
 }
 
-/** SSE `done` olayinin govdesi. */
+/**
+ * SSE `done` olayinin govdesi.
+ *
+ * `user_id` BURADA YOKTU degil, FAZLAYDI: eskiden bu tip is katmaninin
+ * `snapshot()` sozlugunu tarif ettigi varsayiliyordu ama sunucu artik
+ * `RunSnapshotBody` modelinden serilestiriyor ve `user_id` yollamiyor
+ * (istemcinin isine yaramiyor). Ayni duzeltmede `job_id` -> `run_id`
+ * adlandirmasi API'nin geri kalaniyla hizalandi; onceden bu alan calisma
+ * zamaninda `undefined` gelirken TypeScript `string` oldugunu iddia ediyordu.
+ */
 export interface RunSnapshot {
   run_id: string;
-  user_id: string;
   state: RunState;
   created_at: string;
   progress: number;
@@ -107,7 +129,7 @@ export interface SubtopicResult {
 export interface PlaylistResult {
   run_id: string;
   topic: string;
-  filters: FilterOptions;
+  filters: FilterOptionsEcho;
   subtopics: SubtopicResult[];
   recommendations: Recommendation[];
   created_at: string;
