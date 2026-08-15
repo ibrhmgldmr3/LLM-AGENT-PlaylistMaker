@@ -317,3 +317,48 @@ def test_logout_revokes_the_session_on_the_server(multi_user_client):
 
     assert multi_user_client.post("/api/auth/logout").status_code == 204
     assert multi_user_client.store.get_session("jeton") is None
+
+
+# --------------------------------------------------------- anahtar uclari
+
+def test_credentials_never_return_the_values(multi_user_client):
+    """Deger bir kez yazilir, GERI OKUNAMAZ.
+
+    Yalnizca "girilmis mi" bilgisi doniyor; boylece bir XSS ya da yanlis
+    loglama anahtari disari tasiyamaz. Kullanici unuttuysa yenisini girer.
+    """
+    store = multi_user_client.store
+    store.create_session("jeton", "google:1", None, ttl_sec=3600)
+    store.save_user_credential("google:1", "gemini_api_key", "COK-GIZLI")
+    multi_user_client.cookies.set("map_session", "jeton")
+
+    body = multi_user_client.get("/api/credentials").json()
+
+    assert "COK-GIZLI" not in multi_user_client.get("/api/credentials").text
+    gemini = next(item for item in body["items"] if item["name"] == "gemini_api_key")
+    assert gemini["configured"] is True
+    assert "value" not in gemini
+
+
+def test_saving_a_credential_takes_effect(multi_user_client):
+    multi_user_client.store.create_session("jeton", "google:1", None, ttl_sec=3600)
+    multi_user_client.cookies.set("map_session", "jeton")
+
+    assert multi_user_client.put(
+        "/api/credentials/gemini_api_key", json={"value": "yeni-anahtar"}
+    ).status_code == 204
+    assert multi_user_client.store.get_user_credentials("google:1")["gemini_api_key"] == "yeni-anahtar"
+
+
+def test_unknown_credential_names_are_rejected(multi_user_client):
+    """Beyaz liste: rastgele bir adla yapilandirmaya deger sokulmasin."""
+    multi_user_client.store.create_session("jeton", "google:1", None, ttl_sec=3600)
+    multi_user_client.cookies.set("map_session", "jeton")
+
+    response = multi_user_client.put("/api/credentials/sqlite_path", json={"value": "/etc/passwd"})
+
+    assert response.status_code == 404
+
+
+def test_credentials_require_a_session(multi_user_client):
+    assert multi_user_client.get("/api/credentials").status_code == 401

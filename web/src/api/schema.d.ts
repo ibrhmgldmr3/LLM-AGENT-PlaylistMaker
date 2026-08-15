@@ -4,6 +4,54 @@
  */
 
 export interface paths {
+    "/api/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout
+         * @description Oturumu SUNUCUDAN siler; cerezi silmek tek basina yeterli olmazdi.
+         *
+         *     Cerez silinip kayit dursaydi, o jetonun bir kopyasini ele geciren biri
+         *     oturumu kullanmaya devam ederdi. Sunucu tarafli oturumlarin varlik sebebi
+         *     de bu: iptal edilebilir olmalari.
+         */
+        post: operations["logout_api_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whoami
+         * @description Kim giris yapmis. Oturum YOKSA hata degil, `signed_in: false` doner.
+         *
+         *     401 donmuyor cunku bu ucun isi tam da "oturum var mi" sorusunu yanitlamak;
+         *     arayuz her acilista bunu cagirip giris ekrani gosterip gostermeyecegine
+         *     karar veriyor.
+         */
+        get: operations["whoami_api_auth_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/youtube": {
         parameters: {
             query?: never;
@@ -30,7 +78,11 @@ export interface paths {
         };
         /**
          * Youtube Callback
-         * @description Google'in geri dondugu uc. Kodu jetona cevirip kullaniciya baglar.
+         * @description Google'in geri dondugu uc. Kodu jetona cevirir, kimligi kurar.
+         *
+         *     Bu uc AYNI ANDA iki is yapiyor: YouTube yayin izni aliyor ve kullaniciyi
+         *     tanitiyor. Ayirmak ikinci bir onay ekrani demekti; kullanici zaten yayin
+         *     icin Google hesabi bagliyor.
          */
         get: operations["youtube_callback_api_auth_youtube_callback_get"];
         put?: never;
@@ -51,6 +103,10 @@ export interface paths {
         /**
          * Start Authorization
          * @description Google onay URL'ini uretir. Tarayici bu adrese YONLENDIRILIR.
+         *
+         *     OTURUM GEREKTIRMIYOR -- gerektirseydi giris yapmak icin once giris yapmis
+         *     olmak gerekirdi. Kullanicinin API anahtarlarina da bakmiyor: OAuth istemcisi
+         *     kuruluma ait ve akisin bu adimi kimlikten bagimsiz.
          */
         get: operations["start_authorization_api_auth_youtube_start_get"];
         put?: never;
@@ -99,6 +155,41 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Credentials */
+        get: operations["list_credentials_api_credentials_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/credentials/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Credential */
+        put: operations["save_credential_api_credentials__name__put"];
+        post?: never;
+        /** Delete Credential */
+        delete: operations["delete_credential_api_credentials__name__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -299,6 +390,29 @@ export interface components {
             options?: components["schemas"]["RunOptionsOverride"];
             /** Topic */
             topic: string;
+        };
+        /** CredentialItem */
+        CredentialItem: {
+            /** Configured */
+            configured: boolean;
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** Required */
+            required: boolean;
+        };
+        /** CredentialValue */
+        CredentialValue: {
+            /** Value */
+            value: string;
+        };
+        /** CredentialsResponse */
+        CredentialsResponse: {
+            /** Editable */
+            editable: boolean;
+            /** Items */
+            items: components["schemas"]["CredentialItem"][];
         };
         /** ExportArtifacts */
         ExportArtifacts: {
@@ -679,6 +793,46 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    logout_api_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    whoami_api_auth_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     disconnect_api_auth_youtube_delete: {
         parameters: {
             query?: never;
@@ -790,6 +944,88 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CapabilitiesResponse"];
+                };
+            };
+        };
+    };
+    list_credentials_api_credentials_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialsResponse"];
+                };
+            };
+        };
+    };
+    save_credential_api_credentials__name__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialValue"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_credential_api_credentials__name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
