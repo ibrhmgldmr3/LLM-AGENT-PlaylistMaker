@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values, find_dotenv, load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -37,6 +38,9 @@ ENV_TO_FIELD: dict[str, str] = {
     "DATA_DIR": "data_dir",
     "SQLITE_PATH": "sqlite_path",
     "SECRET_ENCRYPTION_KEY": "secret_encryption_key",
+    "AUTH_MODE": "auth_mode",
+    "SESSION_TTL_SEC": "session_ttl_sec",
+    "MAX_RUNS_PER_USER_PER_DAY": "max_runs_per_user_per_day",
     "INCLUDE_ENGLISH_BY_DEFAULT": "include_english_by_default",
     "MAX_SUBTOPICS": "max_subtopics",
     "SEARCH_CANDIDATES_PER_SUBTOPIC": "search_candidates_per_subtopic",
@@ -75,9 +79,6 @@ class UserCredentials(BaseModel):
 
     gemini_api_key: str = Field(..., description="Gemini API key")
     youtube_data_api_key: str | None = Field(default=None)
-    youtube_oauth_client_secret_file: str | None = Field(default=None)
-    youtube_oauth_client_id: str | None = Field(default=None)
-    youtube_oauth_client_secret: str | None = Field(default=None)
     youtube_oauth_token_file: str = Field(default="data/cache/youtube_oauth_token.json")
     ytdlp_proxy: str | None = Field(default=None)
     ytdlp_cookies_from_browser: str | None = Field(default=None)
@@ -189,6 +190,38 @@ class ServerConfig(BaseModel):
     # Saklanan sirlari (OAuth jetonlari) sifrelemek icin kullanilir. Tanimsizsa
     # jetonlar duz metin yazilir. `python -m src.storage.crypto` ile uretilebilir.
     secret_encryption_key: str | None = Field(default=None)
+
+    # `single_user` (VARSAYILAN): her istek `DEFAULT_USER_ID`'ye ait, anahtarlar
+    # `.env`'den okunur. Bugunku kurulum ve gelistirme akisi boyle calisiyor.
+    #
+    # `multi_user`: istek bir oturum cerezi tasimali, anahtarlar KULLANICI
+    # BASINA veritabanindan okunur. `.env` anahtarlari bu modda YEDEK OLARAK
+    # KULLANILMAZ -- kullanilsaydi anahtarini girmeyen bir kullanici sessizce
+    # kurulum sahibinin YouTube kotasini harcardi (kota proje basina gunde
+    # 10.000 birim ve bir calistirma ~1.200 birim).
+    auth_mode: Literal["single_user", "multi_user"] = Field(default="single_user")
+
+    # OAuth ISTEMCISI kuruluma ait, kullaniciya degil: uygulamanin Google'a
+    # kayitli kimligi bu. Kullanici basina olsaydi herkesin kendi Google Cloud
+    # OAuth istemcisini acip kendi yonlendirme adresini eklemesi gerekirdi.
+    # Kullanicidan gelen sey JETON (yayin izni), istemci degil.
+    youtube_oauth_client_secret_file: str | None = Field(default=None)
+    youtube_oauth_client_id: str | None = Field(default=None)
+    youtube_oauth_client_secret: str | None = Field(default=None)
+
+    # Oturum omru. Varsayilan 14 gun: kullaniciyi her gun Google'a geri
+    # gondermeyecek kadar uzun, calinan bir cerezin suresiz gecerli olmayacagi
+    # kadar kisa.
+    session_ttl_sec: int = Field(default=14 * 24 * 3600, ge=300)
+
+    # Kullanici basina 24 saatlik calistirma siniri. 0 = SINIRSIZ (varsayilan);
+    # tek kullanicili kurulumda sinir koymak anlamsiz.
+    #
+    # Neden gerekli: sinir olmadan tek bir kullanici gunluk YouTube kotasinin
+    # tamamini tuketebiliyor (kota proje basina 10.000 birim, bir calistirma
+    # 612 birim -- yani ~16 calistirma tum kullanicilar icin TOPLAM). BYOK'ta
+    # kota kullanicinin kendi projesinden ciktigi icin sinir opsiyonel kaliyor.
+    max_runs_per_user_per_day: int = Field(default=0, ge=0)
 
     max_search_workers: int = Field(default=4)
     max_transcript_workers: int = Field(default=4)

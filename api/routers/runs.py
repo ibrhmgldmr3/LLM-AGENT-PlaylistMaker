@@ -65,6 +65,7 @@ def create_run(
     defaults: RunOptions = Depends(get_default_run_options),
     server: ServerConfig = Depends(get_server_config),
     runner: JobRunner = Depends(get_job_runner),
+    store: SQLiteStore = Depends(get_store),
 ) -> RunAccepted:
     """Calistirmayi kuyruga alir ve HEMEN doner.
 
@@ -75,6 +76,22 @@ def create_run(
         # Sabit yerine sayi: starlette surumleri arasinda ad degisti
         # (UNPROCESSABLE_ENTITY -> UNPROCESSABLE_CONTENT).
         raise HTTPException(422, "Konu boş olamaz")
+
+    # Kullanici basina gunluk sinir. 0 = sinirsiz (varsayilan).
+    #
+    # Sinirsizken tek bir kullanici gunluk YouTube kotasinin tamamini
+    # tuketebiliyor: kota proje basina 10.000 birim, bir calistirma 612 birim,
+    # yani ~16 calistirma TUM KULLANICILAR icin toplam. BYOK'ta kota
+    # kullanicinin kendi projesinden ciktigi icin sinir opsiyonel.
+    if server.max_runs_per_user_per_day:
+        used = store.count_recent_runs(user_id)
+        if used >= server.max_runs_per_user_per_day:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                f"Günlük çalıştırma hakkınız doldu ({server.max_runs_per_user_per_day}). "
+                "Yarın tekrar deneyin.",
+                headers={"Retry-After": "3600"},
+            )
 
     # Istek govdesindeki ezmeler sunucu varsayilanlarinin uzerine biner.
     overrides = payload.options.model_dump(exclude_none=True)
@@ -92,6 +109,16 @@ def create_run(
         return build_playlist(
             config, request, progress_callback=emit, run_id=run_id, user_id=user_id
         )
+
+    # Satir KABUL ANINDA yaziliyor, isi baslatan is parcaciginda degil.
+    #
+    # Sayac `run` tablosunu okuyor; satiri arka plan yazsaydi iki hizli istek de
+    # kontrolu satirlar yazilmadan gecebilir ve sinir asilirdi. Ayrica kuyruga
+    # alinan calistirma gecmiste hemen gorunuyor.
+    #
+    # `build_playlist` de basinda ayni satiri yaziyor; `INSERT OR REPLACE` ve
+    # degerler ayni oldugu icin zararsiz.
+    store.create_run(run_id, request.topic, request.filters.model_dump(), user_id=user_id)
 
     handle = runner.submit(run_id, user_id, work)
     return RunAccepted(
@@ -163,7 +190,18 @@ def get_run(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
 
     handle = runner.get(run_id)
-    state = handle.state.value if handle else (JobState.DONE.value if summary["is_complete"] else JobState.PENDING.value)
+    if handle is not None:
+        state = handle.state.value
+    elif summary["is_complete"]:
+        state = JobState.DONE.value
+    else:
+        # Canli is YOK ve sonuc da yok: surec yeniden baslamis ve bu calistirma
+        # kesilmis. Eskiden `pending` donuyordu, yani kullanici SONSUZA KADAR
+        # "beklemede" goruyordu -- onu bitirecek hicbir sey kalmamisken.
+        #
+        # Kaldigi yerden SURDURMEK kalici bir kuyruk ister (Faz 3); buradaki is
+        # yalan soylememek.
+        state = "interrupted"
 
     if handle is not None and handle.state is JobState.FAILED:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, handle.error or "Çalıştırma başarısız")

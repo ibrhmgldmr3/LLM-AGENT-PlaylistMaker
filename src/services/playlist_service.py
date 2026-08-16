@@ -165,7 +165,7 @@ def _run_pipeline(
 
     # ---------------------------------------------------------------- FAZ 1
     # Aramalar birbirinden bagimsiz ve tamamen ag-baglantili -> paralel.
-    _search_all(config, store, request, work, logger, emit)
+    _search_all(config, store, request, work, logger, emit, user_id=user_id)
 
     # ---------------------------------------------------------------- FAZ 2
     # HAVUZLAMA: her alt konu, yalnizca kendi arama sonuclarini degil TUM alt
@@ -210,7 +210,9 @@ def _run_pipeline(
     # ---------------------------------------------------------------- FAZ 3
     # Transkriptler VIDEO bazinda tekillestirilip paralel cekilir. Onceki surumde
     # alt konu icinde seri calisiyordu ve toplam surenin ~%73'unu yiyordu.
-    transcripts_by_video = _fetch_transcripts(config, store, request, work, run_id, run_dir, logger, emit)
+    transcripts_by_video = _fetch_transcripts(
+        config, store, request, work, run_id, run_dir, logger, emit, user_id=user_id
+    )
 
     # ---------------------------------------------------------------- FAZ 4
     # Secim SIRALI olmak zorunda: `used_video_ids` alt konular arasinda
@@ -298,6 +300,7 @@ def _search_all(
     work: list[_SubtopicWork],
     logger,
     emit,
+    user_id: str = DEFAULT_USER_ID,
 ) -> None:
     """Alt konu aramalarini paralel calistirir; sonuclari `work` uzerine yazar."""
     total = len(work)
@@ -308,7 +311,7 @@ def _search_all(
         merged: dict[str, VideoCandidate] = {}
         for query in item.all_queries:
             for candidate in search_candidates(
-                config, store, query, request.filters, logger=logger, notes=notes
+                config, store, query, request.filters, logger=logger, notes=notes, user_id=user_id
             ):
                 merged.setdefault(candidate.video_id, candidate)
         item.candidates = list(merged.values())
@@ -322,7 +325,7 @@ def _search_all(
                 if logger:
                     logger.info("Widening search for %r -> %r", item.query, widened)
                 item.candidates = search_candidates(
-                    config, store, widened, request.filters, logger=logger, notes=notes
+                    config, store, widened, request.filters, logger=logger, notes=notes, user_id=user_id
                 )
                 if item.candidates:
                     notes.append(f"genişletilmiş sorgu kullanıldı: {widened!r}")
@@ -359,6 +362,7 @@ def _fetch_transcripts(
     run_dir: Path,
     logger,
     emit,
+    user_id: str = DEFAULT_USER_ID,
 ) -> dict[str, TranscriptResult]:
     """Zenginlestirilecek videolari tekillestirip paralel transkript ceker."""
     enrichment_top_k = config.effective_enrichment_top_k()
@@ -386,6 +390,7 @@ def _fetch_transcripts(
             state,
             logger=logger,
             preferred_language=request.filters.language,
+            user_id=user_id,
         )
 
     def store_result(video_id: str, transcript: TranscriptResult) -> None:

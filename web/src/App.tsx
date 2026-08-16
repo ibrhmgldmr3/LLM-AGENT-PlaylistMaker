@@ -6,8 +6,11 @@ import { RunForm } from "./features/run/RunForm";
 import { RunProgress } from "./features/run/RunProgress";
 import { RunResult } from "./features/run/RunResult";
 import { HistoryList } from "./features/history/HistoryList";
+import { SignIn } from "./features/auth/SignIn";
+import { CredentialsPanel } from "./features/auth/CredentialsPanel";
+import type { Session } from "./api/client";
 
-type Tab = "run" | "history";
+type Tab = "run" | "history" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("run");
@@ -15,6 +18,7 @@ export default function App() {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [openedResult, setOpenedResult] = useState<PlaylistResult | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
 
   const run = useRunStream();
 
@@ -24,6 +28,9 @@ export default function App() {
 
   useEffect(() => {
     api.capabilities().then(setCapabilities).catch(() => setCapabilities(null));
+    // Oturum durumu ONCE ogreniliyor: cok kullanicili kurulumda giris ekrani
+    // disinda hicbir sey gosterilmemeli.
+    api.me().then(setSession).catch(() => setSession(null));
   }, []);
 
   const start = useCallback(
@@ -64,6 +71,10 @@ export default function App() {
         </div>
       </header>
 
+      {session?.auth_required && !session.signed_in ? (
+        <SignIn />
+      ) : (
+      <>
       <div className="row" style={{ justifyContent: "space-between", marginBottom: "1rem" }}>
         <div className="tabs">
           <button aria-selected={tab === "run"} onClick={() => setTab("run")}>
@@ -72,10 +83,24 @@ export default function App() {
           <button aria-selected={tab === "history"} onClick={() => setTab("history")}>
             Geçmiş
           </button>
+          <button aria-selected={tab === "settings"} onClick={() => setTab("settings")}>
+            Ayarlar
+          </button>
         </div>
-        <button className="ghost" onClick={() => setDark((value) => !value)}>
-          {dark ? "☀ Aydınlık" : "🌙 Karanlık"}
-        </button>
+        <div className="row" style={{ gap: "0.5rem" }}>
+          {session?.auth_required && session.signed_in && (
+            <button
+              className="ghost"
+              onClick={() => api.logout().then(() => window.location.reload())}
+              title={session.email ?? undefined}
+            >
+              Çıkış
+            </button>
+          )}
+          <button className="ghost" onClick={() => setDark((value) => !value)}>
+            {dark ? "☀ Aydınlık" : "🌙 Karanlık"}
+          </button>
+        </div>
       </div>
 
       {tab === "run" ? (
@@ -102,8 +127,12 @@ export default function App() {
 
           {shownResult && <RunResult result={shownResult} />}
         </>
-      ) : (
+      ) : tab === "history" ? (
         <HistoryList onOpen={openFromHistory} />
+      ) : (
+        <CredentialsPanel onChange={() => api.capabilities().then(setCapabilities)} />
+      )}
+      </>
       )}
     </div>
   );

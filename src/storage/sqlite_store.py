@@ -133,11 +133,14 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (video_id, provider)
                 );
-                CREATE TABLE IF NOT EXISTS provider_health (
-                    provider TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS provider_cooldown (
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
                     cooldown_until TEXT,
                     last_error TEXT,
-                    updated_at TEXT NOT NULL
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, provider)
                 );
                 CREATE TABLE IF NOT EXISTS run (
                     run_id TEXT PRIMARY KEY,
@@ -167,6 +170,21 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, provider)
                 );
+                CREATE TABLE IF NOT EXISTS user_credential (
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, name)
+                );
+                CREATE TABLE IF NOT EXISTS session (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    email TEXT,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_session_expires ON session (expires_at);
                 CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache (expires_at);
                 CREATE INDEX IF NOT EXISTS idx_transcript_cache_expires ON transcript_cache (expires_at);
                 """
@@ -197,14 +215,49 @@ class SQLiteStore:
             if "duplicate column name" not in str(exc).lower():
                 raise
 
+    @staticmethod
+    def _copy_legacy_provider_health(conn: sqlite3.Connection) -> None:
+        """Eski `provider_health` satirlarini `provider_cooldown`a kopyalar.
+
+        Eski tabloda birincil anahtar yalnizca `provider` idi, yani saglayici
+        sagligi KURULUM GENELINDE tutuluyordu: bir kullanicinin kota asimi
+        DIGER HERKESIN aramasini soguturdu.
+
+        Ilk denemede tablo `DROP` + `RENAME` ile yerinde degistiriliyordu ve bu
+        YANLISTI: bir baglanti tabloyu dusururken bir digeri ona bakip
+        "no such table" aliyordu. CI'da tam olarak boyle kirildi. Hata
+        toleransini gocun ICINE koymak yetmiyor, cunku pencere disariya da
+        acik -- dogru cozum pencereyi daraltmak degil HIC ACMAMAK.
+
+        Bu yuzden yeni tablo AYRI ADLA kuruluyor ve eskisine dokunulmuyor:
+        yikici adim yok, dolayisiyla yaris da yok. Eski tablo (varsa) artik
+        okunmuyor; bir sonraki bakim adiminda silinebilir.
+        """
+        legacy = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='provider_health'"
+        ).fetchone()
+        if not legacy:
+            return
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
+        if "user_id" in columns:
+            return  # zaten yeni sekilde; kopyalanacak eski veri yok
+
+        failure = "COALESCE(failure_count, 0)" if "failure_count" in columns else "0"
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO provider_cooldown
+                (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+            SELECT 'local', provider, cooldown_until, last_error, {failure}, updated_at
+            FROM provider_health
+            """
+        )
+
     @classmethod
     def _migrate(cls, conn: sqlite3.Connection) -> None:
         cls._add_column_if_missing(
-            conn, "provider_health", "failure_count", "failure_count INTEGER NOT NULL DEFAULT 0"
-        )
-        cls._add_column_if_missing(
             conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
         )
+        cls._copy_legacy_provider_health(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
 
     @staticmethod
@@ -291,11 +344,11 @@ class SQLiteStore:
                 ),
             )
 
-    def get_provider_cooldown(self, provider: str) -> str | None:
+    def get_provider_cooldown(self, provider: str, user_id: str = DEFAULT_USER_ID) -> str | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT cooldown_until FROM provider_health WHERE provider = ?",
-                (provider,),
+                "SELECT cooldown_until FROM provider_cooldown WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
             ).fetchone()
         if not row:
             return None
@@ -305,18 +358,21 @@ class SQLiteStore:
             return cooldown_until
         return None
 
-    def mark_provider_cooldown(self, provider: str, error: str, cooldown_sec: int) -> None:
+    def mark_provider_cooldown(
+        self, provider: str, error: str, cooldown_sec: int, user_id: str = DEFAULT_USER_ID
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (provider, cooldown_until, last_error, failure_count, updated_at)
-                VALUES (?, ?, ?, COALESCE((SELECT failure_count FROM provider_health WHERE provider = ?), 0), ?)
-                ON CONFLICT(provider) DO UPDATE SET
+                INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                VALUES (?, ?, ?, ?, COALESCE(
+                    (SELECT failure_count FROM provider_cooldown WHERE user_id = ? AND provider = ?), 0), ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
                     cooldown_until = excluded.cooldown_until,
                     last_error = excluded.last_error,
                     updated_at = excluded.updated_at
                 """,
-                (provider, _iso_in(cooldown_sec), error, provider, _to_iso(_utc_now())),
+                (user_id, provider, _iso_in(cooldown_sec), error, user_id, provider, _to_iso(_utc_now())),
             )
 
     def record_provider_failure(
@@ -325,6 +381,7 @@ class SQLiteStore:
         error: str,
         cooldown_sec: int,
         threshold: int = DEFAULT_FAILURE_THRESHOLD,
+        user_id: str = DEFAULT_USER_ID,
     ) -> tuple[int, bool]:
         """Ardisik hata sayacini arttirir; esik asilirsa cooldown uygular.
 
@@ -335,41 +392,42 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (provider, cooldown_until, last_error, failure_count, updated_at)
-                VALUES (?, NULL, ?, 1, ?)
-                ON CONFLICT(provider) DO UPDATE SET
+                INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                VALUES (?, ?, NULL, ?, 1, ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
                     last_error = excluded.last_error,
-                    failure_count = provider_health.failure_count + 1,
+                    failure_count = provider_cooldown.failure_count + 1,
                     updated_at = excluded.updated_at
                 """,
-                (provider, error, now),
+                (user_id, provider, error, now),
             )
             row = conn.execute(
-                "SELECT failure_count FROM provider_health WHERE provider = ?",
-                (provider,),
+                "SELECT failure_count FROM provider_cooldown WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
             ).fetchone()
             failure_count = int(row["failure_count"]) if row else 1
             cooled_down = failure_count >= threshold
             if cooled_down:
                 conn.execute(
-                    "UPDATE provider_health SET cooldown_until = ?, failure_count = 0, updated_at = ? WHERE provider = ?",
-                    (_iso_in(cooldown_sec), now, provider),
+                    "UPDATE provider_cooldown SET cooldown_until = ?, failure_count = 0, updated_at = ?"
+                    " WHERE user_id = ? AND provider = ?",
+                    (_iso_in(cooldown_sec), now, user_id, provider),
                 )
         return failure_count, cooled_down
 
-    def clear_provider_cooldown(self, provider: str) -> None:
+    def clear_provider_cooldown(self, provider: str, user_id: str = DEFAULT_USER_ID) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (provider, cooldown_until, last_error, failure_count, updated_at)
-                VALUES (?, NULL, NULL, 0, ?)
-                ON CONFLICT(provider) DO UPDATE SET
+                INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                VALUES (?, ?, NULL, NULL, 0, ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
                     cooldown_until = NULL,
                     last_error = NULL,
                     failure_count = 0,
                     updated_at = excluded.updated_at
                 """,
-                (provider, _to_iso(_utc_now())),
+                (user_id, provider, _to_iso(_utc_now())),
             )
 
     def purge_expired(self) -> int:
@@ -428,6 +486,89 @@ class SQLiteStore:
     # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
     # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
     # boylece anahtar sonradan eklenebilir.
+
+    # ------------------------------------------------- kullanici anahtarlari
+    #
+    # BYOK: cok kullanicili kurulumda her kullanici kendi API anahtarini
+    # getiriyor. Paylasimli anahtar mumkun degil -- YouTube Data API kotasi
+    # PROJE basina gunde 10.000 birim ve bir calistirma ~1.200 birim tuketiyor,
+    # yani ikinci kullanici gunu bitiriyor.
+    #
+    # Degerler jetonlarla AYNI kutuyla sifreleniyor; anahtar yoksa duz metin
+    # yazilir ve eski davranis korunur.
+
+    def save_user_credential(self, user_id: str, name: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO user_credential (user_id, name, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, name, self._secrets.encrypt(value), _to_iso(_utc_now())),
+            )
+
+    def get_user_credentials(self, user_id: str) -> dict[str, str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT name, value FROM user_credential WHERE user_id = ?", (user_id,)
+            ).fetchall()
+        return {row["name"]: self._secrets.decrypt(row["value"]) for row in rows}
+
+    def delete_user_credential(self, user_id: str, name: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_credential WHERE user_id = ? AND name = ?", (user_id, name)
+            )
+            return cursor.rowcount > 0
+
+    # ------------------------------------------------------------- oturumlar
+    #
+    # Jetonun KENDISI degil, SHA-256 ozeti saklaniyor: veritabani sizsa bile
+    # oturumlar devralinamaz. Ayni sebeple jeton yalnizca uretildigi anda,
+    # cagirana bir kez donuyor.
+
+    @staticmethod
+    def hash_session_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def create_session(self, token: str, user_id: str, email: str | None, ttl_sec: int) -> None:
+        now = _utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO session (token_hash, user_id, email, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    self.hash_session_token(token),
+                    user_id,
+                    email,
+                    _to_iso(now),
+                    _to_iso(now + timedelta(seconds=ttl_sec)),
+                ),
+            )
+
+    def get_session(self, token: str) -> dict[str, str] | None:
+        """Suresi gecmemis oturumu dondurur; gecmisse silip `None` doner."""
+        token_hash = self.hash_session_token(token)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT user_id, email, expires_at FROM session WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if row is None:
+                return None
+            if _is_expired(row["expires_at"]):
+                conn.execute("DELETE FROM session WHERE token_hash = ?", (token_hash,))
+                return None
+        return {"user_id": row["user_id"], "email": row["email"]}
+
+    def delete_session(self, token: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM session WHERE token_hash = ?", (self.hash_session_token(token),)
+            )
+            return cursor.rowcount > 0
 
     def save_oauth_token(self, user_id: str, provider: str, token_json: str) -> None:
         with self.connect() as conn:
@@ -519,6 +660,21 @@ class SQLiteStore:
                 row = conn.execute("SELECT COUNT(*) AS n FROM run").fetchone()
             else:
                 row = conn.execute("SELECT COUNT(*) AS n FROM run WHERE user_id = ?", (user_id,)).fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_recent_runs(self, user_id: str, within_sec: int = 86400) -> int:
+        """Son `within_sec` saniyede bu kullanicinin baslattigi calistirma sayisi.
+
+        Ayri bir sayac tablosu YOK: `run` tablosu zaten `user_id` ve
+        `created_at` tasiyor. Ikinci bir kaynak tutmak, ikisinin birbirinden
+        ayrilabilecegi bir yer daha yaratirdi.
+        """
+        cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM run WHERE user_id = ? AND created_at >= ?",
+                (user_id, cutoff),
+            ).fetchone()
         return int(row["n"]) if row else 0
 
     def delete_run(self, run_id: str, user_id: str | None = DEFAULT_USER_ID) -> bool:

@@ -53,14 +53,26 @@ def test_round_trip_split_and_compose():
 
 
 def test_credentials_carry_the_secrets():
-    """BYOK'a gecince bu grup kullanici basina saklanacak."""
+    """BYOK'ta kullanici basina saklanan grup."""
     fields = set(UserCredentials.model_fields)
     assert "gemini_api_key" in fields
     assert "youtube_data_api_key" in fields
-    assert "youtube_oauth_client_secret" in fields
     # Sunucu ayarlari buraya SIZMAMALI
     assert "max_search_workers" not in fields
     assert "sqlite_path" not in fields
+
+
+def test_oauth_client_belongs_to_the_installation_not_the_user():
+    """OAuth ISTEMCISI kullanici basina olamaz.
+
+    Istemci kimligi/sirri, uygulamanin Google'a kayitli kimligi. Kullanici
+    basina saklansaydi her kullanicinin kendi Google Cloud OAuth istemcisini
+    acip kendi yonlendirme adresini eklemesi gerekirdi -- pratikte imkansiz.
+    Kullanicidan gelen sey JETON (yayin izni), istemci degil.
+    """
+    assert "youtube_oauth_client_id" in set(ServerConfig.model_fields)
+    assert "youtube_oauth_client_secret" in set(ServerConfig.model_fields)
+    assert "youtube_oauth_client_id" not in set(UserCredentials.model_fields)
 
 
 def test_run_options_are_per_request():

@@ -17,7 +17,7 @@ from src.providers.faster_whisper_provider import FasterWhisperProvider
 from src.providers.whisper_cpp_provider import WhisperCppProvider
 from src.providers.youtube_transcript_api_provider import YouTubeTranscriptAPIProvider
 from src.providers.ytdlp_provider import YtDlpProvider
-from src.storage import SQLiteStore
+from src.storage import DEFAULT_USER_ID, SQLiteStore
 from src.utils.logging_utils import redact_secrets
 from src.utils.retry_utils import retry_with_backoff
 
@@ -69,6 +69,7 @@ def get_transcript(
     state: RunTranscriptState,
     logger=None,
     preferred_language: str | None = None,
+    user_id: str = DEFAULT_USER_ID,
 ) -> TranscriptResult:
     language_hint = preferred_language or candidate.language
     providers: list[tuple[str, object]] = [
@@ -91,7 +92,7 @@ def get_transcript(
                 return cached
             continue
 
-        if store.get_provider_cooldown(provider_name):
+        if store.get_provider_cooldown(provider_name, user_id=user_id):
             # ONEMLI: cooldown durumu ARTIK transkript onbellegine yazilmiyor.
             # Eskiden 15 dakikalik cooldown, 1 saatlik bir "cooldown" onbellek kaydi
             # birakiyor ve saglayici iyilestikten sonra bile atlanmaya devam ediyordu.
@@ -163,6 +164,7 @@ def get_transcript(
                 message,
                 config.provider_cooldown_sec,
                 threshold=config.provider_failure_threshold,
+                user_id=user_id,
             )
             if logger:
                 logger.warning(
@@ -186,12 +188,12 @@ def get_transcript(
         result.attempted_providers = attempted.copy()
         if result.status == "available":
             store.put_transcript_cache(result, config.transcript_cache_ttl_sec)
-            store.clear_provider_cooldown(provider_name)
+            store.clear_provider_cooldown(provider_name, user_id=user_id)
             return result
 
         store.put_transcript_cache(result, config.failure_cache_ttl_sec)
         # Saglayici cevap verdi ama icerik yok: bu bir saglayici arizasi degil.
-        store.clear_provider_cooldown(provider_name)
+        store.clear_provider_cooldown(provider_name, user_id=user_id)
 
     return TranscriptResult(
         video_id=candidate.video_id,

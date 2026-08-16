@@ -41,6 +41,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+export interface Session {
+  signed_in: boolean;
+  user_id: string | null;
+  email: string | null;
+  /** Kurulum cok kullanicili mi. `false` ise giris ekrani hic gosterilmez. */
+  auth_required: boolean;
+}
+
+export interface CredentialItem {
+  name: string;
+  label: string;
+  required: boolean;
+  /** Yalnizca "girilmis mi". DEGER hicbir zaman donmuyor. */
+  configured: boolean;
+}
+
+export interface CredentialsResponse {
+  editable: boolean;
+  items: CredentialItem[];
+}
+
 export interface YoutubeAuthStatus {
   connected: boolean;
   configured: boolean;
@@ -54,6 +75,18 @@ export interface PublishResponse {
 
 export const api = {
   capabilities: () => request<Capabilities>("/api/config"),
+
+  me: () => request<Session>("/api/auth/me"),
+
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
+
+  credentials: () => request<CredentialsResponse>("/api/credentials"),
+
+  saveCredential: (name: string, value: string) =>
+    request<void>(`/api/credentials/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
+
+  deleteCredential: (name: string) =>
+    request<void>(`/api/credentials/${name}`, { method: "DELETE" }),
 
   youtubeStatus: () => request<YoutubeAuthStatus>("/api/auth/youtube/status"),
 

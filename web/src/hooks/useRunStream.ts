@@ -88,7 +88,9 @@ export function useRunStream() {
               snapshot.error ??
               (snapshot.state === "cancelled"
                 ? "Çalıştırma iptal edildi."
-                : "Çalıştırma tamamlanamadı"),
+                : snapshot.state === "interrupted"
+                  ? "Sunucu yeniden başlatıldığı için çalıştırma yarıda kaldı."
+                  : "Çalıştırma tamamlanamadı"),
           }));
         }
       });

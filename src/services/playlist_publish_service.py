@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from src.config import AppConfig
+from src.config import AppConfig, ServerConfig
 from src.models import PlaylistResult
 
 
@@ -17,8 +20,20 @@ class PublishResult:
 
 YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
+# Giris akisinda ayrica KIMLIK isteniyor: `openid` ID token'i getiriyor, `email`
+# ise icine e-postayi koyuyor. Kullanicinin kalici kimligi ID token'daki `sub`.
+LOGIN_SCOPES = YOUTUBE_SCOPES + ["openid", "email"]
 
-def build_authorization_url(config: AppConfig, redirect_uri: str, state: str) -> tuple[str, str]:
+# Google, `openid` istendiginde kapsamlari istenenden FARKLI bir kumeyle
+# donduruyor (siralama degisiyor, bazen `profile` ekleniyor) ve oauthlib bunu
+# "Scope has changed" diye istisnaya cevirip akisi kiriyor. Sunucu tarafinda
+# istedigimizden AZI degil FAZLASI donduğu icin bu guvenlik acisindan zararsiz.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
+
+def build_authorization_url(
+    config: ServerConfig, redirect_uri: str, state: str, scopes: list[str] | None = None
+) -> tuple[str, str]:
     """Google onay URL'ini ve PKCE dogrulayicisini uretir.
 
     Web akisinin ilk adimi. `run_local_server` sunucuda tarayici acmaya
@@ -30,7 +45,7 @@ def build_authorization_url(config: AppConfig, redirect_uri: str, state: str) ->
     Google `invalid_grant: Missing code verifier` donuyor. Cagiran bunu `state`
     ile birlikte saklamali.
     """
-    flow = _build_web_flow(config, redirect_uri)
+    flow = _build_web_flow(config, redirect_uri, scopes)
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
@@ -42,23 +57,74 @@ def build_authorization_url(config: AppConfig, redirect_uri: str, state: str) ->
     return authorization_url, flow.code_verifier
 
 
+@dataclass
+class ExchangedToken:
+    """Kod degisiminin sonucu: saklanacak jeton ve KIMLIK.
+
+    Kimlik burada donuyor cunku baska yerde ele gecirilemiyor:
+    `Credentials.to_json()` `id_token`i DISARIDA birakiyor, yani saklanan
+    JSON'dan kullaniciyi geri cikarmak mumkun degil. Degisim anindaki tek
+    firsat.
+    """
+
+    token_json: str
+    google_sub: str | None = None
+    email: str | None = None
+
+
 def exchange_code_for_token(
-    config: AppConfig, redirect_uri: str, code: str, code_verifier: str | None = None
-) -> str:
-    """Yetkilendirme kodunu jetona cevirir; saklanacak JSON'u dondurur.
+    config: ServerConfig,
+    redirect_uri: str,
+    code: str,
+    code_verifier: str | None = None,
+    scopes: list[str] | None = None,
+) -> ExchangedToken:
+    """Yetkilendirme kodunu jetona cevirir; jeton ve kimligi dondurur.
 
     `code_verifier`, yetkilendirmeyi baslatan istekten tasinmali; PKCE dogrulamasi
     bunsuz tamamlanmaz.
     """
-    flow = _build_web_flow(config, redirect_uri)
+    flow = _build_web_flow(config, redirect_uri, scopes)
     if code_verifier:
         flow.code_verifier = code_verifier
     flow.fetch_token(code=code)
-    return flow.credentials.to_json()
+    claims = decode_id_token(getattr(flow.credentials, "id_token", None))
+    return ExchangedToken(
+        token_json=flow.credentials.to_json(),
+        google_sub=claims.get("sub"),
+        email=claims.get("email"),
+    )
 
 
-def _build_web_flow(config: AppConfig, redirect_uri: str):
+def decode_id_token(id_token: str | None) -> dict:
+    """ID token'in govdesini okur. Imza DOGRULANMIYOR -- bilerek.
+
+    Jeton, bizim baslattigimiz istege karsilik Google'in jeton ucundan TLS
+    uzerinden DOGRUDAN geldi; araya girip degistiren biri zaten TLS'i kirmis
+    olurdu. Google'in kendi dokumantasyonu da bu durumda dogrulamanin
+    gerekmedigini soyluyor. (Jeton bir UCUNCU TARAFTAN gelseydi imza dogrulamasi
+    ZORUNLU olurdu.)
+
+    Bozuk/eksik jeton bir istisna degil, bos sozluk uretiyor: kimlik
+    cozulemediginde cagiran taraf zaten girisi reddediyor.
+    """
+    if not id_token:
+        return {}
+    parts = id_token.split(".")
+    if len(parts) != 3:
+        return {}
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)  # base64url dolgusu kirpilmis olabilir
+    try:
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _build_web_flow(config: ServerConfig, redirect_uri: str, scopes: list[str] | None = None):
     from google_auth_oauthlib.flow import Flow
+
+    scopes = scopes or YOUTUBE_SCOPES
 
     # `autogenerate_code_verifier` ACIKCA geciliyor. `Flow.__init__` bunu True
     # varsayiyor ama fabrika metotlari kwargs'tan pop ederken kendi varsayilanini
@@ -69,20 +135,20 @@ def _build_web_flow(config: AppConfig, redirect_uri: str):
     if config.youtube_oauth_client_secret_file:
         flow = Flow.from_client_secrets_file(
             config.youtube_oauth_client_secret_file,
-            scopes=YOUTUBE_SCOPES,
+            scopes=scopes,
             autogenerate_code_verifier=True,
         )
     else:
         flow = Flow.from_client_config(
             _web_client_config(config),
-            scopes=YOUTUBE_SCOPES,
+            scopes=scopes,
             autogenerate_code_verifier=True,
         )
     flow.redirect_uri = redirect_uri
     return flow
 
 
-def _web_client_config(config: AppConfig) -> dict:
+def _web_client_config(config: ServerConfig) -> dict:
     if not (config.youtube_oauth_client_id and config.youtube_oauth_client_secret):
         raise RuntimeError(
             "YOUTUBE_OAUTH_CLIENT_ID ve YOUTUBE_OAUTH_CLIENT_SECRET tanımlı olmalı"

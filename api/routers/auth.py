@@ -17,10 +17,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi import Response
 from fastapi.responses import RedirectResponse
 
-from api.deps import build_run_config, get_current_user, get_default_run_options, get_server_config, get_store, get_user_credentials
-from src.config import RunOptions, ServerConfig, UserCredentials
-from src.services.playlist_publish_service import build_authorization_url, exchange_code_for_token
-from src.storage import SQLiteStore
+from api.deps import SESSION_COOKIE, get_current_user, get_server_config, get_store
+from src.config import ServerConfig
+from src.services.playlist_publish_service import (
+    LOGIN_SCOPES,
+    build_authorization_url,
+    exchange_code_for_token,
+)
+from src.storage import DEFAULT_USER_ID, SQLiteStore
 from src.utils.logging_utils import redact_secrets
 
 router = APIRouter(prefix="/api/auth/youtube", tags=["auth"])
@@ -33,10 +37,10 @@ STATE_TTL_SECONDS = 600
 # ureten `Flow` nesnesinde yasadigi icin callback'e baska turlu tasinamiyor.
 # Surec-ici: tek instance icin yeterli, cok kullanicili dagitimda paylasimli
 # bir depoya (Redis) tasinmali.
-_pending_states: dict[str, tuple[str, str | None, float]] = {}
+_pending_states: dict[str, tuple[str | None, str | None, float]] = {}
 
 
-def _consume_state(state: str) -> tuple[str, str | None] | None:
+def _consume_state(state: str) -> tuple[str | None, str | None] | None:
     """State'i TEK KULLANIMLIK olarak tuketir; (user_id, code_verifier) doner."""
     _expire_states()
     entry = _pending_states.pop(state, None)
@@ -55,44 +59,57 @@ def _redirect_uri(request: Request) -> str:
     return str(request.url_for("youtube_callback"))
 
 
+def _oauth_client_configured(server: ServerConfig) -> bool:
+    """Kurulumda OAuth ISTEMCISI tanimli mi.
+
+    Kullanicinin anahtarlarindan bagimsiz: istemci uygulamaya ait, bu yuzden
+    `ServerConfig`ten okunuyor.
+    """
+    return bool(
+        server.youtube_oauth_client_secret_file
+        or (server.youtube_oauth_client_id and server.youtube_oauth_client_secret)
+    )
+
+
 @router.get("/status")
 def get_status(
     user_id: str = Depends(get_current_user),
     store: SQLiteStore = Depends(get_store),
-    credentials: UserCredentials = Depends(get_user_credentials),
+    server: ServerConfig = Depends(get_server_config),
 ) -> dict:
     """Hesap bagli mi, ve baglanti kurulabilir mi?"""
-    configured = bool(
-        credentials.youtube_oauth_client_secret_file
-        or (credentials.youtube_oauth_client_id and credentials.youtube_oauth_client_secret)
-    )
     return {
         "connected": store.get_oauth_token(user_id, PROVIDER) is not None,
-        "configured": configured,
+        "configured": _oauth_client_configured(server),
     }
 
 
 @router.get("/start")
 def start_authorization(
     request: Request,
-    user_id: str = Depends(get_current_user),
-    credentials: UserCredentials = Depends(get_user_credentials),
-    defaults: RunOptions = Depends(get_default_run_options),
     server: ServerConfig = Depends(get_server_config),
 ) -> dict:
-    """Google onay URL'ini uretir. Tarayici bu adrese YONLENDIRILIR."""
-    config = build_run_config(credentials, defaults, server)
+    """Google onay URL'ini uretir. Tarayici bu adrese YONLENDIRILIR.
+
+    OTURUM GEREKTIRMIYOR -- gerektirseydi giris yapmak icin once giris yapmis
+    olmak gerekirdi. Kullanicinin API anahtarlarina da bakmiyor: OAuth istemcisi
+    kuruluma ait ve akisin bu adimi kimlikten bagimsiz.
+    """
     # State'i URL uretildikten SONRA kaydediyoruz: `code_verifier` ancak o zaman
     # olusuyor ve callback'te ayni degerin geri verilmesi gerekiyor.
     placeholder = secrets.token_urlsafe(24)
     try:
-        url, code_verifier = build_authorization_url(config, _redirect_uri(request), placeholder)
+        url, code_verifier = build_authorization_url(
+            server, _redirect_uri(request), placeholder, scopes=LOGIN_SCOPES
+        )
     except Exception as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, redact_secrets(str(exc))) from exc
 
     _expire_states()
+    # Kullanici kimligi burada BILINMIYOR ve bilinmesi de gerekmiyor; callback
+    # onu ID token'dan cikaracak.
     _pending_states[placeholder] = (
-        user_id,
+        None,
         code_verifier,
         time.monotonic() + STATE_TTL_SECONDS,
     )
@@ -106,11 +123,14 @@ def youtube_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     store: SQLiteStore = Depends(get_store),
-    credentials: UserCredentials = Depends(get_user_credentials),
-    defaults: RunOptions = Depends(get_default_run_options),
     server: ServerConfig = Depends(get_server_config),
 ) -> RedirectResponse:
-    """Google'in geri dondugu uc. Kodu jetona cevirip kullaniciya baglar."""
+    """Google'in geri dondugu uc. Kodu jetona cevirir, kimligi kurar.
+
+    Bu uc AYNI ANDA iki is yapiyor: YouTube yayin izni aliyor ve kullaniciyi
+    tanitiyor. Ayirmak ikinci bir onay ekrani demekti; kullanici zaten yayin
+    icin Google hesabi bagliyor.
+    """
     if error:
         return RedirectResponse(f"/?youtube_auth=error&reason={error}")
     if not code or not state:
@@ -120,20 +140,93 @@ def youtube_callback(
     pending = _consume_state(state)
     if pending is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Geçersiz veya süresi dolmuş `state`")
-    user_id, code_verifier = pending
+    _unused, code_verifier = pending
 
-    config = build_run_config(credentials, defaults, server)
     try:
-        token_json = exchange_code_for_token(
-            config, _redirect_uri(request), code, code_verifier=code_verifier
+        exchanged = exchange_code_for_token(
+            server, _redirect_uri(request), code, code_verifier=code_verifier, scopes=LOGIN_SCOPES
         )
     except Exception as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, redact_secrets(f"Jeton alınamadı: {exc}")
         ) from exc
 
-    store.save_oauth_token(user_id, PROVIDER, token_json)
-    return RedirectResponse("/?youtube_auth=ok")
+    response = RedirectResponse("/?youtube_auth=ok")
+
+    if server.auth_mode == "single_user":
+        store.save_oauth_token(DEFAULT_USER_ID, PROVIDER, exchanged.token_json)
+        return response
+
+    # Kalici kimlik `sub`: e-posta degisebilir, `sub` degismez.
+    if not exchanged.google_sub:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Google kimliği alınamadı; `openid` izni verilmemiş olabilir",
+        )
+    user_id = f"google:{exchanged.google_sub}"
+    store.save_oauth_token(user_id, PROVIDER, exchanged.token_json)
+
+    session_token = secrets.token_urlsafe(32)
+    store.create_session(session_token, user_id, exchanged.email, server.session_ttl_sec)
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_token,
+        max_age=server.session_ttl_sec,
+        httponly=True,  # JavaScript okuyamasin: XSS ile jeton calinmasini engeller
+        samesite="lax",  # CSRF'e karsi; `lax` OAuth geri donusundeki yonlendirmeyi bozmuyor
+        secure=request.url.scheme == "https",
+        path="/",
+    )
+    return response
+
+
+session_router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+@session_router.get("/me")
+def whoami(
+    request: Request,
+    server: ServerConfig = Depends(get_server_config),
+    store: SQLiteStore = Depends(get_store),
+) -> dict:
+    """Kim giris yapmis. Oturum YOKSA hata degil, `signed_in: false` doner.
+
+    401 donmuyor cunku bu ucun isi tam da "oturum var mi" sorusunu yanitlamak;
+    arayuz her acilista bunu cagirip giris ekrani gosterip gostermeyecegine
+    karar veriyor.
+    """
+    if server.auth_mode == "single_user":
+        return {"signed_in": True, "user_id": DEFAULT_USER_ID, "email": None, "auth_required": False}
+
+    token = request.cookies.get(SESSION_COOKIE)
+    session = store.get_session(token) if token else None
+    if not session:
+        return {"signed_in": False, "user_id": None, "email": None, "auth_required": True}
+    return {
+        "signed_in": True,
+        "user_id": session["user_id"],
+        "email": session["email"],
+        "auth_required": True,
+    }
+
+
+@session_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def logout(
+    request: Request,
+    store: SQLiteStore = Depends(get_store),
+) -> Response:
+    """Oturumu SUNUCUDAN siler; cerezi silmek tek basina yeterli olmazdi.
+
+    Cerez silinip kayit dursaydi, o jetonun bir kopyasini ele geciren biri
+    oturumu kullanmaya devam ederdi. Sunucu tarafli oturumlarin varlik sebebi
+    de bu: iptal edilebilir olmalari.
+    """
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        store.delete_session(token)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
 
 # `response_class=Response` ACIK olarak veriliyor: FastAPI 0.116'da `-> None`

@@ -4,7 +4,18 @@
 export type Language = "en" | "tr";
 export type Difficulty = "mixed" | "beginner" | "intermediate" | "advanced";
 export type Freshness = "balanced" | "evergreen" | "recent";
-export type RunState = "pending" | "running" | "done" | "failed" | "cancelled";
+/**
+ * `interrupted` is yurutucusunde bir durum DEGIL, bir cikarim: sunucu yeniden
+ * baslatildiginda bellekteki isler oluyor ama calistirma kaydi kaliyor. Onu
+ * bitirecek hicbir sey kalmadigi icin "beklemede" gostermek yalan olurdu.
+ */
+export type RunState =
+  | "pending"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
 
 export interface FilterOptions {
   language: Language;

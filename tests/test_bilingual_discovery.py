@@ -108,7 +108,7 @@ def test_both_queries_run_and_pools_are_merged(monkeypatch, tmp_path):
     config = _config(tmp_path)
     seen: list[str] = []
 
-    def fake_search(config_, store, query, filters, logger=None, notes=None):
+    def fake_search(config_, store, query, filters, logger=None, notes=None, **kw):
         seen.append(query)
         suffix = "tr" if "zaman" in query else "en"
         return [VideoCandidate(video_id=f"video-{suffix}", url="u", title=f"T {suffix}")]
@@ -139,7 +139,7 @@ def test_only_one_query_runs_when_disabled(monkeypatch, tmp_path):
     config = _config(tmp_path)
     seen: list[str] = []
 
-    def fake_search(config_, store, query, filters, logger=None, notes=None):
+    def fake_search(config_, store, query, filters, logger=None, notes=None, **kw):
         seen.append(query)
         return [VideoCandidate(video_id="video-tr", url="u", title="T")]
 
