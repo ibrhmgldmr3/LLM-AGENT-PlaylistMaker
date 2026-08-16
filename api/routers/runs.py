@@ -190,7 +190,18 @@ def get_run(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
 
     handle = runner.get(run_id)
-    state = handle.state.value if handle else (JobState.DONE.value if summary["is_complete"] else JobState.PENDING.value)
+    if handle is not None:
+        state = handle.state.value
+    elif summary["is_complete"]:
+        state = JobState.DONE.value
+    else:
+        # Canli is YOK ve sonuc da yok: surec yeniden baslamis ve bu calistirma
+        # kesilmis. Eskiden `pending` donuyordu, yani kullanici SONSUZA KADAR
+        # "beklemede" goruyordu -- onu bitirecek hicbir sey kalmamisken.
+        #
+        # Kaldigi yerden SURDURMEK kalici bir kuyruk ister (Faz 3); buradaki is
+        # yalan soylememek.
+        state = "interrupted"
 
     if handle is not None and handle.state is JobState.FAILED:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, handle.error or "Çalıştırma başarısız")

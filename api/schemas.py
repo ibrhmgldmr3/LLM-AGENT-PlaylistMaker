@@ -14,11 +14,16 @@ from pydantic import BaseModel, Field
 from src.models import FilterOptions, PlaylistResult
 
 
-# `JobState` degerlerinin tel uzerindeki karsiligi. Eskiden bu alanlar duz `str`
+# `JobState` degerlerinin tel uzerindeki karsiligi ARTI `interrupted`.
+#
+# `interrupted` is yurutucusunde YOK, cunku o bir calisma zamani durumu degil
+# bir CIKARIM: surec yeniden baslatildiginda bellekteki isler oluyor ama
+# `run` satiri kaliyor. Sonucu olmayan ve canli isi de olmayan bir calistirmayi
+# "beklemede" gostermek yalan olurdu -- onu bitirecek hicbir sey kalmadi. Eskiden bu alanlar duz `str`
 # idi; bu bir davranis degil, kesinlik eksikligiydi -- API yalnizca bu bes degeri
 # donuyor. Literal yazmak OpenAPI'ye enum olarak yansiyor ve uretilen TypeScript
 # tipi de daralarak istemcide `switch` kapsama kontrolunu mumkun kiliyor.
-RunState = Literal["pending", "running", "done", "failed", "cancelled"]
+RunState = Literal["pending", "running", "done", "failed", "cancelled", "interrupted"]
 
 
 class RunOptionsOverride(BaseModel):

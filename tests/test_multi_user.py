@@ -487,3 +487,46 @@ def test_zero_means_unlimited(store):
     from src.config import ServerConfig
 
     assert ServerConfig().max_runs_per_user_per_day == 0
+
+
+# ------------------------------------------------- kesilen calistirmalar
+
+def test_interrupted_run_is_not_reported_as_pending(tmp_path, monkeypatch):
+    """Regresyon: yeniden baslatmada kesilen calistirma SONSUZA KADAR
+    "beklemede" gorunuyordu.
+
+    Surec yeniden baslatildiginda bellekteki isler oluyor ama `run` satiri
+    kaliyor. Sonucu olmayan ve canli isi de olmayan bir calistirmayi
+    "beklemede" gostermek yalan: onu bitirecek hicbir sey kalmadi.
+
+    Kaldigi yerden SURDURMEK kalici bir kuyruk ister (Faz 3); buradaki is
+    yalan soylememek.
+    """
+    from fastapi.testclient import TestClient
+
+    from api import deps
+    from src.config import AppConfig
+
+    config = AppConfig(
+        gemini_api_key="k",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "app.db"),
+        secret_encryption_key=KEY,
+        auth_mode="multi_user",
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(deps, "_base_config", lambda: config)
+
+    from api.main import app
+
+    with TestClient(app) as client:
+        store = SQLiteStore(config.sqlite_path, encryption_key=KEY)
+        # Yeniden baslatmadan sonraki hal: satir var, sonuc yok, bellekte is yok.
+        store.create_run("yarim-kalan", "Konu", {}, user_id="google:ali")
+        store.create_session("jeton", "google:ali", None, ttl_sec=3600)
+        client.cookies.set("map_session", "jeton")
+
+        body = client.get("/api/runs/yarim-kalan").json()
+
+    assert body["state"] == "interrupted"
+    assert body["result"] is None

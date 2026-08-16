@@ -566,7 +566,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "pending" | "running" | "done" | "failed" | "cancelled";
+            state: "pending" | "running" | "done" | "failed" | "cancelled" | "interrupted";
         };
         /** RunListResponse */
         RunListResponse: {
@@ -612,7 +612,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "pending" | "running" | "done" | "failed" | "cancelled";
+            state: "pending" | "running" | "done" | "failed" | "cancelled" | "interrupted";
         };
         /**
          * RunSnapshotBody
@@ -657,7 +657,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "pending" | "running" | "done" | "failed" | "cancelled";
+            state: "pending" | "running" | "done" | "failed" | "cancelled" | "interrupted";
         };
         /**
          * RunStatus
@@ -681,7 +681,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "pending" | "running" | "done" | "failed" | "cancelled";
+            state: "pending" | "running" | "done" | "failed" | "cancelled" | "interrupted";
         };
         /** RunSummary */
         RunSummary: {
