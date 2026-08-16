@@ -81,7 +81,7 @@ def test_playlist_prevents_duplicate_processing_and_exports(monkeypatch, tmp_pat
         lambda cands, topic, subtopic, filters, **kw: [(candidates[0], _score(8.0)), (candidates[1], _score(7.0))],
     )
 
-    def fake_get_transcript(config, store, candidate, run_dir, state, logger=None, preferred_language=None):
+    def fake_get_transcript(config, store, candidate, run_dir, state, logger=None, preferred_language=None, **kw):
         transcript_calls[candidate.video_id] += 1
         return TranscriptResult(
             video_id=candidate.video_id,
@@ -241,7 +241,7 @@ def test_transcript_enrichment_is_capped(monkeypatch, tmp_path):
         lambda cands, topic, subtopic, filters, **kw: [(pool[i], _score(9.0 - i)) for i in range(4)],
     )
 
-    def fake_get_transcript(config, store, candidate, run_dir, state, logger=None, preferred_language=None):
+    def fake_get_transcript(config, store, candidate, run_dir, state, logger=None, preferred_language=None, **kw):
         enriched.append(candidate.video_id)
         return TranscriptResult(video_id=candidate.video_id, status="unavailable", source="none")
 
@@ -261,7 +261,7 @@ def test_subtopic_count_respects_config_cap(monkeypatch, tmp_path):
         playlist_service, "GeminiLLMProvider", lambda config: DummyLLM([f"S{i}" for i in range(10)])
     )
 
-    def fake_search(config, store, query, filters, logger=None, notes=None):
+    def fake_search(config, store, query, filters, logger=None, notes=None, **kw):
         searches.append(query)
         return pool
 

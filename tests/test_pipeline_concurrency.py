@@ -66,7 +66,7 @@ def test_searches_actually_run_in_parallel(monkeypatch, tmp_path):
     config = _config(tmp_path, max_search_workers=4)
     concurrent, peak, lock = [0], [0], threading.Lock()
 
-    def slow_search(config_, store, query, filters, logger=None, notes=None):
+    def slow_search(config_, store, query, filters, logger=None, notes=None, **kw):
         with lock:
             concurrent[0] += 1
             peak[0] = max(peak[0], concurrent[0])
@@ -97,7 +97,7 @@ def test_subtopic_order_is_preserved_despite_out_of_order_completion(monkeypatch
     # Alpha en yavas, Gamma en hizli tamamlanir.
     delays = {"Alpha": 0.30, "Beta": 0.15, "Gamma": 0.01}
 
-    def staggered_search(config_, store, query, filters, logger=None, notes=None):
+    def staggered_search(config_, store, query, filters, logger=None, notes=None, **kw):
         name = query.split()[-1]
         time.sleep(delays[name])
         return [VideoCandidate(video_id=f"video-{name}", url=f"https://youtu.be/{name}", title=name)]
@@ -119,7 +119,7 @@ def test_transcripts_are_deduplicated_across_subtopics(monkeypatch, tmp_path):
               VideoCandidate(video_id="other", url="https://youtu.be/other", title="Diger")]
     fetches, lock = [], threading.Lock()
 
-    def transcript(config_, store, candidate, run_dir, state, logger=None, preferred_language=None):
+    def transcript(config_, store, candidate, run_dir, state, logger=None, preferred_language=None, **kw):
         with lock:
             fetches.append(candidate.video_id)
         return TranscriptResult(video_id=candidate.video_id, status="unavailable", source="none")
@@ -140,7 +140,7 @@ def test_worker_failure_does_not_abort_the_run(monkeypatch, tmp_path):
     subtopics = ["Good1", "Bad", "Good2"]
     config = _config(tmp_path, max_search_workers=3)
 
-    def flaky_search(config_, store, query, filters, logger=None, notes=None):
+    def flaky_search(config_, store, query, filters, logger=None, notes=None, **kw):
         name = query.split()[-1]
         if name == "Bad":
             raise RuntimeError("arama coktu")
@@ -163,7 +163,7 @@ def test_pooling_lets_every_subtopic_see_all_candidates(monkeypatch, tmp_path):
     subtopics = ["Alpha", "Beta"]
     config = _config(tmp_path, max_search_workers=2)
 
-    def search(config_, store, query, filters, logger=None, notes=None):
+    def search(config_, store, query, filters, logger=None, notes=None, **kw):
         name = query.split()[-1]
         return [VideoCandidate(video_id=f"video-{name}", url=f"https://youtu.be/{name}", title=name)]
 
@@ -179,13 +179,13 @@ def test_transcript_worker_failure_is_isolated(monkeypatch, tmp_path):
     subtopics = ["A", "B"]
     config = _config(tmp_path, transcript_enrichment_top_k=1, max_transcript_workers=2)
 
-    def transcript(config_, store, candidate, run_dir, state, logger=None, preferred_language=None):
+    def transcript(config_, store, candidate, run_dir, state, logger=None, preferred_language=None, **kw):
         if candidate.video_id == "video-A":
             raise RuntimeError("transkript coktu")
         return TranscriptResult(video_id=candidate.video_id, status="available",
                                 source="youtube_transcript_api", text="x" * 60)
 
-    def search(config_, store, query, filters, logger=None, notes=None):
+    def search(config_, store, query, filters, logger=None, notes=None, **kw):
         name = query.split()[-1]
         return [VideoCandidate(video_id=f"video-{name}", url=f"https://youtu.be/{name}", title=name)]
 
@@ -202,7 +202,7 @@ def test_progress_events_are_monotonic_and_bounded(monkeypatch, tmp_path):
     subtopics = ["A", "B", "C"]
     config = _config(tmp_path, max_search_workers=3, max_transcript_workers=3)
 
-    def search(config_, store, query, filters, logger=None, notes=None):
+    def search(config_, store, query, filters, logger=None, notes=None, **kw):
         name = query.split()[-1]
         return [VideoCandidate(video_id=f"video-{name}", url=f"https://youtu.be/{name}", title=name)]
 
@@ -223,7 +223,7 @@ def test_single_subtopic_skips_thread_pool(monkeypatch, tmp_path):
     config = _config(tmp_path, max_search_workers=4)
     threads = set()
 
-    def search(config_, store, query, filters, logger=None, notes=None):
+    def search(config_, store, query, filters, logger=None, notes=None, **kw):
         threads.add(threading.current_thread().name)
         return [VideoCandidate(video_id="v", url="https://youtu.be/v", title="V")]
 

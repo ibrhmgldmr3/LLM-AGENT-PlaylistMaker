@@ -9,7 +9,7 @@ from src.providers.errors import (
 )
 from src.providers.youtube_data_api_provider import YouTubeDataAPIProvider
 from src.providers.ytdlp_provider import YtDlpProvider
-from src.storage import SQLiteStore
+from src.storage import DEFAULT_USER_ID, SQLiteStore
 from src.utils.logging_utils import redact_secrets
 from src.utils.retry_utils import retry_with_backoff
 
@@ -21,6 +21,7 @@ def search_candidates(
     filters: FilterOptions,
     logger=None,
     notes: list[str] | None = None,
+    user_id: str = DEFAULT_USER_ID,
 ) -> list[VideoCandidate]:
     """Aday videolari sirayla saglayicilardan toplar.
 
@@ -37,7 +38,7 @@ def search_candidates(
                 logger.info("Skipping %s because it is not configured", provider.name)
             continue
 
-        cooldown_until = store.get_provider_cooldown(provider.name)
+        cooldown_until = store.get_provider_cooldown(provider.name, user_id=user_id)
         if cooldown_until:
             if logger:
                 logger.warning("Skipping %s due to cooldown until %s", provider.name, cooldown_until)
@@ -88,6 +89,7 @@ def search_candidates(
                 message,
                 config.provider_cooldown_sec,
                 threshold=config.provider_failure_threshold,
+                user_id=user_id,
             )
             if logger:
                 logger.warning(
@@ -99,7 +101,7 @@ def search_candidates(
                 )
             continue
 
-        store.clear_provider_cooldown(provider.name)
+        store.clear_provider_cooldown(provider.name, user_id=user_id)
 
         deduped: dict[str, VideoCandidate] = {}
         for candidate in candidates:

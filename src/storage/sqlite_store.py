@@ -134,10 +134,12 @@ class SQLiteStore:
                     PRIMARY KEY (video_id, provider)
                 );
                 CREATE TABLE IF NOT EXISTS provider_health (
-                    provider TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    provider TEXT NOT NULL,
                     cooldown_until TEXT,
                     last_error TEXT,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, provider)
                 );
                 CREATE TABLE IF NOT EXISTS run (
                     run_id TEXT PRIMARY KEY,
@@ -212,6 +214,51 @@ class SQLiteStore:
             if "duplicate column name" not in str(exc).lower():
                 raise
 
+    @staticmethod
+    def _migrate_provider_health_per_user(conn: sqlite3.Connection) -> None:
+        """`provider_health`i kullanici basina kapsar.
+
+        Eskiden birincil anahtar yalnizca `provider` idi, yani saglayici sagligi
+        KURULUM GENELINDE tutuluyordu: bir kullanicinin kota asimi ya da art
+        arda hatalari, DIGER HERKESIN aramasini soguturdu. Tek kullanicili
+        kurulumda goze batmiyordu; ikinci kullanici gelir gelmez somut bir hata.
+
+        SQLite'ta birincil anahtar `ALTER` ile degistirilemiyor, bu yuzden tablo
+        yeniden kuruluyor. Mevcut satirlar `local` kullanicisina devrediliyor --
+        tek kullanicili kurulumda zaten sahibi o.
+        """
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
+        if not columns or "user_id" in columns:
+            return  # ya tablo yok (taze sema) ya da goc zaten yapilmis
+
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE provider_health_migrated (
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    provider TEXT NOT NULL,
+                    cooldown_until TEXT,
+                    last_error TEXT,
+                    updated_at TEXT NOT NULL,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, provider)
+                );
+                INSERT INTO provider_health_migrated
+                    (user_id, provider, cooldown_until, last_error, updated_at, failure_count)
+                SELECT 'local', provider, cooldown_until, last_error, updated_at,
+                       COALESCE(failure_count, 0)
+                FROM provider_health;
+                DROP TABLE provider_health;
+                ALTER TABLE provider_health_migrated RENAME TO provider_health;
+                """
+            )
+        except sqlite3.OperationalError as exc:
+            # Baska bir baglanti ayni gocu ayni anda yapmis olabilir; sema
+            # kurulumunda es zamanlilik daha once de sorun cikarmisti.
+            message = str(exc).lower()
+            if "already exists" not in message and "no such table" not in message:
+                raise
+
     @classmethod
     def _migrate(cls, conn: sqlite3.Connection) -> None:
         cls._add_column_if_missing(
@@ -220,6 +267,7 @@ class SQLiteStore:
         cls._add_column_if_missing(
             conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
         )
+        cls._migrate_provider_health_per_user(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
 
     @staticmethod
@@ -306,11 +354,11 @@ class SQLiteStore:
                 ),
             )
 
-    def get_provider_cooldown(self, provider: str) -> str | None:
+    def get_provider_cooldown(self, provider: str, user_id: str = DEFAULT_USER_ID) -> str | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT cooldown_until FROM provider_health WHERE provider = ?",
-                (provider,),
+                "SELECT cooldown_until FROM provider_health WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
             ).fetchone()
         if not row:
             return None
@@ -320,18 +368,21 @@ class SQLiteStore:
             return cooldown_until
         return None
 
-    def mark_provider_cooldown(self, provider: str, error: str, cooldown_sec: int) -> None:
+    def mark_provider_cooldown(
+        self, provider: str, error: str, cooldown_sec: int, user_id: str = DEFAULT_USER_ID
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (provider, cooldown_until, last_error, failure_count, updated_at)
-                VALUES (?, ?, ?, COALESCE((SELECT failure_count FROM provider_health WHERE provider = ?), 0), ?)
-                ON CONFLICT(provider) DO UPDATE SET
+                INSERT INTO provider_health (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                VALUES (?, ?, ?, ?, COALESCE(
+                    (SELECT failure_count FROM provider_health WHERE user_id = ? AND provider = ?), 0), ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
                     cooldown_until = excluded.cooldown_until,
                     last_error = excluded.last_error,
                     updated_at = excluded.updated_at
                 """,
-                (provider, _iso_in(cooldown_sec), error, provider, _to_iso(_utc_now())),
+                (user_id, provider, _iso_in(cooldown_sec), error, user_id, provider, _to_iso(_utc_now())),
             )
 
     def record_provider_failure(
@@ -340,6 +391,7 @@ class SQLiteStore:
         error: str,
         cooldown_sec: int,
         threshold: int = DEFAULT_FAILURE_THRESHOLD,
+        user_id: str = DEFAULT_USER_ID,
     ) -> tuple[int, bool]:
         """Ardisik hata sayacini arttirir; esik asilirsa cooldown uygular.
 
@@ -350,41 +402,42 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (provider, cooldown_until, last_error, failure_count, updated_at)
-                VALUES (?, NULL, ?, 1, ?)
-                ON CONFLICT(provider) DO UPDATE SET
+                INSERT INTO provider_health (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                VALUES (?, ?, NULL, ?, 1, ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
                     last_error = excluded.last_error,
                     failure_count = provider_health.failure_count + 1,
                     updated_at = excluded.updated_at
                 """,
-                (provider, error, now),
+                (user_id, provider, error, now),
             )
             row = conn.execute(
-                "SELECT failure_count FROM provider_health WHERE provider = ?",
-                (provider,),
+                "SELECT failure_count FROM provider_health WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
             ).fetchone()
             failure_count = int(row["failure_count"]) if row else 1
             cooled_down = failure_count >= threshold
             if cooled_down:
                 conn.execute(
-                    "UPDATE provider_health SET cooldown_until = ?, failure_count = 0, updated_at = ? WHERE provider = ?",
-                    (_iso_in(cooldown_sec), now, provider),
+                    "UPDATE provider_health SET cooldown_until = ?, failure_count = 0, updated_at = ?"
+                    " WHERE user_id = ? AND provider = ?",
+                    (_iso_in(cooldown_sec), now, user_id, provider),
                 )
         return failure_count, cooled_down
 
-    def clear_provider_cooldown(self, provider: str) -> None:
+    def clear_provider_cooldown(self, provider: str, user_id: str = DEFAULT_USER_ID) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (provider, cooldown_until, last_error, failure_count, updated_at)
-                VALUES (?, NULL, NULL, 0, ?)
-                ON CONFLICT(provider) DO UPDATE SET
+                INSERT INTO provider_health (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                VALUES (?, ?, NULL, NULL, 0, ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
                     cooldown_until = NULL,
                     last_error = NULL,
                     failure_count = 0,
                     updated_at = excluded.updated_at
                 """,
-                (provider, _to_iso(_utc_now())),
+                (user_id, provider, _to_iso(_utc_now())),
             )
 
     def purge_expired(self) -> int:

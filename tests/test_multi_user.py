@@ -362,3 +362,73 @@ def test_unknown_credential_names_are_rejected(multi_user_client):
 
 def test_credentials_require_a_session(multi_user_client):
     assert multi_user_client.get("/api/credentials").status_code == 401
+
+
+# ------------------------------------------------ saglayici sagligi kapsami
+
+def test_one_users_cooldown_does_not_affect_others(store):
+    """Regresyon: `provider_health` KURULUM GENELINDE tutuluyordu.
+
+    Birincil anahtar yalnizca `provider` idi. Bir kullanicinin kota asimi ya da
+    art arda hatalari saglayiciyi sogutunca DIGER HERKESIN aramasi da duruyordu.
+    Tek kullanicili kurulumda goze batmiyordu; ikinci kullanici gelir gelmez
+    somut bir hata.
+    """
+    store.mark_provider_cooldown("youtube", "kota asildi", 900, user_id="ali")
+
+    assert store.get_provider_cooldown("youtube", user_id="ali") is not None
+    assert store.get_provider_cooldown("youtube", user_id="veli") is None
+
+
+def test_failure_counters_are_counted_per_user(store):
+    """Esik sayaci da ayri: birinin hatalari digerini esige yaklastirmamali."""
+    for _ in range(2):
+        store.record_provider_failure("yt_dlp", "hata", cooldown_sec=900, threshold=3, user_id="ali")
+
+    count, cooled = store.record_provider_failure(
+        "yt_dlp", "hata", cooldown_sec=900, threshold=3, user_id="veli"
+    )
+
+    assert (count, cooled) == (1, False), "veli, ali'nin sayacini devralmamali"
+
+
+def test_clearing_one_users_cooldown_leaves_the_other(store):
+    store.mark_provider_cooldown("youtube", "hata", 900, user_id="ali")
+    store.mark_provider_cooldown("youtube", "hata", 900, user_id="veli")
+
+    store.clear_provider_cooldown("youtube", user_id="ali")
+
+    assert store.get_provider_cooldown("youtube", user_id="ali") is None
+    assert store.get_provider_cooldown("youtube", user_id="veli") is not None
+
+
+def test_existing_rows_survive_the_per_user_migration(tmp_path):
+    """Eski veritabani acildiginda kayitlar KAYBOLMAMALI.
+
+    SQLite'ta birincil anahtar `ALTER` ile degistirilemedigi icin tablo yeniden
+    kuruluyor; mevcut satirlar `local` kullanicisina devrediliyor.
+    """
+    db_path = tmp_path / "eski.db"
+    legacy = sqlite3.connect(db_path)
+    legacy.executescript(
+        """
+        CREATE TABLE provider_health (
+            provider TEXT PRIMARY KEY,
+            cooldown_until TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO provider_health VALUES
+            ('yt_dlp', '2099-01-01T00:00:00+00:00', 'eski hata', '2026-01-01T00:00:00+00:00');
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    store = SQLiteStore(str(db_path))
+
+    assert store.get_provider_cooldown("yt_dlp", user_id="local") is not None
+    columns = {
+        row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(provider_health)")
+    }
+    assert {"user_id", "failure_count"} <= columns
