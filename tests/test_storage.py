@@ -114,7 +114,7 @@ def test_schema_has_no_orphan_metadata_table(tmp_path):
     with store.connect() as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "video_metadata_cache" not in tables
-    assert {"search_cache", "transcript_cache", "provider_health", "run"} <= tables
+    assert {"search_cache", "transcript_cache", "provider_cooldown", "run"} <= tables
 
 
 def test_schema_setup_is_safe_from_several_threads_at_once(tmp_path):
@@ -181,9 +181,9 @@ def test_schema_setup_is_safe_from_several_threads_at_once(tmp_path):
     # Sema gercekten eksiksiz olmali; hatayi yutmak yeterli degil.
     store = SQLiteStore(db_path)
     with store.connect() as conn:
-        health = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
+        cooldown = {row["name"] for row in conn.execute("PRAGMA table_info(provider_cooldown)")}
         run = {row["name"] for row in conn.execute("PRAGMA table_info(run)")}
-    assert "failure_count" in health
+    assert {"user_id", "failure_count"} <= cooldown
     assert "user_id" in run
 
 

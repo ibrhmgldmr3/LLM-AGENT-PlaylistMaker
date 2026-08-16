@@ -405,8 +405,10 @@ def test_clearing_one_users_cooldown_leaves_the_other(store):
 def test_existing_rows_survive_the_per_user_migration(tmp_path):
     """Eski veritabani acildiginda kayitlar KAYBOLMAMALI.
 
-    SQLite'ta birincil anahtar `ALTER` ile degistirilemedigi icin tablo yeniden
-    kuruluyor; mevcut satirlar `local` kullanicisina devrediliyor.
+    Eski tablo YERINDE DEGISTIRILMIYOR: `DROP` + `RENAME` yapan ilk surum,
+    bir baglanti tabloyu dusururken digerinin "no such table" almasina yol
+    aciyordu (CI'da kirildi). Yeni tablo ayri adla kuruluyor, satirlar
+    kopyalaniyor ve eskisine dokunulmuyor -- yikici adim yok, yaris da yok.
     """
     db_path = tmp_path / "eski.db"
     legacy = sqlite3.connect(db_path)
@@ -429,9 +431,14 @@ def test_existing_rows_survive_the_per_user_migration(tmp_path):
 
     assert store.get_provider_cooldown("yt_dlp", user_id="local") is not None
     columns = {
-        row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(provider_health)")
+        row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(provider_cooldown)")
     }
     assert {"user_id", "failure_count"} <= columns
+    # Eski tabloya DOKUNULMAMIS olmali: yikici adim yok.
+    legacy = sqlite3.connect(db_path).execute(
+        "SELECT COUNT(*) FROM provider_health"
+    ).fetchone()[0]
+    assert legacy == 1
 
 
 # ------------------------------------------------------------- hiz siniri

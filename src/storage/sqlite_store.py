@@ -133,11 +133,12 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (video_id, provider)
                 );
-                CREATE TABLE IF NOT EXISTS provider_health (
-                    user_id TEXT NOT NULL DEFAULT 'local',
+                CREATE TABLE IF NOT EXISTS provider_cooldown (
+                    user_id TEXT NOT NULL,
                     provider TEXT NOT NULL,
                     cooldown_until TEXT,
                     last_error TEXT,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, provider)
                 );
@@ -215,59 +216,48 @@ class SQLiteStore:
                 raise
 
     @staticmethod
-    def _migrate_provider_health_per_user(conn: sqlite3.Connection) -> None:
-        """`provider_health`i kullanici basina kapsar.
+    def _copy_legacy_provider_health(conn: sqlite3.Connection) -> None:
+        """Eski `provider_health` satirlarini `provider_cooldown`a kopyalar.
 
-        Eskiden birincil anahtar yalnizca `provider` idi, yani saglayici sagligi
-        KURULUM GENELINDE tutuluyordu: bir kullanicinin kota asimi ya da art
-        arda hatalari, DIGER HERKESIN aramasini soguturdu. Tek kullanicili
-        kurulumda goze batmiyordu; ikinci kullanici gelir gelmez somut bir hata.
+        Eski tabloda birincil anahtar yalnizca `provider` idi, yani saglayici
+        sagligi KURULUM GENELINDE tutuluyordu: bir kullanicinin kota asimi
+        DIGER HERKESIN aramasini soguturdu.
 
-        SQLite'ta birincil anahtar `ALTER` ile degistirilemiyor, bu yuzden tablo
-        yeniden kuruluyor. Mevcut satirlar `local` kullanicisina devrediliyor --
-        tek kullanicili kurulumda zaten sahibi o.
+        Ilk denemede tablo `DROP` + `RENAME` ile yerinde degistiriliyordu ve bu
+        YANLISTI: bir baglanti tabloyu dusururken bir digeri ona bakip
+        "no such table" aliyordu. CI'da tam olarak boyle kirildi. Hata
+        toleransini gocun ICINE koymak yetmiyor, cunku pencere disariya da
+        acik -- dogru cozum pencereyi daraltmak degil HIC ACMAMAK.
+
+        Bu yuzden yeni tablo AYRI ADLA kuruluyor ve eskisine dokunulmuyor:
+        yikici adim yok, dolayisiyla yaris da yok. Eski tablo (varsa) artik
+        okunmuyor; bir sonraki bakim adiminda silinebilir.
         """
+        legacy = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='provider_health'"
+        ).fetchone()
+        if not legacy:
+            return
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_health)")}
-        if not columns or "user_id" in columns:
-            return  # ya tablo yok (taze sema) ya da goc zaten yapilmis
+        if "user_id" in columns:
+            return  # zaten yeni sekilde; kopyalanacak eski veri yok
 
-        try:
-            conn.executescript(
-                """
-                CREATE TABLE provider_health_migrated (
-                    user_id TEXT NOT NULL DEFAULT 'local',
-                    provider TEXT NOT NULL,
-                    cooldown_until TEXT,
-                    last_error TEXT,
-                    updated_at TEXT NOT NULL,
-                    failure_count INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (user_id, provider)
-                );
-                INSERT INTO provider_health_migrated
-                    (user_id, provider, cooldown_until, last_error, updated_at, failure_count)
-                SELECT 'local', provider, cooldown_until, last_error, updated_at,
-                       COALESCE(failure_count, 0)
-                FROM provider_health;
-                DROP TABLE provider_health;
-                ALTER TABLE provider_health_migrated RENAME TO provider_health;
-                """
-            )
-        except sqlite3.OperationalError as exc:
-            # Baska bir baglanti ayni gocu ayni anda yapmis olabilir; sema
-            # kurulumunda es zamanlilik daha once de sorun cikarmisti.
-            message = str(exc).lower()
-            if "already exists" not in message and "no such table" not in message:
-                raise
+        failure = "COALESCE(failure_count, 0)" if "failure_count" in columns else "0"
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO provider_cooldown
+                (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+            SELECT 'local', provider, cooldown_until, last_error, {failure}, updated_at
+            FROM provider_health
+            """
+        )
 
     @classmethod
     def _migrate(cls, conn: sqlite3.Connection) -> None:
         cls._add_column_if_missing(
-            conn, "provider_health", "failure_count", "failure_count INTEGER NOT NULL DEFAULT 0"
-        )
-        cls._add_column_if_missing(
             conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
         )
-        cls._migrate_provider_health_per_user(conn)
+        cls._copy_legacy_provider_health(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
 
     @staticmethod
@@ -357,7 +347,7 @@ class SQLiteStore:
     def get_provider_cooldown(self, provider: str, user_id: str = DEFAULT_USER_ID) -> str | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT cooldown_until FROM provider_health WHERE user_id = ? AND provider = ?",
+                "SELECT cooldown_until FROM provider_cooldown WHERE user_id = ? AND provider = ?",
                 (user_id, provider),
             ).fetchone()
         if not row:
@@ -374,9 +364,9 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
                 VALUES (?, ?, ?, ?, COALESCE(
-                    (SELECT failure_count FROM provider_health WHERE user_id = ? AND provider = ?), 0), ?)
+                    (SELECT failure_count FROM provider_cooldown WHERE user_id = ? AND provider = ?), 0), ?)
                 ON CONFLICT(user_id, provider) DO UPDATE SET
                     cooldown_until = excluded.cooldown_until,
                     last_error = excluded.last_error,
@@ -402,24 +392,24 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
                 VALUES (?, ?, NULL, ?, 1, ?)
                 ON CONFLICT(user_id, provider) DO UPDATE SET
                     last_error = excluded.last_error,
-                    failure_count = provider_health.failure_count + 1,
+                    failure_count = provider_cooldown.failure_count + 1,
                     updated_at = excluded.updated_at
                 """,
                 (user_id, provider, error, now),
             )
             row = conn.execute(
-                "SELECT failure_count FROM provider_health WHERE user_id = ? AND provider = ?",
+                "SELECT failure_count FROM provider_cooldown WHERE user_id = ? AND provider = ?",
                 (user_id, provider),
             ).fetchone()
             failure_count = int(row["failure_count"]) if row else 1
             cooled_down = failure_count >= threshold
             if cooled_down:
                 conn.execute(
-                    "UPDATE provider_health SET cooldown_until = ?, failure_count = 0, updated_at = ?"
+                    "UPDATE provider_cooldown SET cooldown_until = ?, failure_count = 0, updated_at = ?"
                     " WHERE user_id = ? AND provider = ?",
                     (_iso_in(cooldown_sec), now, user_id, provider),
                 )
@@ -429,7 +419,7 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO provider_health (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+                INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
                 VALUES (?, ?, NULL, NULL, 0, ?)
                 ON CONFLICT(user_id, provider) DO UPDATE SET
                     cooldown_until = NULL,
