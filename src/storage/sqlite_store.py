@@ -672,6 +672,21 @@ class SQLiteStore:
                 row = conn.execute("SELECT COUNT(*) AS n FROM run WHERE user_id = ?", (user_id,)).fetchone()
         return int(row["n"]) if row else 0
 
+    def count_recent_runs(self, user_id: str, within_sec: int = 86400) -> int:
+        """Son `within_sec` saniyede bu kullanicinin baslattigi calistirma sayisi.
+
+        Ayri bir sayac tablosu YOK: `run` tablosu zaten `user_id` ve
+        `created_at` tasiyor. Ikinci bir kaynak tutmak, ikisinin birbirinden
+        ayrilabilecegi bir yer daha yaratirdi.
+        """
+        cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM run WHERE user_id = ? AND created_at >= ?",
+                (user_id, cutoff),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
     def delete_run(self, run_id: str, user_id: str | None = DEFAULT_USER_ID) -> bool:
         """Bir calistirmayi ve bagli kayitlarini siler."""
         with self.connect() as conn:

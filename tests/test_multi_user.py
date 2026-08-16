@@ -432,3 +432,58 @@ def test_existing_rows_survive_the_per_user_migration(tmp_path):
         row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(provider_health)")
     }
     assert {"user_id", "failure_count"} <= columns
+
+
+# ------------------------------------------------------------- hiz siniri
+
+def test_daily_run_limit_is_enforced_per_user(tmp_path, monkeypatch):
+    """Sinirsizken tek kullanici gunluk YouTube kotasinin tamamini tuketebilir.
+
+    Kota proje basina 10.000 birim, bir calistirma 612 birim -- yani ~16
+    calistirma TUM KULLANICILAR icin toplam.
+    """
+    from fastapi.testclient import TestClient
+
+    from api import deps
+    from api.routers import runs as runs_router
+    from src.config import AppConfig
+
+    config = AppConfig(
+        gemini_api_key="k",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "app.db"),
+        secret_encryption_key=KEY,
+        auth_mode="multi_user",
+        max_runs_per_user_per_day=2,
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(runs_router, "build_playlist", lambda *a, **k: None)
+
+    from api.main import app
+
+    with TestClient(app) as client:
+        store = SQLiteStore(config.sqlite_path, encryption_key=KEY)
+        store.create_session("ali-jeton", "google:ali", None, ttl_sec=3600)
+        store.create_session("veli-jeton", "google:veli", None, ttl_sec=3600)
+        store.save_user_credential("google:ali", "gemini_api_key", "a")
+        store.save_user_credential("google:veli", "gemini_api_key", "v")
+
+        client.cookies.set("map_session", "ali-jeton")
+        assert client.post("/api/runs", json={"topic": "bir"}).status_code == 202
+        assert client.post("/api/runs", json={"topic": "iki"}).status_code == 202
+
+        third = client.post("/api/runs", json={"topic": "uc"})
+        assert third.status_code == 429
+        assert third.headers.get("Retry-After")
+
+        # Sinir KULLANICI BASINA: veli ali'nin harcamasindan etkilenmemeli.
+        client.cookies.set("map_session", "veli-jeton")
+        assert client.post("/api/runs", json={"topic": "veli"}).status_code == 202
+
+
+def test_zero_means_unlimited(store):
+    """Varsayilan 0: tek kullanicili kurulumda sinir koymak anlamsiz."""
+    from src.config import ServerConfig
+
+    assert ServerConfig().max_runs_per_user_per_day == 0

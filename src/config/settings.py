@@ -40,6 +40,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "SECRET_ENCRYPTION_KEY": "secret_encryption_key",
     "AUTH_MODE": "auth_mode",
     "SESSION_TTL_SEC": "session_ttl_sec",
+    "MAX_RUNS_PER_USER_PER_DAY": "max_runs_per_user_per_day",
     "INCLUDE_ENGLISH_BY_DEFAULT": "include_english_by_default",
     "MAX_SUBTOPICS": "max_subtopics",
     "SEARCH_CANDIDATES_PER_SUBTOPIC": "search_candidates_per_subtopic",
@@ -212,6 +213,15 @@ class ServerConfig(BaseModel):
     # gondermeyecek kadar uzun, calinan bir cerezin suresiz gecerli olmayacagi
     # kadar kisa.
     session_ttl_sec: int = Field(default=14 * 24 * 3600, ge=300)
+
+    # Kullanici basina 24 saatlik calistirma siniri. 0 = SINIRSIZ (varsayilan);
+    # tek kullanicili kurulumda sinir koymak anlamsiz.
+    #
+    # Neden gerekli: sinir olmadan tek bir kullanici gunluk YouTube kotasinin
+    # tamamini tuketebiliyor (kota proje basina 10.000 birim, bir calistirma
+    # 612 birim -- yani ~16 calistirma tum kullanicilar icin TOPLAM). BYOK'ta
+    # kota kullanicinin kendi projesinden ciktigi icin sinir opsiyonel kaliyor.
+    max_runs_per_user_per_day: int = Field(default=0, ge=0)
 
     max_search_workers: int = Field(default=4)
     max_transcript_workers: int = Field(default=4)
