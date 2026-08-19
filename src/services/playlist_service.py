@@ -19,7 +19,7 @@ from src.models import (
     TranscriptResult,
     VideoCandidate,
 )
-from src.providers import GeminiLLMProvider
+from src.providers import create_llm_provider
 from src.services.metadata_ranker import rank_candidates
 from src.services.playlist_publish_service import create_youtube_playlist
 from src.services.recommendation_service import assign_recommendations
@@ -147,7 +147,7 @@ def _run_pipeline(
 
     # ---------------------------------------------------------------- FAZ 0
     emit("topic_planning", "Alt konular üretiliyor", 0.02)
-    llm = GeminiLLMProvider(config)
+    llm = create_llm_provider(config)
     subtopics = generate_subtopics(
         llm, request.topic, request.filters.language, max_items=config.max_subtopics, logger=logger
     )

@@ -5,7 +5,11 @@ import warnings
 from typing import Any, Protocol
 
 from src.config import AppConfig
-from src.providers.errors import ProviderPermanentError, ProviderTemporaryError
+from src.providers.errors import (
+    ProviderPermanentError,
+    ProviderRateLimitedError,
+    ProviderTemporaryError,
+)
 
 
 DEFAULT_SUBTOPIC_COUNT = 6
@@ -46,6 +50,44 @@ SUBTOPIC_SCHEMA: dict[str, Any] = {
 MAX_OUTPUT_TOKENS = 8192
 
 
+def build_subtopic_prompt(topic: str, language: str, max_items: int) -> str:
+    """Alt konu istemi. IKI saglayici da BUNU kullaniyor.
+
+    Istem eskiden `GeminiLLMProvider`in icine gomuluydu; ikinci saglayici
+    eklenince ya kopyalanacakti ya da ikisi sessizce ayrisacakti.
+
+    ISTEM `terms`I ARTIK ACIKCA ISTIYOR. Onceden istemiyordu ama alan yine de
+    geliyordu, cunku Gemini'de `response_schema` onu PROTOKOL duzeyinde zorunlu
+    kiliyor -- yani istem ile sema CELISIYORDU ("exactly three keys" deyip dort
+    alanli sema gonderiliyordu). Gemini'de sema kazandigi icin fark edilmemisti.
+    OpenAI uyumlu uclarda sema zorlamasi modele gore degistigi icin ayni celiski
+    Together'da alanin sessizce kaybolmasi demek olurdu.
+    """
+    return (
+        "You are planning a YouTube learning playlist.\n"
+        f"Return a JSON array of exactly {max_items} objects covering the topic "
+        "end-to-end, ordered from foundational to advanced.\n"
+        'Each object has exactly four keys: "title", "query", "query_en" and "terms".\n'
+        f'- "title": the subtopic label, 2-6 words, written in {language}. '
+        "Each title must name a DISTINCT concept, method or tool. Do not repeat the "
+        "topic wording in every title.\n"
+        '- "query": the YouTube search query most likely to surface good teaching '
+        "videos for that subtopic. Use the terms people actually search for, include "
+        "the distinctive keyword, and drop filler words. Keep it under 8 words. "
+        f"Write it in {language}, keeping proper nouns and technical terms in their "
+        "original form (product names, library names, algorithm acronyms).\n"
+        '- "query_en": the same search intent expressed as an English query, under '
+        "8 words. Used to widen the candidate pool with English teaching material.\n"
+        '- "terms": a JSON array of 2-5 OTHER NAMES for the same concept - its '
+        "English equivalent, its acronym, and widely used synonyms. These are matched "
+        "against video titles, so give the forms that actually appear there. Example: "
+        'for the Turkish title "Kokusuz Kalman Filtresi" return '
+        '["Unscented Kalman Filter", "UKF"]. Return [] only when the title is already '
+        "the single common name.\n"
+        f"Topic: {topic}"
+    )
+
+
 class LLMProvider(Protocol):
     def generate_subtopics(self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT) -> list[str]:
         raise NotImplementedError
@@ -74,23 +116,7 @@ class GeminiLLMProvider:
     def generate_subtopics(
         self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT
     ) -> list[str]:
-        prompt = (
-            "You are planning a YouTube learning playlist.\n"
-            f"Return a JSON array of exactly {max_items} objects covering the topic "
-            "end-to-end, ordered from foundational to advanced.\n"
-            'Each object has exactly three keys: "title", "query" and "query_en".\n'
-            f'- "title": the subtopic label, 2-6 words, written in {language}. '
-            "Each title must name a DISTINCT concept, method or tool. Do not repeat the "
-            "topic wording in every title.\n"
-            '- "query": the YouTube search query most likely to surface good teaching '
-            "videos for that subtopic. Use the terms people actually search for, include "
-            "the distinctive keyword, and drop filler words. Keep it under 8 words. "
-            f"Write it in {language}, keeping proper nouns and technical terms in their "
-            "original form (product names, library names, algorithm acronyms).\n"
-            '- "query_en": the same search intent expressed as an English query, under '
-            "8 words. Used to widen the candidate pool with English teaching material.\n"
-            f"Topic: {topic}"
-        )
+        prompt = build_subtopic_prompt(topic, language, max_items)
 
         errors: list[str] = []
         for model_name in self._candidate_models():
@@ -242,3 +268,112 @@ def _is_model_unavailable_error(exc: Exception) -> bool:
 def _is_invalid_argument_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "invalid_argument" in message or "invalid argument" in message
+
+
+# --------------------------------------------------------------------- #
+# Together.ai
+#
+# Together OpenAI UYUMLU bir uc sunuyor, bu yuzden yeni bir SDK bagimliligi
+# eklenmedi: `requests` zaten projede var. Tek bir POST istegi icin ayri bir
+# istemci kutuphanesi tasimak kurulum yuzeyini bedelsiz buyuturdu.
+# --------------------------------------------------------------------- #
+
+TOGETHER_URL = "https://api.together.xyz/v1/chat/completions"
+
+# Gemini'nin sema bicimi kendine ozgu (BUYUK harf tipler). OpenAI uyumlu uclar
+# STANDART JSON Schema bekliyor. Ayni sey iki kez degil: ayni SOZLESMENIN iki
+# lehcesi -- alanlar ve zorunluluklar birebir ayni.
+SUBTOPIC_JSON_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "query": {"type": "string"},
+            "query_en": {"type": "string"},
+            "terms": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["title", "query", "query_en", "terms"],
+    },
+}
+
+# 4xx'in tamami kalici DEGIL: 429 hiz siniri, 408/409 gecici cakisma. Ayrimi
+# yapmamak, gecici bir sikisikligi kalici hata sayip calistirmayi bosuna
+# dusururdu -- `youtube_search_service` icin de ayni ayrim yapilmisti.
+_TOGETHER_RETRYABLE_STATUS = frozenset({408, 409, 500, 502, 503, 504})
+
+
+def _classify_together_error(status_code: int, body: str) -> Exception:
+    detail = body[:300]
+    if status_code == 429:
+        return ProviderRateLimitedError(f"Together hız sınırı: {detail}")
+    if status_code in _TOGETHER_RETRYABLE_STATUS:
+        return ProviderTemporaryError(f"Together geçici hata {status_code}: {detail}")
+    return ProviderPermanentError(f"Together isteği reddedildi ({status_code}): {detail}")
+
+
+class TogetherLLMProvider:
+    """Together.ai uzerinden alt konu uretimi.
+
+    `GeminiLLMProvider` ile AYNI protokolu ve AYNI istemi kullaniyor; cagiran
+    taraf hangisinin devrede oldugunu bilmiyor.
+    """
+
+    def __init__(self, config: AppConfig):
+        if not config.together_api_key:
+            raise ProviderPermanentError("TOGETHER_API_KEY tanımlı değil")
+        self.config = config
+
+    def generate_subtopics(
+        self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT
+    ) -> list[dict[str, Any]]:
+        prompt = build_subtopic_prompt(topic, language, max_items)
+        return _parse_subtopics(self._generate(prompt))[:max_items]
+
+    def _generate(self, prompt: str) -> str:
+        import requests
+
+        payload = {
+            "model": self.config.together_model,
+            "messages": [
+                {"role": "system", "content": "Return only valid JSON. No prose, no markdown fences."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.4,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            "response_format": {"type": "json_object", "schema": SUBTOPIC_JSON_SCHEMA},
+        }
+        try:
+            response = requests.post(
+                TOGETHER_URL,
+                json=payload,
+                headers={"Authorization": f"Bearer {self.config.together_api_key}"},
+                timeout=self.config.request_timeout_sec,
+            )
+        except requests.RequestException as exc:
+            raise ProviderTemporaryError(f"Together isteği başarısız: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise _classify_together_error(response.status_code, response.text)
+
+        try:
+            text = response.json()["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError) as exc:
+            raise ProviderTemporaryError(f"Together yanıtı beklenen biçimde değil: {exc}") from exc
+
+        text = (text or "").strip()
+        if not text:
+            raise ProviderTemporaryError("Empty Together response")
+        return text
+
+
+def create_llm_provider(config: AppConfig) -> LLMProvider:
+    """Yapilandirmaya gore LLM saglayicisini kurar.
+
+    Tek kurulum noktasi: `playlist_service` eskiden `GeminiLLMProvider`i
+    DOGRUDAN kuruyordu, yani saglayici degistirmek servis kodunu elden gecirmek
+    demekti.
+    """
+    if config.llm_provider == "together":
+        return TogetherLLMProvider(config)
+    return GeminiLLMProvider(config)

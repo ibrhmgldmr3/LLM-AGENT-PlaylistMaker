@@ -33,7 +33,7 @@ the API serves the built frontend from `web/dist`, so a single process is enough
 | | |
 |---|---|
 | Python | **3.13** — the version CI tests and development targets. 3.11/3.12 should work but are not verified. |
-| **Gemini API key** | required, **with available quota/credits** |
+| **An LLM key** | Gemini **or** Together.ai — `LLM_PROVIDER` selects which, and only that one's key is read |
 | YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used |
 | YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
 | A JS runtime (`node`) | needed for audio download; see below |
@@ -248,9 +248,23 @@ warning rather than being silently ignored.
 
 ### Required
 
-| Variable | Default |
-|---|---|
-| `GEMINI_API_KEY` | — |
+One LLM key. `LLM_PROVIDER` decides which one is read; the other may stay empty.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LLM_PROVIDER` | `gemini` | `gemini` or `together` |
+| `GEMINI_API_KEY` | — | required when `LLM_PROVIDER=gemini` |
+| `TOGETHER_API_KEY` | — | required when `LLM_PROVIDER=together` |
+| `TOGETHER_MODEL` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | verify it is available on your account |
+
+Together.ai is reached over its **OpenAI-compatible** endpoint, so no extra SDK is
+installed — the existing `requests` dependency carries it. Both providers share one
+prompt and one field contract; only the schema *dialect* differs (Gemini wants
+uppercase types, OpenAI-compatible endpoints want standard JSON Schema).
+
+In multi-user mode the provider follows the key the user saved: enter a Together key
+and Together is used, otherwise Gemini. There is no separate "pick a provider" control
+— with no key the choice is meaningless, and with one key it is already decided.
 
 ### Models and discovery
 
@@ -400,7 +414,7 @@ tests/                      218 tests
 pytest -q
 ```
 
-234 backend tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+287 backend tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
 has a regression test named after the behaviour it locks in. The suite runs without a `.env`
 and without any API key — CI has neither.
 

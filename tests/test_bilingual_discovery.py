@@ -113,7 +113,7 @@ def test_both_queries_run_and_pools_are_merged(monkeypatch, tmp_path):
         suffix = "tr" if "zaman" in query else "en"
         return [VideoCandidate(video_id=f"video-{suffix}", url="u", title=f"T {suffix}")]
 
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: BilingualLLM())
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: BilingualLLM())
     monkeypatch.setattr(playlist_service, "search_candidates", fake_search)
     monkeypatch.setattr(
         playlist_service, "rank_candidates",
@@ -143,7 +143,7 @@ def test_only_one_query_runs_when_disabled(monkeypatch, tmp_path):
         seen.append(query)
         return [VideoCandidate(video_id="video-tr", url="u", title="T")]
 
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: BilingualLLM())
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: BilingualLLM())
     monkeypatch.setattr(playlist_service, "search_candidates", fake_search)
     monkeypatch.setattr(
         playlist_service, "rank_candidates", lambda cands, t, s, f, **kw: [(cands[0], _score(5.0))]

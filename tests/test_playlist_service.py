@@ -73,7 +73,7 @@ def test_playlist_prevents_duplicate_processing_and_exports(monkeypatch, tmp_pat
     candidates = _candidates()
     transcript_calls = {"video-1": 0, "video-2": 0}
 
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM())
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM())
     monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: candidates)
     monkeypatch.setattr(
         playlist_service,
@@ -113,7 +113,7 @@ def test_caller_can_supply_run_id_and_user(monkeypatch, tmp_path):
     config = _config(tmp_path)
     candidates = _candidates()
 
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM(["Foundations"]))
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM(["Foundations"]))
     monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: candidates)
     monkeypatch.setattr(
         playlist_service,
@@ -142,7 +142,7 @@ def test_caller_can_supply_run_id_and_user(monkeypatch, tmp_path):
 
 def test_run_id_is_generated_when_not_supplied(monkeypatch, tmp_path):
     config = _config(tmp_path)
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM([]))
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM([]))
 
     result = playlist_service.build_playlist(config, PlaylistRequest(topic="Test"))
 
@@ -154,7 +154,7 @@ def test_publish_failure_warning_reaches_the_result(monkeypatch, tmp_path):
     config = _config(tmp_path)
     candidates = _candidates()
 
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM(["Foundations"]))
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM(["Foundations"]))
     monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: candidates)
     monkeypatch.setattr(
         playlist_service,
@@ -186,7 +186,7 @@ def test_publish_failure_warning_reaches_the_result(monkeypatch, tmp_path):
 def test_empty_subtopics_produce_a_warning(monkeypatch, tmp_path):
     """Regresyon: bos alt konu listesi sessizce bos bir playlist uretiyordu."""
     config = _config(tmp_path)
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM([]))
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM([]))
 
     result = playlist_service.build_playlist(config, PlaylistRequest(topic="Test"))
 
@@ -204,7 +204,7 @@ def test_selection_falls_back_beyond_the_shortlist(monkeypatch, tmp_path):
     ]
 
     monkeypatch.setattr(
-        playlist_service, "GeminiLLMProvider", lambda config: DummyLLM(["Alpha", "Beta", "Gamma"])
+        playlist_service, "create_llm_provider", lambda config: DummyLLM(["Alpha", "Beta", "Gamma"])
     )
     monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: pool)
     monkeypatch.setattr(
@@ -233,7 +233,7 @@ def test_transcript_enrichment_is_capped(monkeypatch, tmp_path):
     ]
     enriched: list[str] = []
 
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM(["Alpha"]))
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM(["Alpha"]))
     monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: pool)
     monkeypatch.setattr(
         playlist_service,
@@ -258,7 +258,7 @@ def test_subtopic_count_respects_config_cap(monkeypatch, tmp_path):
     pool = [VideoCandidate(video_id="v", url="https://youtu.be/v", title="V")]
 
     monkeypatch.setattr(
-        playlist_service, "GeminiLLMProvider", lambda config: DummyLLM([f"S{i}" for i in range(10)])
+        playlist_service, "create_llm_provider", lambda config: DummyLLM([f"S{i}" for i in range(10)])
     )
 
     def fake_search(config, store, query, filters, logger=None, notes=None, **kw):

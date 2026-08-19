@@ -5,11 +5,18 @@ from .errors import (
     ProviderTemporaryError,
     VideoUnavailableError,
 )
-from .llm_provider import GeminiLLMProvider, LLMProvider
+from .llm_provider import (
+    GeminiLLMProvider,
+    LLMProvider,
+    TogetherLLMProvider,
+    create_llm_provider,
+)
 
 __all__ = [
     "GeminiLLMProvider",
     "LLMProvider",
+    "TogetherLLMProvider",
+    "create_llm_provider",
     "ProviderError",
     "ProviderPermanentError",
     "ProviderRateLimitedError",
