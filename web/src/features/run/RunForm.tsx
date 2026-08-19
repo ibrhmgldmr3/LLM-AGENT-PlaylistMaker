@@ -15,6 +15,7 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
   const [freshness, setFreshness] = useState<Freshness>("balanced");
   const [includeEnglish, setIncludeEnglish] = useState(true);
   const [enableAsr, setEnableAsr] = useState(false);
+  const [enableStudyNotes, setEnableStudyNotes] = useState(false);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -29,7 +30,7 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
         // Ingilizce genisletme yalnizca ana dil Ingilizce degilken anlamli.
         include_english: language === "en" ? false : includeEnglish,
       },
-      options: { enable_asr_fallback: enableAsr },
+      options: { enable_asr_fallback: enableAsr, enable_study_notes: enableStudyNotes },
     });
   };
 
@@ -107,6 +108,14 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
             onChange={(event) => setEnableAsr(event.target.checked)}
           />
           Sesten transkript çıkar (yavaş)
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={enableStudyNotes}
+            onChange={(event) => setEnableStudyNotes(event.target.checked)}
+          />
+          Çalışma notu üret (ek LLM çağrısı)
         </label>
       </div>
 

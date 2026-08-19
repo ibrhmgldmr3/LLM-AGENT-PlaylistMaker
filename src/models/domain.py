@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 TranscriptStatus = Literal["available", "unavailable", "cooldown", "failed_temporary", "failed_permanent"]
+StudyNoteStatus = Literal["available", "no_transcript", "failed"]
 DifficultyLevel = Literal["beginner", "intermediate", "advanced", "mixed"]
 FreshnessPreference = Literal["balanced", "evergreen", "recent"]
 
@@ -125,6 +126,22 @@ class SubtopicResult(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class StudyNote(BaseModel):
+    """Bir alt konu icin transkriptten uretilen calisma notu.
+
+    "no_transcript" AYRI bir durum: transkripti olmayan bir video icin not
+    UYDURULMUYOR. Bu, projenin geri kalaninda kurulu davranisla ayni cizgide --
+    `interrupted` calistirma durumu ve "zayif eslesme" etiketi de ayni sebeple
+    var: bilinmeyeni bilinmeyen olarak isaretlemek, tahmin uretmekten iyidir.
+    """
+
+    subtopic: str
+    video_id: str
+    status: StudyNoteStatus
+    content: str | None = None
+    error: str | None = None
+
+
 class ExportArtifacts(BaseModel):
     json_path: str
     markdown_path: str
@@ -140,6 +157,7 @@ class PlaylistResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     exports: ExportArtifacts | None = None
     published_playlist_url: str | None = None
+    study_notes: list[StudyNote] = Field(default_factory=list)
 
 
 class ProgressEvent(BaseModel):

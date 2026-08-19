@@ -36,6 +36,7 @@ class RunOptionsOverride(BaseModel):
     transcript_enrichment_top_k: int | None = Field(default=None, ge=1)
     enable_asr_fallback: bool | None = None
     max_asr_videos_per_run: int | None = Field(default=None, ge=0)
+    enable_study_notes: bool | None = None
     channel_repeat_penalty: float | None = Field(default=None, ge=0)
     youtube_playlist_privacy_status: Literal["private", "unlisted", "public"] | None = None
 

@@ -88,8 +88,59 @@ def build_subtopic_prompt(topic: str, language: str, max_items: int) -> str:
     )
 
 
+STUDY_NOTE_SYSTEM_INSTRUCTION = (
+    "You write study notes from a single video transcript. Use ONLY the "
+    "transcript excerpt you are given -- never add outside facts, numbers, "
+    "dates, or claims that are not stated in it. If the excerpt does not "
+    "cover something, do not guess or fill the gap. Output plain Markdown "
+    "with no preamble and no closing remarks."
+)
+
+
+def build_study_note_prompt(
+    topic: str, subtopic: str, video_title: str, transcript: str, language: str, max_chars: int
+) -> str:
+    """Calisma notu istemi. IKI saglayici da BUNU kullaniyor (bkz. `build_subtopic_prompt`).
+
+    ISTEM UYDURMAYI ACIKCA YASAKLIYOR: transkripti olmayan bir video icin not
+    hic uretilmiyor (cagiran tarafta `status="no_transcript"`), ama transkripti
+    OLAN bir videoda bile model transkriptte olmayan bir seyi ekleyebilir.
+    "Yalnizca transkriptte olani kullan" talimati bunu azaltiyor, garantilemez
+    -- calisma notlari bu yuzden UI'da "video ozetiyse dogrula" seklinde
+    sunuluyor, otorite iddiasiyla degil.
+    """
+    excerpt = transcript[:max_chars].strip()
+    truncated_note = (
+        "\n\n[NOT: transkript burada kesildi; devaminda ne oldugunu VARSAYMA.]"
+        if len(transcript) > max_chars
+        else ""
+    )
+    return (
+        "You are creating STUDY NOTES for a learner from a single YouTube video transcript.\n"
+        f"Write entirely in {language}.\n"
+        "Use ONLY the transcript excerpt below. Do not add outside facts, numbers, dates, "
+        "or claims that are not stated in it. If the excerpt does not cover something, do "
+        "not guess.\n"
+        "Structure the output as Markdown:\n"
+        "1. One sentence overview of what this video covers.\n"
+        "2. 4-8 bullet points with the key ideas, in the order they appear in the transcript.\n"
+        "3. If the transcript names specific terms, tools, or formulas, list them under a "
+        "'Terms' heading.\n"
+        "No preamble, no closing remarks, no meta-commentary about being an AI.\n\n"
+        f"Playlist topic: {topic}\n"
+        f"Subtopic this video was selected for: {subtopic}\n"
+        f"Video title: {video_title}\n\n"
+        f"Transcript excerpt:\n{excerpt}{truncated_note}"
+    )
+
+
 class LLMProvider(Protocol):
     def generate_subtopics(self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT) -> list[str]:
+        raise NotImplementedError
+
+    def generate_study_note(
+        self, topic: str, subtopic: str, video_title: str, transcript_text: str, language: str
+    ) -> str:
         raise NotImplementedError
 
 
@@ -121,7 +172,7 @@ class GeminiLLMProvider:
         errors: list[str] = []
         for model_name in self._candidate_models():
             try:
-                text = self._generate(model_name, prompt)
+                text = self._generate(model_name, prompt, self._generation_config)
             except ProviderPermanentError:
                 raise
             except Exception as exc:
@@ -133,10 +184,19 @@ class GeminiLLMProvider:
             return _parse_subtopics(text)[:max_items]
         raise ProviderPermanentError("Kullanılabilir Gemini modeli bulunamadı. " + " | ".join(errors))
 
-    def _generate(self, model_name: str, prompt: str) -> str:
+    def _generate(self, model_name: str, prompt: str, config_factory) -> str:
+        """`config_factory(model_name)` cagrilip Gemini'ye gonderilir.
+
+        Fabrika olarak alinmasinin sebebi: `thinking_config` bazi modellerde
+        400 doner ve modeli elemek yerine parametresiz TEKRAR denenir. Ikinci
+        denemede config'in yeniden hesaplanmasi gerekiyor (`_thinking_unsupported`
+        setine eklenen model artik farkli bir config aliyor); sabit bir dict
+        yerine fabrika bunu tek yerde saglıyor. Iki cagiran (alt konu uretimi ve
+        calisma notu) FARKLI config'ler kullaniyor, bu yuzden fabrika parametrik.
+        """
         try:
             response = self.client.models.generate_content(
-                model=model_name, contents=prompt, config=self._generation_config(model_name)
+                model=model_name, contents=prompt, config=config_factory(model_name)
             )
         except Exception as exc:
             # Bazi modeller `thinking_config`'i hic kabul etmiyor ve 400 donuyor.
@@ -144,7 +204,7 @@ class GeminiLLMProvider:
             if _is_invalid_argument_error(exc) and model_name not in self._thinking_unsupported:
                 self._thinking_unsupported.add(model_name)
                 response = self.client.models.generate_content(
-                    model=model_name, contents=prompt, config=self._generation_config(model_name)
+                    model=model_name, contents=prompt, config=config_factory(model_name)
                 )
             else:
                 raise
@@ -153,6 +213,44 @@ class GeminiLLMProvider:
         if not text:
             raise ProviderTemporaryError("Empty Gemini response")
         return text
+
+    def generate_study_note(
+        self, topic: str, subtopic: str, video_title: str, transcript_text: str, language: str
+    ) -> str:
+        prompt = build_study_note_prompt(
+            topic, subtopic, video_title, transcript_text, language,
+            self.config.study_note_transcript_char_limit,
+        )
+
+        errors: list[str] = []
+        for model_name in self._candidate_models():
+            try:
+                text = self._generate(model_name, prompt, self._study_note_generation_config)
+            except ProviderPermanentError:
+                raise
+            except Exception as exc:
+                errors.append(f"{model_name}: {exc}")
+                if _is_model_unavailable_error(exc):
+                    continue
+                raise _classify_gemini_error(exc) from exc
+            return text
+        raise ProviderPermanentError("Kullanılabilir Gemini modeli bulunamadı. " + " | ".join(errors))
+
+    def _study_note_generation_config(self, model_name: str) -> dict[str, Any]:
+        """Calisma notu icin ayri config: SERBEST METIN, JSON semasi YOK.
+
+        Alt konu uretiminden ayrilmasinin sebebi: o sema-zorlamali (bkz.
+        `_generation_config`), bu ise duz Markdown yaziyor. Ikisini tek config
+        fonksiyonunda birlestirmek, birinin ayarinin digerine sizmasina yol acardi.
+        """
+        config: dict[str, Any] = {
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "system_instruction": STUDY_NOTE_SYSTEM_INSTRUCTION,
+            "temperature": 0.3,
+        }
+        if self.config.gemini_thinking_budget >= 0 and model_name not in self._thinking_unsupported:
+            config["thinking_config"] = {"thinking_budget": self.config.gemini_thinking_budget}
+        return config
 
     def _generation_config(self, model_name: str) -> dict[str, Any]:
         config: dict[str, Any] = {
@@ -328,21 +426,39 @@ class TogetherLLMProvider:
         self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT
     ) -> list[dict[str, Any]]:
         prompt = build_subtopic_prompt(topic, language, max_items)
-        return _parse_subtopics(self._generate(prompt))[:max_items]
+        text = self._generate(
+            prompt,
+            system_instruction="Return only valid JSON. No prose, no markdown fences.",
+            response_format={"type": "json_object", "schema": SUBTOPIC_JSON_SCHEMA},
+        )
+        return _parse_subtopics(text)[:max_items]
 
-    def _generate(self, prompt: str) -> str:
+    def generate_study_note(
+        self, topic: str, subtopic: str, video_title: str, transcript_text: str, language: str
+    ) -> str:
+        prompt = build_study_note_prompt(
+            topic, subtopic, video_title, transcript_text, language,
+            self.config.study_note_transcript_char_limit,
+        )
+        # `response_format` verilmiyor: calisma notu SERBEST METIN, JSON degil.
+        return self._generate(prompt, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION)
+
+    def _generate(
+        self, prompt: str, system_instruction: str, response_format: dict[str, Any] | None = None
+    ) -> str:
         import requests
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.config.together_model,
             "messages": [
-                {"role": "system", "content": "Return only valid JSON. No prose, no markdown fences."},
+                {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.4,
             "max_tokens": MAX_OUTPUT_TOKENS,
-            "response_format": {"type": "json_object", "schema": SUBTOPIC_JSON_SCHEMA},
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
         try:
             response = requests.post(
                 TOGETHER_URL,

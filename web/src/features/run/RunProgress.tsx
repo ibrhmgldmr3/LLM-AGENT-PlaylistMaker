@@ -11,6 +11,7 @@ const STAGE_LABELS: Record<string, string> = {
   metadata_ranking: "Metadata sıralama",
   transcript_enrichment: "Transkript zenginleştirme",
   final_playlist_assembly: "Playlist derleme",
+  study_notes: "Çalışma notları üretiliyor",
   done: "Tamamlandı",
 };
 

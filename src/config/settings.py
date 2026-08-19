@@ -51,6 +51,8 @@ ENV_TO_FIELD: dict[str, str] = {
     "TRANSCRIPT_ENRICHMENT_TOP_K": "transcript_enrichment_top_k",
     "ENABLE_ASR_FALLBACK": "enable_asr_fallback",
     "MAX_ASR_VIDEOS_PER_RUN": "max_asr_videos_per_run",
+    "ENABLE_STUDY_NOTES": "enable_study_notes",
+    "STUDY_NOTE_TRANSCRIPT_CHAR_LIMIT": "study_note_transcript_char_limit",
     "CHANNEL_REPEAT_PENALTY": "channel_repeat_penalty",
     "MAX_SEARCH_WORKERS": "max_search_workers",
     "MAX_TRANSCRIPT_WORKERS": "max_transcript_workers",
@@ -124,6 +126,17 @@ class RunOptions(BaseModel):
     # siralamaya katkisi en fazla +1.0 puan. Arayuzden acilabilir.
     enable_asr_fallback: bool = Field(default=False)
     max_asr_videos_per_run: int = Field(default=2)
+    # VARSAYILAN KAPALI. Transkripti olan her secilen video icin BIR EK LLM
+    # cagrisi demek -- olculdu: transkript ortancasi ~16.000 karakter (~4.000
+    # token), 6 alt basliklik bir playlist icin toplam girdi ~24.000 token.
+    # Mevcut tek cagriya (~83 token) kiyasla maliyeti belirgin sekilde buyutuyor.
+    enable_study_notes: bool = Field(default=False)
+    # Transkriptten modele gecirilen ust sinir. Olculen transkriptlerin
+    # cogu (ortanca ~16.000 krkt) bunun altinda kalip BUTUN transkript
+    # geciyor; yalnizca en uzunlar (gorulen tavan ~50.000 krkt) kirpiliyor.
+    # RAG DEGIL: dogrudan baglam, cunku tek bir transkript baglam penceresine
+    # rahatca sigiyor -- parcalama/vektor depo gereksiz karmasiklik olurdu.
+    study_note_transcript_char_limit: int = Field(default=24_000, ge=1_000)
     # Ayni kanaldan tekrar secim yapmanin bedeli. Kucuk tutuldugu icin yalnizca
     # yakin skorlu adaylarda belirleyici olur; playlist'in tek kanala saplanmasini
     # engeller ama acikca daha iyi bir videoyu elemez.
