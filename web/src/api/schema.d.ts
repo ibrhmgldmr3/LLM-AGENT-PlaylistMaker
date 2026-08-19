@@ -362,6 +362,13 @@ export interface components {
         /**
          * CapabilitiesResponse
          * @description Arayuzun hangi kontrolleri acabilecegi. SIR ICERMEZ.
+         *
+         *     `AppConfig.public_capabilities()` ile bu modelin alanlari BIREBIR ayni
+         *     olmali: `CapabilitiesResponse(**capabilities)` fazladan anahtarlari
+         *     sessizce YOK SAYAR (pydantic'in varsayilan `extra="ignore"` davranisi).
+         *     `llm_configured` tam bu yuzden hic API'ye cikmiyordu -- Together saglayici
+         *     islerinde `public_capabilities()`e eklenmisti ama buraya eklenmemisti;
+         *     tip kontrolu (`contract.ts`) frontend tipine eklenince farki yakaladi.
          */
         CapabilitiesResponse: {
             /** Asr Available */
@@ -374,6 +381,8 @@ export interface components {
             };
             /** Gemini Configured */
             gemini_configured: boolean;
+            /** Llm Configured */
+            llm_configured: boolean;
             /** Youtube Publish Configured */
             youtube_publish_configured: boolean;
             /** Youtube Search Configured */

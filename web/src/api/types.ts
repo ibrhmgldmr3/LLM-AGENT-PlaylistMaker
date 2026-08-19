@@ -193,6 +193,10 @@ export interface RunListResponse {
 
 export interface Capabilities {
   gemini_configured: boolean;
+  // `gemini_configured` GERIYE DONUK UYUM icin duruyor. Saglayici secilebilir
+  // hale geldigi icin asil soru "LLM yapilandirilmis mi" ve onu bu alan
+  // yanitliyor (bkz. backend `AppConfig.public_capabilities()`).
+  llm_configured: boolean;
   youtube_search_configured: boolean;
   youtube_publish_configured: boolean;
   asr_available: boolean;
