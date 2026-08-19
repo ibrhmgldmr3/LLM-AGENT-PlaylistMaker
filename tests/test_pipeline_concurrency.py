@@ -49,7 +49,7 @@ def _fake_rank(candidates, topic, subtopic, filters, **kw):
 
 
 def _install(monkeypatch, subtopics, search_fn, transcript_fn=None, pool_for=None):
-    monkeypatch.setattr(playlist_service, "GeminiLLMProvider", lambda config: DummyLLM(subtopics))
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM(subtopics))
     monkeypatch.setattr(playlist_service, "search_candidates", search_fn)
     monkeypatch.setattr(playlist_service, "rank_candidates", _fake_rank)
     monkeypatch.setattr(

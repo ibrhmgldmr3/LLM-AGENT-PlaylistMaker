@@ -11,7 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 # Ortam degiskeni -> model alani eslemesi.
 # Varsayilan degerler SADECE modelde tanimlidir; burada tekrarlanmaz.
 ENV_TO_FIELD: dict[str, str] = {
+    "LLM_PROVIDER": "llm_provider",
     "GEMINI_API_KEY": "gemini_api_key",
+    "TOGETHER_API_KEY": "together_api_key",
+    "TOGETHER_MODEL": "together_model",
     "GEMINI_MODEL": "gemini_model",
     "GEMINI_THINKING_BUDGET": "gemini_thinking_budget",
     "YOUTUBE_DATA_API_KEY": "youtube_data_api_key",
@@ -77,7 +80,16 @@ class UserCredentials(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    gemini_api_key: str = Field(..., description="Gemini API key")
+    # Hangi saglayicinin kullanilacagi. Anahtarlar kullanici basina saklandigi
+    # icin bu secim de kullaniciya ait: biri Gemini, digeri Together kullanabilir.
+    llm_provider: Literal["gemini", "together"] = Field(default="gemini")
+
+    # ARTIK ZORUNLU DEGIL. Zorunluyken Together'a gecmek imkansizdi -- anahtari
+    # olmayan bir kurulum yapilandirmayi hic kuramiyordu. Secilen saglayicinin
+    # anahtari `llm_api_key()` ile okunuyor; varligi calistirma baslatilirken
+    # (`api/deps.py`) kontrol ediliyor.
+    gemini_api_key: str | None = Field(default=None, description="Gemini API key")
+    together_api_key: str | None = Field(default=None, description="Together.ai API key")
     youtube_data_api_key: str | None = Field(default=None)
     youtube_oauth_token_file: str = Field(default="data/cache/youtube_oauth_token.json")
     ytdlp_proxy: str | None = Field(default=None)
@@ -95,6 +107,9 @@ class RunOptions(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     gemini_model: str = Field(default="gemini-3.7-flash")
+    # Together model kimligi. Hesaba gore degisebildigi icin yapilandirilabilir;
+    # varsayilanin sizin hesabinizda kullanilabilir oldugunu dogrulayin.
+    together_model: str = Field(default="meta-llama/Llama-3.3-70B-Instruct-Turbo")
     youtube_playlist_privacy_status: str = Field(default="private")
     # Ana dil disinda Ingilizce arama da yapilsin mi (arayuzdeki anahtarin
     # varsayilani). Alt konu basina bir ek `search.list` cagrisi = +100 kota birimi.
@@ -326,13 +341,25 @@ class AppConfig(ServerConfig, UserCredentials, RunOptions):
     def run_options(self) -> RunOptions:
         return RunOptions.model_validate(self.model_dump())
 
+    def llm_api_key(self) -> str | None:
+        """SECILEN saglayicinin anahtari.
+
+        Anahtar secimini tek bir yerde topluyor; cagiran taraflarin hangi
+        saglayicinin hangi alani kullandigini bilmesi gerekmiyor.
+        """
+        return self.together_api_key if self.llm_provider == "together" else self.gemini_api_key
+
     def public_capabilities(self) -> dict[str, bool]:
         """Arayuzun hangi kontrolleri acabilecegini anlatir. SIR ICERMEZ.
 
         `GET /api/config` bunu doner; anahtarlarin kendisi asla disari cikmaz.
         """
         return {
+            # `gemini_configured` GERIYE DONUK UYUM icin duruyor: arayuz ve
+            # testler onu okuyor. Saglayici secilebilir hale geldigi icin asil
+            # soru "LLM yapilandirilmis mi" ve onu `llm_configured` yanitliyor.
             "gemini_configured": bool(self.gemini_api_key),
+            "llm_configured": bool(self.llm_api_key()),
             "youtube_search_configured": bool(self.youtube_data_api_key),
             "youtube_publish_configured": bool(
                 self.youtube_oauth_client_secret_file

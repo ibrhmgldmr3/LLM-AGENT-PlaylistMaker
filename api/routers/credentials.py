@@ -22,8 +22,12 @@ router = APIRouter(prefix="/api/credentials", tags=["credentials"])
 
 # BYOK ile girilebilecek alanlar. Beyaz liste bilerek: rastgele bir ad
 # yazilarak yapilandirmanin baska bir alanina deger sokulmasi engelleniyor.
+# `required` alanlarin HICBIRI artik True degil: kullanici Gemini VEYA Together
+# kullanabiliyor, ikisi birden zorunlu degil. "En az birinin girilmis olmasi"
+# kosulu `api/deps.py` icinde, calistirma baslatilirken kontrol ediliyor.
 EDITABLE = {
-    "gemini_api_key": {"required": True, "label": "Gemini API anahtarı"},
+    "gemini_api_key": {"required": False, "label": "Gemini API anahtarı"},
+    "together_api_key": {"required": False, "label": "Together.ai API anahtarı"},
     "youtube_data_api_key": {"required": False, "label": "YouTube Data API anahtarı"},
 }
 

@@ -85,12 +85,19 @@ def get_user_credentials(
 
     store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
     stored = store.get_user_credentials(user_id)
-    if not stored.get("gemini_api_key"):
+
+    # Hangi saglayici kullanilacak, GIRILEN ANAHTARDAN cikariliyor: Together
+    # anahtari varsa Together, yoksa Gemini. Ayri bir "saglayici sec" ayari
+    # koymadik cunku ikisi de girilmediginde secim anlamsiz, biri girildiginde
+    # ise zaten belli. Ikisi de varsa Together kazaniyor -- kullanici sonradan
+    # ekledigi anahtarla calismak ister; Gemini'ye donmek icin onu siliyor.
+    provider = "together" if stored.get("together_api_key") else "gemini"
+    if not (stored.get("together_api_key") or stored.get("gemini_api_key")):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Gemini API anahtarınızı ayarlardan girmeniz gerekiyor",
+            "Gemini veya Together.ai API anahtarınızı ayarlardan girmeniz gerekiyor",
         )
-    return UserCredentials(**stored)
+    return UserCredentials(llm_provider=provider, **stored)
 
 
 def get_default_run_options() -> RunOptions:
