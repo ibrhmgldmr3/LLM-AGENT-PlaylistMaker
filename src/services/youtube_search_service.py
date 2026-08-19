@@ -70,7 +70,7 @@ def search_candidates(
             # Hiz siniri: tekrar denemeden dinlendir, sonraki saglayiciya gec.
             message = redact_secrets(str(exc))
             cooldown = exc.retry_after or config.rate_limit_cooldown_sec
-            store.mark_provider_cooldown(provider.name, message, cooldown)
+            store.mark_provider_cooldown(provider.name, message, cooldown, user_id=user_id)
             provider_errors.append(f"{provider.name}: rate limited ({cooldown}s cooldown)")
             if logger:
                 logger.warning("Rate limited on %s; cooling down for %ss", provider.name, cooldown)

@@ -42,6 +42,7 @@ export interface FilterOptionsEcho extends Omit<FilterOptions, "language"> {
 export interface RunOptionsOverride {
   max_subtopics?: number;
   enable_asr_fallback?: boolean;
+  enable_study_notes?: boolean;
 }
 
 export interface CreateRunRequest {
@@ -137,6 +138,25 @@ export interface SubtopicResult {
   notes: string[];
 }
 
+export type StudyNoteStatus = "available" | "no_transcript" | "failed";
+
+/**
+ * Bir alt konu icin transkriptten uretilen calisma notu.
+ *
+ * "no_transcript" AYRI bir durum: transkripti olmayan bir video icin not
+ * UYDURULMUYOR (bkz. backend `StudyNote` modelinin docstring'i). Arayuz bu
+ * durumu ayirt etmek ZORUNDA -- `content: null` ile "bos not" gostermek,
+ * "bu video icin bilgi yok" ile "uretim basarisiz oldu" arasindaki farki
+ * kaybederdi.
+ */
+export interface StudyNote {
+  subtopic: string;
+  video_id: string;
+  status: StudyNoteStatus;
+  content: string | null;
+  error: string | null;
+}
+
 export interface PlaylistResult {
   run_id: string;
   topic: string;
@@ -147,6 +167,7 @@ export interface PlaylistResult {
   warnings: string[];
   exports: { json_path: string; markdown_path: string } | null;
   published_playlist_url: string | null;
+  study_notes: StudyNote[];
 }
 
 export interface RunResultResponse {
@@ -172,6 +193,10 @@ export interface RunListResponse {
 
 export interface Capabilities {
   gemini_configured: boolean;
+  // `gemini_configured` GERIYE DONUK UYUM icin duruyor. Saglayici secilebilir
+  // hale geldigi icin asil soru "LLM yapilandirilmis mi" ve onu bu alan
+  // yanitliyor (bkz. backend `AppConfig.public_capabilities()`).
+  llm_configured: boolean;
   youtube_search_configured: boolean;
   youtube_publish_configured: boolean;
   asr_available: boolean;

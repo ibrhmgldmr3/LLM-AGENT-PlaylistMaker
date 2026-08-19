@@ -1,6 +1,6 @@
 import { api } from "../../api/client";
 import { PublishPanel } from "../publish/PublishPanel";
-import type { PlaylistResult, Recommendation, SubtopicResult } from "../../api/types";
+import type { PlaylistResult, Recommendation, StudyNote, SubtopicResult } from "../../api/types";
 
 /**
  * "Zayif eslesme" iki ayri kosulun BIRLESIMI.
@@ -43,7 +43,7 @@ export function isWeakMatch(item: Recommendation): boolean {
   );
 }
 
-function RecommendationCard({ item }: { item: Recommendation }) {
+function RecommendationCard({ item, note }: { item: Recommendation; note?: StudyNote }) {
   const weak = isWeakMatch(item);
   return (
     <article className="card">
@@ -79,6 +79,31 @@ function RecommendationCard({ item }: { item: Recommendation }) {
         </a>
         <span className="muted">Transkript: {item.transcript_status}</span>
       </div>
+
+      {note && (
+        <details style={{ marginTop: "0.7rem" }} open={note.status === "available"}>
+          <summary>Çalışma notu</summary>
+          {note.status === "available" && (
+            <>
+              <p className="muted" style={{ marginTop: "0.5rem", marginBottom: "0.4rem" }}>
+                Video transkriptinden üretildi — özet niteliğindedir, videonun kendisiyle
+                doğrulayın.
+              </p>
+              <div style={{ whiteSpace: "pre-wrap" }}>{note.content}</div>
+            </>
+          )}
+          {note.status === "no_transcript" && (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              Bu video için transkript bulunamadığından çalışma notu üretilmedi.
+            </p>
+          )}
+          {note.status === "failed" && (
+            <p className="alert alert--error" style={{ marginTop: "0.5rem" }}>
+              Çalışma notu üretilemedi: {note.error}
+            </p>
+          )}
+        </details>
+      )}
 
       <details style={{ marginTop: "0.7rem" }}>
         <summary>Puan dökümü</summary>
@@ -160,7 +185,13 @@ export function RunResult({ result }: { result: PlaylistResult }) {
       {result.recommendations.length === 0 ? (
         <p className="alert">Bu filtrelerle öneri üretilemedi.</p>
       ) : (
-        result.recommendations.map((item) => <RecommendationCard key={item.video.video_id} item={item} />)
+        result.recommendations.map((item) => (
+          <RecommendationCard
+            key={item.video.video_id}
+            item={item}
+            note={result.study_notes.find((candidate) => candidate.video_id === item.video.video_id)}
+          />
+        ))
       )}
 
       <h2 style={{ fontSize: "1.1rem", marginTop: "2rem" }}>Alt konu tanılaması</h2>

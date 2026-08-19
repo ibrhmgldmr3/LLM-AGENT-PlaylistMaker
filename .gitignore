@@ -67,7 +67,6 @@ coverage.xml
 # ---------------------------------------------------------------- yerel bagimliliklar
 # whisper.cpp kaynak, derleme ve model dosyalari yerelde kalir
 whisper.cpp/
-models/
 *.bin
 *.gguf
 

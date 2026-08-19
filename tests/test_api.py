@@ -422,6 +422,18 @@ def test_capabilities_report_configuration(client):
     assert "max_subtopics" in body["defaults"]
 
 
+def test_capabilities_include_llm_configured(client):
+    """Regresyon: `llm_configured` `public_capabilities()`e ekliydi ama
+    `CapabilitiesResponse` modeline eklenmemisti; pydantic'in varsayilan
+    `extra="ignore"` davranisi alani sessizce yaniti disinda birakiyordu.
+    Tip kontrolu (`contract.ts`) frontend'e eklenince farki yakaladi.
+    """
+    body = client.get("/api/config").json()
+
+    assert "llm_configured" in body
+    assert body["llm_configured"] is True
+
+
 def test_capabilities_never_leak_secrets(client):
     """En kritik guvenlik testi: anahtarlar bu uctan asla cikmamali."""
     raw = client.get("/api/config").text

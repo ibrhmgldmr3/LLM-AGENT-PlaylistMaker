@@ -14,6 +14,7 @@ from src.models import (
     PlaylistRequest,
     PlaylistResult,
     ProgressEvent,
+    StudyNote,
     SubtopicResult,
     Subtopic,
     TranscriptResult,
@@ -36,6 +37,7 @@ _P_SEARCH = 0.35
 _P_RANKING = 0.40
 _P_TRANSCRIPTS = 0.85
 _P_SELECTION = 0.95
+_P_STUDY_NOTES = 0.97
 
 
 @dataclass
@@ -226,6 +228,19 @@ def _run_pipeline(
         transcripts_by_video,
         channel_repeat_penalty=config.channel_repeat_penalty,
     )
+
+    # ---------------------------------------------------------------- FAZ 4.5
+    # VARSAYILAN KAPALI (bkz. `RunOptions.enable_study_notes`): transkripti olan
+    # secilen videolar icin, transkriptten DOGRUDAN baglamla calisma notu uretir.
+    if config.enable_study_notes:
+        result.study_notes = _generate_study_notes(
+            config, llm, request, work, assignments, transcripts_by_video, logger, emit
+        )
+        for note in result.study_notes:
+            if note.status == "failed":
+                result.warnings.append(
+                    f"'{note.subtopic}' için çalışma notu üretilemedi: {note.error}"
+                )
 
     for index, item in enumerate(work, start=1):
         recommendation = assignments[index - 1]
@@ -426,6 +441,101 @@ def _fetch_transcripts(
     return results
 
 
+def _generate_study_notes(
+    config: AppConfig,
+    llm,
+    request: PlaylistRequest,
+    work: list[_SubtopicWork],
+    assignments: list,
+    transcripts_by_video: dict[str, TranscriptResult],
+    logger,
+    emit,
+) -> list[StudyNote]:
+    """Secilen videolarin transkriptinden calisma notu uretir.
+
+    RAG DEGIL: her not TEK bir videonun transkriptini DOGRUDAN baglama veriyor.
+    Olculdu -- bir playlist'in transkript toplami (6 video x ortanca ~16.000
+    krkt) tek bir LLM baglam penceresine rahatca sigiyor; parcalama/vektor depo
+    kurmak henuz olmayan bir sorunu cozerdi.
+
+    Transkripti OLMAYAN bir video icin not UYDURULMUYOR: `StudyNote`
+    "no_transcript" durumuyla isaretleniyor. Bu, projenin geri kalaniyla ayni
+    cizgide (`interrupted` calistirma durumu, "zayif eslesme" etiketi):
+    bilinmeyeni bilinmeyen olarak isaretlemek, tahmin uretmekten iyidir.
+
+    `run_one` hicbir zaman FIRLATMIYOR -- LLM hatasi bile `StudyNote(status="failed")`
+    olarak donuyor. Bu yuzden `_guard` sarmalayicisina (transkript fazinin
+    kullandigi) gerek yok: worker'in kendisi zaten hata yutuyor ve nedenini
+    kaydediyor.
+    """
+    targets = [
+        (item, recommendation)
+        for item, recommendation in zip(work, assignments)
+        if recommendation is not None
+    ]
+    if not targets:
+        return []
+
+    total = len(targets)
+    # Ayri bir "max_study_note_workers" ayari EKLENMEDI: olculmus bir ihtiyac
+    # yok ve transkript fazi da AYNI turden is (ag+LLM cagrisi, IO-bound) icin
+    # ayni sinira tabi. Gereksiz bir tuning duzeyi eklemek yerine mevcut sinir
+    # yeniden kullanildi.
+    workers = max(1, min(config.max_transcript_workers, total))
+
+    def run_one(pair) -> StudyNote:
+        item, recommendation = pair
+        video_id = recommendation.video.video_id
+        transcript = transcripts_by_video.get(video_id)
+        if transcript is None or transcript.status != "available" or not transcript.text:
+            return StudyNote(subtopic=item.subtopic.title, video_id=video_id, status="no_transcript")
+        try:
+            content = llm.generate_study_note(
+                request.topic,
+                item.subtopic.title,
+                recommendation.video.title,
+                transcript.text,
+                request.filters.language,
+            )
+            return StudyNote(
+                subtopic=item.subtopic.title, video_id=video_id, status="available", content=content
+            )
+        except Exception as exc:
+            if logger:
+                logger.warning("Study note failed for %s: %s", video_id, exc)
+            return StudyNote(
+                subtopic=item.subtopic.title,
+                video_id=video_id,
+                status="failed",
+                error=redact_secrets(str(exc))[:300],
+            )
+
+    def report(done: int) -> None:
+        emit(
+            "study_notes",
+            f"Çalışma notları üretiliyor ({done}/{total})",
+            _P_SELECTION + (done / total) * (_P_STUDY_NOTES - _P_SELECTION),
+            done,
+            total,
+        )
+
+    notes: list[StudyNote] = [None] * total
+    emit("study_notes", f"{total} video için çalışma notu üretiliyor", _P_SELECTION, 0, total)
+
+    if workers == 1:
+        for index, pair in enumerate(targets):
+            notes[index] = run_one(pair)
+            report(index + 1)
+        return notes
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="studynote") as pool:
+        futures = {pool.submit(run_one, pair): index for index, pair in enumerate(targets)}
+        for done, future in enumerate(as_completed(futures), start=1):
+            notes[futures[future]] = future.result()
+            report(done)
+    return notes
+
+
 def _guard(func, argument, logger, label: str):
     """Bir worker'daki hata tum calistirmayi dusurmemeli."""
     try:
@@ -466,6 +576,18 @@ def _render_markdown(result: PlaylistResult) -> str:
                 "",
             ]
         )
+    if result.study_notes:
+        lines.extend(["## Study Notes", ""])
+        for note in result.study_notes:
+            lines.append(f"### {note.subtopic}")
+            lines.append("")
+            if note.status == "available":
+                lines.append(note.content or "")
+            elif note.status == "no_transcript":
+                lines.append("_No transcript was available for this video; no note was generated._")
+            else:
+                lines.append(f"_Study note generation failed: {note.error}_")
+            lines.append("")
     if result.warnings:
         lines.extend(["## Warnings", ""])
         lines.extend([f"- {warning}" for warning in result.warnings])

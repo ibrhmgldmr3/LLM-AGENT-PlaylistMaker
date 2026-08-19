@@ -125,7 +125,7 @@ def get_transcript(
             # dinlendir. Eskiden bu hata genel "gecici hata" sayiliyor, her video
             # icin 3 kez tekrarlaniyor ve IP blogunu derinlestiriyordu.
             cooldown = exc.retry_after or config.rate_limit_cooldown_sec
-            store.mark_provider_cooldown(provider_name, redact_secrets(str(exc)), cooldown)
+            store.mark_provider_cooldown(provider_name, redact_secrets(str(exc)), cooldown, user_id=user_id)
             if logger:
                 logger.warning(
                     "Rate limited on %s; cooling down for %ss without retrying", provider_name, cooldown

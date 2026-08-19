@@ -55,7 +55,20 @@ export function CredentialsPanel({ onChange }: { onChange?: () => void }) {
       .catch((exc: ApiError) => setError(exc.message));
   };
 
-  if (!items) return null;
+  // Ilk yukleme BASARISIZ olursa `items` hicbir zaman dolmaz ve panel
+  // SESSIZCE hicbir sey gostermezdi -- kullanici hatanin farkina bile
+  // varmazdi. Hata varsa VE liste hala yoksa, en azindan hatayi goster.
+  if (!items) {
+    if (!error) return null;
+    return (
+      <div className="card">
+        <div className="card__head">
+          <h3>API anahtarlarınız</h3>
+        </div>
+        <p className="alert alert--error">{error}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="card">

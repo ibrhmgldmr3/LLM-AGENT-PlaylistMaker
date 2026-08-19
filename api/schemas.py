@@ -36,6 +36,7 @@ class RunOptionsOverride(BaseModel):
     transcript_enrichment_top_k: int | None = Field(default=None, ge=1)
     enable_asr_fallback: bool | None = None
     max_asr_videos_per_run: int | None = Field(default=None, ge=0)
+    enable_study_notes: bool | None = None
     channel_repeat_penalty: float | None = Field(default=None, ge=0)
     youtube_playlist_privacy_status: Literal["private", "unlisted", "public"] | None = None
 
@@ -112,9 +113,18 @@ class PublishResponse(BaseModel):
 
 
 class CapabilitiesResponse(BaseModel):
-    """Arayuzun hangi kontrolleri acabilecegi. SIR ICERMEZ."""
+    """Arayuzun hangi kontrolleri acabilecegi. SIR ICERMEZ.
+
+    `AppConfig.public_capabilities()` ile bu modelin alanlari BIREBIR ayni
+    olmali: `CapabilitiesResponse(**capabilities)` fazladan anahtarlari
+    sessizce YOK SAYAR (pydantic'in varsayilan `extra="ignore"` davranisi).
+    `llm_configured` tam bu yuzden hic API'ye cikmiyordu -- Together saglayici
+    islerinde `public_capabilities()`e eklenmisti ama buraya eklenmemisti;
+    tip kontrolu (`contract.ts`) frontend tipine eklenince farki yakaladi.
+    """
 
     gemini_configured: bool
+    llm_configured: bool
     youtube_search_configured: bool
     youtube_publish_configured: bool
     asr_available: bool

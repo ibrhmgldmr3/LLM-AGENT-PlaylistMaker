@@ -362,6 +362,13 @@ export interface components {
         /**
          * CapabilitiesResponse
          * @description Arayuzun hangi kontrolleri acabilecegi. SIR ICERMEZ.
+         *
+         *     `AppConfig.public_capabilities()` ile bu modelin alanlari BIREBIR ayni
+         *     olmali: `CapabilitiesResponse(**capabilities)` fazladan anahtarlari
+         *     sessizce YOK SAYAR (pydantic'in varsayilan `extra="ignore"` davranisi).
+         *     `llm_configured` tam bu yuzden hic API'ye cikmiyordu -- Together saglayici
+         *     islerinde `public_capabilities()`e eklenmisti ama buraya eklenmemisti;
+         *     tip kontrolu (`contract.ts`) frontend tipine eklenince farki yakaladi.
          */
         CapabilitiesResponse: {
             /** Asr Available */
@@ -374,6 +381,8 @@ export interface components {
             };
             /** Gemini Configured */
             gemini_configured: boolean;
+            /** Llm Configured */
+            llm_configured: boolean;
             /** Youtube Publish Configured */
             youtube_publish_configured: boolean;
             /** Youtube Search Configured */
@@ -494,6 +503,8 @@ export interface components {
             recommendations: components["schemas"]["Recommendation"][];
             /** Run Id */
             run_id: string;
+            /** Study Notes */
+            study_notes: components["schemas"]["StudyNote"][];
             /** Subtopics */
             subtopics: components["schemas"]["SubtopicResult"][];
             /** Topic */
@@ -588,6 +599,8 @@ export interface components {
             channel_repeat_penalty?: number | null;
             /** Enable Asr Fallback */
             enable_asr_fallback?: boolean | null;
+            /** Enable Study Notes */
+            enable_study_notes?: boolean | null;
             /** Gemini Model */
             gemini_model?: string | null;
             /** Max Asr Videos Per Run */
@@ -697,6 +710,30 @@ export interface components {
             run_id: string;
             /** Topic */
             topic: string;
+        };
+        /**
+         * StudyNote
+         * @description Bir alt konu icin transkriptten uretilen calisma notu.
+         *
+         *     "no_transcript" AYRI bir durum: transkripti olmayan bir video icin not
+         *     UYDURULMUYOR. Bu, projenin geri kalaninda kurulu davranisla ayni cizgide --
+         *     `interrupted` calistirma durumu ve "zayif eslesme" etiketi de ayni sebeple
+         *     var: bilinmeyeni bilinmeyen olarak isaretlemek, tahmin uretmekten iyidir.
+         */
+        StudyNote: {
+            /** Content */
+            content: string | null;
+            /** Error */
+            error: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "available" | "no_transcript" | "failed";
+            /** Subtopic */
+            subtopic: string;
+            /** Video Id */
+            video_id: string;
         };
         /** Subtopic */
         Subtopic: {
