@@ -44,7 +44,7 @@ _TEMPORARY_REASONS = {
     "userratelimitexceeded",
     "backenderror",
     "internalerror",
-    "servicelunavailable",
+    "serviceunavailable",
 }
 
 @functools.lru_cache(maxsize=1)

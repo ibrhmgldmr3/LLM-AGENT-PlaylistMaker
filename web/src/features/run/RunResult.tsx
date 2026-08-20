@@ -170,7 +170,16 @@ export function RunResult({ result }: { result: PlaylistResult }) {
       ))}
 
       {result.recommendations.length > 0 && (
-        <PublishPanel runId={result.run_id} publishedUrl={result.published_playlist_url} />
+        // `key` calistirma kimligi: `PublishPanel` kendi hata/bildirim state'ini
+        // tutuyor ve React ayni konumdaki bileseni YENIDEN KULLANDIGI icin
+        // gecmisten acilan A calistirmasinin yayinlama hatasi, ardindan gecilen
+        // B calistirmasinin ekraninda asili kaliyordu. Farkli `key` = yeni
+        // bilesen ornegi = sifirlanmis state.
+        <PublishPanel
+          key={result.run_id}
+          runId={result.run_id}
+          publishedUrl={result.published_playlist_url}
+        />
       )}
 
       <div className="row" style={{ marginBottom: "1rem" }}>

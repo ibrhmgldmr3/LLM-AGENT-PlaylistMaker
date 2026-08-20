@@ -33,11 +33,7 @@ export function SignIn() {
       </div>
       <p className="muted">
         Google hesabınızla giriş yaparsınız; aynı izinle oluşturduğunuz playlist'i YouTube'a
-        yayınlayabilirsiniz.
-      </p>
-      <p className="muted">
-        Giriş sonrası kendi <strong>Gemini API anahtarınızı</strong> girmeniz gerekiyor.
-        Çalıştırmalar sizin anahtarınızla yapılır.
+        yayınlayabilirsiniz. Herhangi bir API anahtarı girmeniz gerekmez.
       </p>
       {error && <p className="alert alert--error">{error}</p>}
       <button type="button" onClick={start} disabled={busy}>

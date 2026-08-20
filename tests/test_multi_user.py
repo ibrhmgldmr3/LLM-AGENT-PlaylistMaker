@@ -1,6 +1,7 @@
-"""Cok kullanicili kurulumun temelleri: BYOK anahtarlari ve oturumlar.
+"""Cok kullanicili kurulumun temelleri: oturumlar ve paylasimli anahtarlar.
 
-Faz 1 kapsamı: kimlik (Google hesabi) ve kullanici basina API anahtari.
+Faz 1 kapsamı: kimlik (Google hesabi). LLM/YouTube arama anahtarlari BYOK
+DEGIL, sunucudan PAYLASIMLI gelir (bkz. `src/config/settings.py`).
 Calistirma/gecmis kapsamasi `test_run_history.py` ve `test_api.py` icinde.
 """
 
@@ -22,47 +23,6 @@ def store(tmp_path):
 
 def _raw(tmp_path, sql):
     return sqlite3.connect(tmp_path / "app.db").execute(sql).fetchall()
-
-
-# ------------------------------------------------------------ BYOK anahtarlar
-
-def test_user_credentials_are_scoped_per_user(store):
-    store.save_user_credential("ali", "gemini_api_key", "ALI-KEY")
-    store.save_user_credential("veli", "gemini_api_key", "VELI-KEY")
-
-    assert store.get_user_credentials("ali")["gemini_api_key"] == "ALI-KEY"
-    assert store.get_user_credentials("veli")["gemini_api_key"] == "VELI-KEY"
-    assert store.get_user_credentials("bilinmeyen") == {}
-
-
-def test_user_credentials_are_encrypted_at_rest(store, tmp_path):
-    """Anahtarlar diskte DUZ METIN durmamali.
-
-    Kullanicinin kendi API anahtarini emanet etmesini istiyoruz; veritabani
-    dosyasi yedeklere, senkronize klasorlere ve hata raporlarina karisiyor.
-    """
-    store.save_user_credential("ali", "gemini_api_key", "COK-GIZLI-DEGER")
-
-    rows = _raw(tmp_path, "SELECT value FROM user_credential")
-
-    assert rows, "kayit yazilmamis"
-    assert all("COK-GIZLI-DEGER" not in row[0] for row in rows)
-
-
-def test_saving_the_same_name_replaces_it(store):
-    store.save_user_credential("ali", "gemini_api_key", "ESKI")
-    store.save_user_credential("ali", "gemini_api_key", "YENI")
-
-    assert store.get_user_credentials("ali")["gemini_api_key"] == "YENI"
-
-
-def test_deleting_one_credential_keeps_the_others(store):
-    store.save_user_credential("ali", "gemini_api_key", "G")
-    store.save_user_credential("ali", "youtube_data_api_key", "Y")
-
-    assert store.delete_user_credential("ali", "gemini_api_key") is True
-    assert store.delete_user_credential("ali", "gemini_api_key") is False
-    assert set(store.get_user_credentials("ali")) == {"youtube_data_api_key"}
 
 
 # ----------------------------------------------------------------- oturumlar
@@ -156,36 +116,55 @@ def test_expired_session_is_rejected(multi_user_client):
     assert multi_user_client.get("/api/runs").status_code == 401
 
 
-def test_server_keys_are_not_used_as_a_fallback(multi_user_client):
-    """Regresyon riski: anahtarini girmemis kullanici SESSIZCE sunucunun
-    kotasini harcamamali.
-
-    YouTube Data API kotasi proje basina gunde 10.000 birim, bir calistirma
-    ~1.200 birim. Yedege dusulseydi ikinci kullanici gunu bitirirdi -- ve
-    kurulum sahibi bunu ancak kota bitince fark ederdi.
+def test_signed_in_user_can_start_a_run_with_no_key_of_their_own(multi_user_client, monkeypatch):
+    """LLM/YouTube arama anahtari ARTIK PAYLASIMLI: oturum acan HERHANGI bir
+    kullanici, hicbir anahtar kaydetmeden, sunucunun `.env` anahtariyla
+    calistirma baslatabilmeli.
     """
-    multi_user_client.store.create_session("jeton", "google:123", None, ttl_sec=3600)
-    multi_user_client.cookies.set("map_session", "jeton")
-
-    response = multi_user_client.post("/api/runs", json={"topic": "Konu"})
-
-    assert response.status_code == 400
-    assert "anahtar" in response.json()["detail"].lower()
-
-
-def test_a_user_with_their_own_key_can_start_a_run(multi_user_client, monkeypatch):
     from api.routers import runs as runs_router
 
     monkeypatch.setattr(
         runs_router, "build_playlist", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("dur"))
     )
     multi_user_client.store.create_session("jeton", "google:123", None, ttl_sec=3600)
-    multi_user_client.store.save_user_credential("google:123", "gemini_api_key", "KENDI-ANAHTARI")
     multi_user_client.cookies.set("map_session", "jeton")
 
     response = multi_user_client.post("/api/runs", json={"topic": "Konu"})
 
     assert response.status_code == 202
+
+
+def test_server_not_configured_gives_a_clear_503_not_a_silent_failure(tmp_path, monkeypatch):
+    """Sunucuda hic LLM anahtari yoksa istek ACIKCA 503 almali.
+
+    Once bu durum 'kullanici anahtarini girmedi' (400) olarak ele aliniyordu;
+    artik anahtar hic kullaniciya ait olmadigi icin bu SUNUCU yapilandirma
+    hatasi -- 503 daha dogru.
+    """
+    from fastapi.testclient import TestClient
+
+    from api import deps
+    from src.config import AppConfig
+
+    config = AppConfig(
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "app.db"),
+        secret_encryption_key=KEY,
+        auth_mode="multi_user",
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(deps, "_base_config", lambda: config)
+
+    from api.main import app
+
+    with TestClient(app) as client:
+        store = SQLiteStore(config.sqlite_path, encryption_key=KEY)
+        store.create_session("jeton", "google:123", None, ttl_sec=3600)
+        client.cookies.set("map_session", "jeton")
+
+        response = client.post("/api/runs", json={"topic": "Konu"})
+
+    assert response.status_code == 503
 
 
 def test_runs_are_isolated_between_sessions(multi_user_client):
@@ -319,51 +298,6 @@ def test_logout_revokes_the_session_on_the_server(multi_user_client):
     assert multi_user_client.store.get_session("jeton") is None
 
 
-# --------------------------------------------------------- anahtar uclari
-
-def test_credentials_never_return_the_values(multi_user_client):
-    """Deger bir kez yazilir, GERI OKUNAMAZ.
-
-    Yalnizca "girilmis mi" bilgisi doniyor; boylece bir XSS ya da yanlis
-    loglama anahtari disari tasiyamaz. Kullanici unuttuysa yenisini girer.
-    """
-    store = multi_user_client.store
-    store.create_session("jeton", "google:1", None, ttl_sec=3600)
-    store.save_user_credential("google:1", "gemini_api_key", "COK-GIZLI")
-    multi_user_client.cookies.set("map_session", "jeton")
-
-    body = multi_user_client.get("/api/credentials").json()
-
-    assert "COK-GIZLI" not in multi_user_client.get("/api/credentials").text
-    gemini = next(item for item in body["items"] if item["name"] == "gemini_api_key")
-    assert gemini["configured"] is True
-    assert "value" not in gemini
-
-
-def test_saving_a_credential_takes_effect(multi_user_client):
-    multi_user_client.store.create_session("jeton", "google:1", None, ttl_sec=3600)
-    multi_user_client.cookies.set("map_session", "jeton")
-
-    assert multi_user_client.put(
-        "/api/credentials/gemini_api_key", json={"value": "yeni-anahtar"}
-    ).status_code == 204
-    assert multi_user_client.store.get_user_credentials("google:1")["gemini_api_key"] == "yeni-anahtar"
-
-
-def test_unknown_credential_names_are_rejected(multi_user_client):
-    """Beyaz liste: rastgele bir adla yapilandirmaya deger sokulmasin."""
-    multi_user_client.store.create_session("jeton", "google:1", None, ttl_sec=3600)
-    multi_user_client.cookies.set("map_session", "jeton")
-
-    response = multi_user_client.put("/api/credentials/sqlite_path", json={"value": "/etc/passwd"})
-
-    assert response.status_code == 404
-
-
-def test_credentials_require_a_session(multi_user_client):
-    assert multi_user_client.get("/api/credentials").status_code == 401
-
-
 # ------------------------------------------------ saglayici sagligi kapsami
 
 def test_one_users_cooldown_does_not_affect_others(store):
@@ -473,8 +407,6 @@ def test_daily_run_limit_is_enforced_per_user(tmp_path, monkeypatch):
         store = SQLiteStore(config.sqlite_path, encryption_key=KEY)
         store.create_session("ali-jeton", "google:ali", None, ttl_sec=3600)
         store.create_session("veli-jeton", "google:veli", None, ttl_sec=3600)
-        store.save_user_credential("google:ali", "gemini_api_key", "a")
-        store.save_user_credential("google:veli", "gemini_api_key", "v")
 
         client.cookies.set("map_session", "ali-jeton")
         assert client.post("/api/runs", json={"topic": "bir"}).status_code == 202

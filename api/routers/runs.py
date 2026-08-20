@@ -77,22 +77,6 @@ def create_run(
         # (UNPROCESSABLE_ENTITY -> UNPROCESSABLE_CONTENT).
         raise HTTPException(422, "Konu boş olamaz")
 
-    # Kullanici basina gunluk sinir. 0 = sinirsiz (varsayilan).
-    #
-    # Sinirsizken tek bir kullanici gunluk YouTube kotasinin tamamini
-    # tuketebiliyor: kota proje basina 10.000 birim, bir calistirma 612 birim,
-    # yani ~16 calistirma TUM KULLANICILAR icin toplam. BYOK'ta kota
-    # kullanicinin kendi projesinden ciktigi icin sinir opsiyonel.
-    if server.max_runs_per_user_per_day:
-        used = store.count_recent_runs(user_id)
-        if used >= server.max_runs_per_user_per_day:
-            raise HTTPException(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                f"Günlük çalıştırma hakkınız doldu ({server.max_runs_per_user_per_day}). "
-                "Yarın tekrar deneyin.",
-                headers={"Retry-After": "3600"},
-            )
-
     # Istek govdesindeki ezmeler sunucu varsayilanlarinin uzerine biner.
     overrides = payload.options.model_dump(exclude_none=True)
     options = defaults.model_copy(update=overrides) if overrides else defaults
@@ -118,7 +102,27 @@ def create_run(
     #
     # `build_playlist` de basinda ayni satiri yaziyor; `INSERT OR REPLACE` ve
     # degerler ayni oldugu icin zararsiz.
-    store.create_run(run_id, request.topic, request.filters.model_dump(), user_id=user_id)
+    #
+    # Kullanici basina gunluk sinir de BURADA, ayni islem icinde uygulaniyor
+    # (0 = sinirsiz, varsayilan). Sayma ile INSERT ayrilsaydi iki es zamanli
+    # istek de kontrolu ayni eski sayiyla gecip siniri asabilirdi.
+    #
+    # Sinir neden var: kota proje basina gunde 10.000 birim, bir calistirma 612
+    # birim, yani ~16 calistirma TUM KULLANICILAR icin toplam.
+    accepted = store.create_run_within_daily_limit(
+        run_id,
+        request.topic,
+        request.filters.model_dump(),
+        user_id=user_id,
+        max_per_day=server.max_runs_per_user_per_day,
+    )
+    if not accepted:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"Günlük çalıştırma hakkınız doldu ({server.max_runs_per_user_per_day}). "
+            "Yarın tekrar deneyin.",
+            headers={"Retry-After": "3600"},
+        )
 
     handle = runner.submit(run_id, user_id, work)
     return RunAccepted(

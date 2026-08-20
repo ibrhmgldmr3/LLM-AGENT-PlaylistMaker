@@ -28,7 +28,21 @@ class _RedactSecretsFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             message = record.getMessage()
-        except Exception:  # bicimlendirme hatasi log'u dusurmemeli
+        except Exception:
+            # Bicimlendirme hatasi log'u dusurmemeli AMA eski `return True`,
+            # ham `msg`/`args` ciftini maskelenmeden handler'a birakiyordu:
+            # handler `getMessage()`'i yeniden cagirip yine patliyor ve
+            # `logging.Handler.handleError` ham `args` repr'ini stderr'e
+            # dokuyordu -- sizinti tam da sirrin `args` icinde oldugu
+            # durumda gerceklesiyordu.
+            #
+            # Cozum: `%` bicimlendirmesine HIC girmeyen tek parcali, maskelenmis
+            # bir mesaj birakmak. `args` bosaltildigi icin handler tarafinda
+            # ikinci bir bicimlendirme denemesi de olmuyor.
+            record.msg = "[log biçimlendirme hatası] " + redact_secrets(
+                f"msg={record.msg!r} args={record.args!r}"
+            )
+            record.args = ()
             return True
         record.msg = redact_secrets(message)
         record.args = ()

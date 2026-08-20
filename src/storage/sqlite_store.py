@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ CACHE_SCHEMA_VERSION = 2
 # gecildiginde gercek kullanici kimligi yazilir. Kolonu BUGUN eklemek tek
 # satirlik; sonradan eklemek mevcut kayitlari ve tum sorgulari elden gecirmek olur.
 DEFAULT_USER_ID = "local"
+
+_log = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -169,13 +172,6 @@ class SQLiteStore:
                     token_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, provider)
-                );
-                CREATE TABLE IF NOT EXISTS user_credential (
-                    user_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (user_id, name)
                 );
                 CREATE TABLE IF NOT EXISTS session (
                     token_hash TEXT PRIMARY KEY,
@@ -452,6 +448,49 @@ class SQLiteStore:
                 (run_id, topic, json.dumps(filters, ensure_ascii=False), _to_iso(_utc_now()), user_id),
             )
 
+    def create_run_within_daily_limit(
+        self,
+        run_id: str,
+        topic: str,
+        filters: dict[str, Any],
+        user_id: str = DEFAULT_USER_ID,
+        *,
+        max_per_day: int,
+        within_sec: int = 86400,
+    ) -> bool:
+        """Gunluk siniri kontrol edip satiri AYNI islemde yazar. Sinir asildiysa `False`.
+
+        `count_recent_runs` + `create_run` ayri iki islem oldugu surece iki es
+        zamanli istek de kontrolu ayni (eski) sayiyla gecip siniri asabiliyordu.
+        `BEGIN IMMEDIATE` yazma kilidini SAYMADAN once aldigi icin ikinci istek,
+        birincinin INSERT'i islenmeden sayima baslayamiyor.
+
+        `max_per_day` 0 ise sinir yok; yine de ayni yoldan geciyoruz ki cagiran
+        tarafta iki ayri kod dali olusmasin.
+
+        Ayri bir sayac tablosu YOK: `run` tablosu zaten `user_id` ve
+        `created_at` tasiyor. Ikinci bir kaynak tutmak, ikisinin birbirinden
+        ayrilabilecegi bir yer daha yaratirdi.
+        """
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if max_per_day:
+                cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM run WHERE user_id = ? AND created_at >= ?",
+                    (user_id, cutoff),
+                ).fetchone()
+                if (int(row["n"]) if row else 0) >= max_per_day:
+                    return False
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO run (run_id, topic, filters_json, created_at, result_json, user_id)
+                VALUES (?, ?, ?, ?, NULL, ?)
+                """,
+                (run_id, topic, json.dumps(filters, ensure_ascii=False), _to_iso(_utc_now()), user_id),
+            )
+            return True
+
     def add_run_subtopic(self, run_id: str, position: int, payload: dict[str, Any]) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -479,47 +518,31 @@ class SQLiteStore:
                 (json.dumps(result.model_dump(), ensure_ascii=False), run_id),
             )
 
-    # ---------------------------------------------------------- OAuth token
-    # Token KULLANICI BASINA saklanir: dosya yolu tek kullanicili varsayimdi ve
-    # cok kullanicili moda gecerken en cok direnc gosteren yerdi.
-    #
-    # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
-    # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
-    # boylece anahtar sonradan eklenebilir.
+    # ------------------------------------------------------- sifre cozme yardimcisi
 
-    # ------------------------------------------------- kullanici anahtarlari
-    #
-    # BYOK: cok kullanicili kurulumda her kullanici kendi API anahtarini
-    # getiriyor. Paylasimli anahtar mumkun degil -- YouTube Data API kotasi
-    # PROJE basina gunde 10.000 birim ve bir calistirma ~1.200 birim tuketiyor,
-    # yani ikinci kullanici gunu bitiriyor.
-    #
-    # Degerler jetonlarla AYNI kutuyla sifreleniyor; anahtar yoksa duz metin
-    # yazilir ve eski davranis korunur.
+    def _decrypt_or_none(self, stored: str, what: str) -> str | None:
+        """Cozulemeyen kaydi HATA yerine "yok" sayar.
 
-    def save_user_credential(self, user_id: str, name: str, value: str) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO user_credential (user_id, name, value, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (user_id, name, self._secrets.encrypt(value), _to_iso(_utc_now())),
+        `SECRET_ENCRYPTION_KEY` degisir ya da bozulursa `decrypt()` `ValueError`
+        firlatiyor. Bu istisna yukari birakildiginda okuma uclari 500 doner ve
+        kullanicinin kendi kendine kurtulacagi bir yol KALMAZ: "bagli mi"
+        sorusu bile patladigi icin arayuz baglantiyi kesme dugmesini bile
+        gosteremiyordu, hesap kalici olarak kilitleniyordu.
+
+        Cozulemeyen kayit zaten KULLANILAMAZ durumda; onu "yok" saymak
+        kullaniciya normal yeniden yetkilendirme akisini geri veriyor ve ilk
+        basarili yazma bozuk satirin uzerine biniyor. Sessiz kalmamak icin
+        durum WARNING olarak loglaniyor.
+        """
+        try:
+            return self._secrets.decrypt(stored)
+        except ValueError as exc:
+            _log.warning(
+                "%s cozulemedi (SECRET_ENCRYPTION_KEY degismis ya da kayit bozulmus olabilir): %s",
+                what,
+                exc,
             )
-
-    def get_user_credentials(self, user_id: str) -> dict[str, str]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT name, value FROM user_credential WHERE user_id = ?", (user_id,)
-            ).fetchall()
-        return {row["name"]: self._secrets.decrypt(row["value"]) for row in rows}
-
-    def delete_user_credential(self, user_id: str, name: str) -> bool:
-        with self.connect() as conn:
-            cursor = conn.execute(
-                "DELETE FROM user_credential WHERE user_id = ? AND name = ?", (user_id, name)
-            )
-            return cursor.rowcount > 0
+            return None
 
     # ------------------------------------------------------------- oturumlar
     #
@@ -570,6 +593,14 @@ class SQLiteStore:
             )
             return cursor.rowcount > 0
 
+    # ---------------------------------------------------------- OAuth token
+    # Token KULLANICI BASINA saklanir: dosya yolu tek kullanicili varsayimdi ve
+    # cok kullanicili moda gecerken en cok direnc gosteren yerdi.
+    #
+    # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
+    # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
+    # boylece anahtar sonradan eklenebilir.
+
     def save_oauth_token(self, user_id: str, provider: str, token_json: str) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -586,7 +617,7 @@ class SQLiteStore:
                 "SELECT token_json FROM oauth_token WHERE user_id = ? AND provider = ?",
                 (user_id, provider),
             ).fetchone()
-        return self._secrets.decrypt(row["token_json"]) if row else None
+        return self._decrypt_or_none(row["token_json"], f"`{provider}` OAuth jetonu") if row else None
 
     def delete_oauth_token(self, user_id: str, provider: str) -> bool:
         with self.connect() as conn:
@@ -660,21 +691,6 @@ class SQLiteStore:
                 row = conn.execute("SELECT COUNT(*) AS n FROM run").fetchone()
             else:
                 row = conn.execute("SELECT COUNT(*) AS n FROM run WHERE user_id = ?", (user_id,)).fetchone()
-        return int(row["n"]) if row else 0
-
-    def count_recent_runs(self, user_id: str, within_sec: int = 86400) -> int:
-        """Son `within_sec` saniyede bu kullanicinin baslattigi calistirma sayisi.
-
-        Ayri bir sayac tablosu YOK: `run` tablosu zaten `user_id` ve
-        `created_at` tasiyor. Ikinci bir kaynak tutmak, ikisinin birbirinden
-        ayrilabilecegi bir yer daha yaratirdi.
-        """
-        cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM run WHERE user_id = ? AND created_at >= ?",
-                (user_id, cutoff),
-            ).fetchone()
         return int(row["n"]) if row else 0
 
     def delete_run(self, run_id: str, user_id: str | None = DEFAULT_USER_ID) -> bool:

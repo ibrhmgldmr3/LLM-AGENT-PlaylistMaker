@@ -32,6 +32,10 @@ const IDLE: StreamState = {
 export function useRunStream() {
   const [state, setState] = useState<StreamState>(IDLE);
   const sourceRef = useRef<EventSource | null>(null);
+  // AKTIF calistirma. `state.runId` yerine ref: `done` sonrasi calisan asenkron
+  // `getRun` geri cagrisi, o sirada gecerli olan degeri okumak zorunda ve
+  // closure icindeki `state` fotografi eskimis oluyor.
+  const activeRunRef = useRef<string | null>(null);
 
   const close = useCallback(() => {
     sourceRef.current?.close();
@@ -43,6 +47,7 @@ export function useRunStream() {
   const watch = useCallback(
     (runId: string) => {
       close();
+      activeRunRef.current = runId;
       setState({ ...IDLE, runId, state: "running" });
 
       const source = new EventSource(`/api/runs/${runId}/events`);
@@ -64,20 +69,26 @@ export function useRunStream() {
         close();
         if (snapshot.state === "done") {
           // Sonucu ayri uctan cek: SSE yalnizca ilerleme tasiyor.
+          //
+          // Yaniti YAZMADAN once bu calistirmanin hala aktif olup olmadigina
+          // bakiliyor. A calisirken kullanici B'yi baslatirsa A'nin gec gelen
+          // yaniti B'nin ekranina dusuyordu: yanlis playlist, dogru gorunumde.
           api
             .getRun(runId)
-            .then((body) =>
+            .then((body) => {
+              if (activeRunRef.current !== runId) return;
               setState((previous) => ({
                 ...previous,
                 state: "done",
                 progress: 1,
                 result: body.result,
-              })),
-            )
-            .catch((error: Error) =>
-              setState((previous) => ({ ...previous, state: "failed", error: error.message })),
-            );
-        } else {
+              }));
+            })
+            .catch((error: Error) => {
+              if (activeRunRef.current !== runId) return;
+              setState((previous) => ({ ...previous, state: "failed", error: error.message }));
+            });
+        } else if (activeRunRef.current === runId) {
           setState((previous) => ({
             ...previous,
             state: snapshot.state,
@@ -111,6 +122,7 @@ export function useRunStream() {
 
   const reset = useCallback(() => {
     close();
+    activeRunRef.current = null;
     setState(IDLE);
   }, [close]);
 

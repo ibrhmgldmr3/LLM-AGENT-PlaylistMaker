@@ -81,6 +81,58 @@ describe("useRunStream", () => {
     expect(result.current.progress).toBe(1);
   });
 
+  it("eski calistirmanin gec gelen sonucunu YENI calistirmaya yazmaz", async () => {
+    // Regresyon: kullanici A calisirken B'yi baslatirsa, A'nin `done` sonrasi
+    // asenkron `getRun` yaniti B'nin ekranina dusuyordu -- yanlis playlist,
+    // dogru gorunumde.
+    const eski = { run_id: "kosu-1", topic: "Eski" } as unknown as PlaylistResult;
+    let birakEskiyi: (body: { run_id: string; state: string; result: PlaylistResult }) => void;
+    const eskiYanit = new Promise<{ run_id: string; state: string; result: PlaylistResult }>(
+      (resolve) => {
+        birakEskiyi = resolve;
+      },
+    );
+    vi.spyOn(api, "getRun").mockReturnValue(eskiYanit as never);
+
+    const { result } = renderHook(() => useRunStream());
+    act(() => result.current.watch("kosu-1"));
+    act(() => FakeEventSource.last.emit("done", snapshot()));
+
+    // A'nin sonucu HENUZ gelmeden kullanici B'yi baslatiyor.
+    act(() => result.current.watch("kosu-2"));
+    expect(result.current.runId).toBe("kosu-2");
+
+    await act(async () => {
+      birakEskiyi!({ run_id: "kosu-1", state: "done", result: eski });
+      await eskiYanit;
+    });
+
+    expect(result.current.runId).toBe("kosu-2");
+    expect(result.current.state).toBe("running");
+    expect(result.current.result).toBeNull();
+  });
+
+  it("eski calistirmanin gec gelen HATASINI da yeni calistirmaya yazmaz", async () => {
+    let patlat: (reason: Error) => void;
+    const eskiYanit = new Promise((_resolve, reject) => {
+      patlat = reject;
+    });
+    vi.spyOn(api, "getRun").mockReturnValue(eskiYanit as never);
+
+    const { result } = renderHook(() => useRunStream());
+    act(() => result.current.watch("kosu-1"));
+    act(() => FakeEventSource.last.emit("done", snapshot()));
+    act(() => result.current.watch("kosu-2"));
+
+    await act(async () => {
+      patlat!(new Error("500 Internal Server Error"));
+      await eskiYanit.catch(() => undefined);
+    });
+
+    expect(result.current.state).toBe("running");
+    expect(result.current.error).toBeNull();
+  });
+
   it("basarisiz biten calistirmada sunucunun hata metnini kullanir", () => {
     const getRun = vi.spyOn(api, "getRun");
     const { result } = renderHook(() => useRunStream());
