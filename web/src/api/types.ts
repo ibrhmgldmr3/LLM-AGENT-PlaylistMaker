@@ -201,5 +201,9 @@ export interface Capabilities {
   youtube_publish_configured: boolean;
   asr_available: boolean;
   cookies_configured: boolean;
+  // Bugun kalan calistirma hakki. `null` = sunucuda sinir tanimli degil.
+  // Kullanici eskiden hakkinin doldugunu ancak formu doldurup gonderdikten
+  // SONRA, 429 ile ogreniyordu.
+  runs_remaining_today: number | null;
   defaults: Record<string, unknown>;
 }
