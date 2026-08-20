@@ -381,3 +381,56 @@ def test_non_http_error_while_adding_items_still_returns_the_playlist_url(monkey
     assert "Video 2" in published.warnings[0]
     # Hata, KALAN videolarin eklenmesini de durdurmamali.
     assert service.playlistItems().seen == ["v1", "v2", "v3"]
+# ------------------- paylasimli anahtar + sinirsiz calistirma acilista gorunsun
+
+def _client_with(monkeypatch, tmp_path, **config_overrides):
+    from fastapi.testclient import TestClient
+
+    from api import deps
+
+    config = AppConfig(
+        gemini_api_key="k",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "app.db"),
+        secret_encryption_key=KEY,
+        **config_overrides,
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(deps, "_base_config", lambda: config)
+
+    from api.main import app
+
+    return TestClient(app)
+
+
+def test_multi_user_without_a_daily_limit_warns_on_startup(monkeypatch, tmp_path, caplog):
+    """Sessiz kalmamali: bu kombinasyon kotayi tek kullaniciya actiriyor.
+
+    Anahtarlar paylasimli oldugu icin `multi_user` + sinirsiz, giris yapan tek
+    bir kullanicinin gunluk YouTube kotasinin tamamini tuketmesine izin veriyor.
+    Varsayilan 0 oldugundan bu durum yapilandirmaya hic dokunmayan kurulumlarda
+    KENDILIGINDEN olusuyor -- bu yuzden acilista goze carpmasi gerekiyor.
+    """
+    with caplog.at_level(logging.WARNING, logger="api"):
+        with _client_with(monkeypatch, tmp_path, auth_mode="multi_user", max_runs_per_user_per_day=0):
+            pass
+
+    uyarilar = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert any("MAX_RUNS_PER_USER_PER_DAY=0" in message for message in uyarilar), uyarilar
+
+
+def test_no_warning_when_the_limit_is_set(monkeypatch, tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="api"):
+        with _client_with(monkeypatch, tmp_path, auth_mode="multi_user", max_runs_per_user_per_day=3):
+            pass
+
+    assert not [r for r in caplog.records if "MAX_RUNS_PER_USER_PER_DAY" in r.getMessage()]
+
+
+def test_no_warning_in_single_user_mode(monkeypatch, tmp_path, caplog):
+    """Tek kullanicili kurulumda sinirsiz olmasi normal: kota zaten sahibinin."""
+    with caplog.at_level(logging.WARNING, logger="api"):
+        with _client_with(monkeypatch, tmp_path, auth_mode="single_user", max_runs_per_user_per_day=0):
+            pass
+
+    assert not [r for r in caplog.records if "MAX_RUNS_PER_USER_PER_DAY" in r.getMessage()]

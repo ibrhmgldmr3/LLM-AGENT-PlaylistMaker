@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.deps import get_server_config
 from api.routers import auth as auth_router
 from api.routers import config as config_router
 from api.routers import runs as runs_router
@@ -40,10 +41,41 @@ DEV_ORIGINS = [
 ]
 
 
+def _warn_on_unbounded_shared_quota() -> None:
+    """Paylasimli anahtar + sinirsiz calistirma kombinasyonunu gorunur kilar.
+
+    BYOK kaldirildiktan sonra TUM sorgular sunucunun KENDI anahtarlariyla
+    gidiyor. YouTube Data API kotasi PROJE basina gunde 10.000 birim ve bir
+    calistirma ~612-1200 birim tuketiyor -- yani ~8-16 calistirma TUM
+    kullanicilar icin TOPLAM. `multi_user` modda sinir yoksa giris yapan tek
+    bir kullanici gunu bitirebilir (ve LLM faturasini surebilir).
+
+    HATA degil UYARI: kapali/davetli bir kurulumda sinirsiz birakmak mesru bir
+    tercih. Sessiz kalmasi mesru degil -- varsayilan 0 oldugu icin bu durum
+    yapilandirmaya hic dokunmayan kurulumlarda KENDILIGINDEN olusuyor.
+    """
+    try:
+        server = get_server_config()
+    except Exception as exc:
+        # Yapilandirma hatasi ilk istekte zaten yuzeye cikiyor; acilisi
+        # bir UYARI kontrolu yuzunden dusurmenin anlami yok.
+        logger.warning("Yapılandırma açılışta okunamadı, kota kontrolü atlandı: %s", exc)
+        return
+
+    if server.auth_mode == "multi_user" and not server.max_runs_per_user_per_day:
+        logger.warning(
+            "AUTH_MODE=multi_user ama MAX_RUNS_PER_USER_PER_DAY=0 (sınırsız). "
+            "LLM ve YouTube anahtarları PAYLAŞIMLI olduğu için giriş yapan tek bir "
+            "kullanıcı günlük YouTube kotasının tamamını (~8-16 çalıştırma, tüm "
+            "kullanıcılar toplamı) tüketebilir. .env.example bu mod için 3 öneriyor."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if os.name == "nt":
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    _warn_on_unbounded_shared_quota()
     # Es zamanli calistirma sayisi bilerek dusuk: her is zaten kendi icinde
     # arama/transkript icin thread havuzu aciyor ve YouTube hiz sinirlari
     # sunucu IP'sine bagli.
