@@ -49,19 +49,6 @@ export interface Session {
   auth_required: boolean;
 }
 
-export interface CredentialItem {
-  name: string;
-  label: string;
-  required: boolean;
-  /** Yalnizca "girilmis mi". DEGER hicbir zaman donmuyor. */
-  configured: boolean;
-}
-
-export interface CredentialsResponse {
-  editable: boolean;
-  items: CredentialItem[];
-}
-
 export interface YoutubeAuthStatus {
   connected: boolean;
   configured: boolean;
@@ -79,14 +66,6 @@ export const api = {
   me: () => request<Session>("/api/auth/me"),
 
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
-
-  credentials: () => request<CredentialsResponse>("/api/credentials"),
-
-  saveCredential: (name: string, value: string) =>
-    request<void>(`/api/credentials/${name}`, { method: "PUT", body: JSON.stringify({ value }) }),
-
-  deleteCredential: (name: string) =>
-    request<void>(`/api/credentials/${name}`, { method: "DELETE" }),
 
   youtubeStatus: () => request<YoutubeAuthStatus>("/api/auth/youtube/status"),
 

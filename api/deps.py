@@ -1,13 +1,16 @@
 """FastAPI bagimliliklari.
 
-Kimlik ve kullanici anahtarlari BURADA cozuluyor; rotalarin hicbiri oturum
-mekanigini ya da anahtarlarin nereden geldigini bilmiyor. `ServerConfig.auth_mode`
-iki kurulumu ayiriyor:
+Kimlik BURADA cozuluyor; rotalarin hicbiri oturum mekanigini bilmiyor.
+`ServerConfig.auth_mode` iki kurulumu ayiriyor:
 
-- `single_user` (varsayilan): her istek `DEFAULT_USER_ID`'ye ait, anahtarlar
-  `.env`'den. Tek kisilik kurulum ve gelistirme akisi.
-- `multi_user`: istek bir oturum cerezi tasimali, anahtarlar kullanici basina
-  sifreli olarak veritabanindan okunur.
+- `single_user` (varsayilan): her istek `DEFAULT_USER_ID`'ye ait, oturum
+  cerezi yok. Tek kisilik kurulum ve gelistirme akisi.
+- `multi_user`: istek bir oturum cerezi (Google girisi) tasimali.
+
+LLM ve YouTube arama anahtarlari PAYLASIMLI: her iki modda da `.env`'den
+gelir, kullanici hicbir anahtar girmiyor (bkz. `get_user_credentials`).
+`multi_user`'in tek etkisi kimligi bilmek -- gunluk sinir ve kisisel
+YouTube yayinlama izni (OAuth) icin.
 
 Vaat tutuldu: cok kullanicili moda gecerken rota imzalari hic degismedi.
 """
@@ -63,41 +66,21 @@ def get_current_user(request: Request) -> str:
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Oturum açmanız gerekiyor")
 
 
-def get_user_credentials(
-    user_id: str = Depends(get_current_user),
-    server: ServerConfig = Depends(get_server_config),
-) -> UserCredentials:
+def get_user_credentials(server: ServerConfig = Depends(get_server_config)) -> UserCredentials:
     """Kullanicinin API anahtarlari.
 
-    `single_user` modunda `.env`'den geliyor.
-
-    `multi_user` modunda YALNIZCA kullanicinin kendi kayitli anahtarlari
-    kullaniliyor; `.env` degerleri yedege DUSMUYOR. Duseydi, anahtarini
-    girmemis bir kullanici sessizce kurulum sahibinin YouTube kotasini
-    harcardi -- kota proje basina gunde 10.000 birim ve bir calistirma ~1.200
-    birim tuketiyor, yani ikinci kullanici gunu bitirirdi.
-
-    Anahtari olmayan kullanici 400 aliyor: sessizce baskasinin kotasindan
-    harcamaktansa acik bir hata daha dogru.
+    ARTIK PAYLASIMLI: LLM (Gemini/Together) ve YouTube Data API anahtarlari
+    her iki auth modunda da `ServerConfig` uzerinden `.env`'den geliyor --
+    kullanici hicbir anahtar girmiyor (bkz. `src/config/settings.py` ust
+    docstring'i). Bu fonksiyon yalnizca sunucunun gercekten yapilandirilmis
+    oldugunu dogruluyor; degilse istek SESSIZCE degil ACIKCA 503 aliyor.
     """
-    if server.auth_mode == "single_user":
-        return _base_config().credentials()
-
-    store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
-    stored = store.get_user_credentials(user_id)
-
-    # Hangi saglayici kullanilacak, GIRILEN ANAHTARDAN cikariliyor: Together
-    # anahtari varsa Together, yoksa Gemini. Ayri bir "saglayici sec" ayari
-    # koymadik cunku ikisi de girilmediginde secim anlamsiz, biri girildiginde
-    # ise zaten belli. Ikisi de varsa Together kazaniyor -- kullanici sonradan
-    # ekledigi anahtarla calismak ister; Gemini'ye donmek icin onu siliyor.
-    provider = "together" if stored.get("together_api_key") else "gemini"
-    if not (stored.get("together_api_key") or stored.get("gemini_api_key")):
+    if not (server.together_api_key or server.gemini_api_key):
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Gemini veya Together.ai API anahtarınızı ayarlardan girmeniz gerekiyor",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Sunucu için LLM sağlayıcı anahtarı yapılandırılmamış (GEMINI_API_KEY veya TOGETHER_API_KEY)",
         )
-    return UserCredentials(llm_provider=provider, **stored)
+    return UserCredentials()
 
 
 def get_default_run_options() -> RunOptions:

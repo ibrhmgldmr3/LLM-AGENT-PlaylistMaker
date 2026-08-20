@@ -7,10 +7,9 @@ import { RunProgress } from "./features/run/RunProgress";
 import { RunResult } from "./features/run/RunResult";
 import { HistoryList } from "./features/history/HistoryList";
 import { SignIn } from "./features/auth/SignIn";
-import { CredentialsPanel } from "./features/auth/CredentialsPanel";
 import type { Session } from "./api/client";
 
-type Tab = "run" | "history" | "settings";
+type Tab = "run" | "history";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("run");
@@ -83,9 +82,6 @@ export default function App() {
           <button aria-selected={tab === "history"} onClick={() => setTab("history")}>
             Geçmiş
           </button>
-          <button aria-selected={tab === "settings"} onClick={() => setTab("settings")}>
-            Ayarlar
-          </button>
         </div>
         <div className="row" style={{ gap: "0.5rem" }}>
           {session?.auth_required && session.signed_in && (
@@ -127,10 +123,8 @@ export default function App() {
 
           {shownResult && <RunResult result={shownResult} />}
         </>
-      ) : tab === "history" ? (
-        <HistoryList onOpen={openFromHistory} />
       ) : (
-        <CredentialsPanel onChange={() => api.capabilities().then(setCapabilities)} />
+        <HistoryList onOpen={openFromHistory} />
       )}
       </>
       )}

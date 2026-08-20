@@ -71,28 +71,20 @@ ENV_TO_FIELD: dict[str, str] = {
 class UserCredentials(BaseModel):
     """KULLANICIYA ait sirlar.
 
-    Cok kullanicili kuruluma gecildiginde bu grup `.env`'den cikip kullanici
-    basina (sifreli) saklanacak. YouTube Data API kotasi PROJE basina gunde
-    10.000 birim ve bir calistirma ~1.200 birim tuketiyor; yani paylasimli
-    anahtarla gunde ~8 calistirma yapilabilir. Bu yuzden cok kullanicili modelde
-    her kullanici kendi anahtarini getirir (BYOK).
+    ARTIK NEREDEYSE BOS: LLM (Gemini/Together) ve YouTube Data API anahtarlari
+    PAYLASIMLI sunucu anahtarlarina tasindi (bkz. `ServerConfig`) -- kullanici
+    hicbir anahtar girmiyor, tum sorgular sunucunun kendi Together.ai/YouTube
+    anahtariyla yapiliyor. Bu sinif yalnizca gercekten kullaniciya ozgu kalan
+    (ve bugun API'den hic duzenlenemeyen) alanlari tutuyor.
+
+    Maliyet/kota paylasimli oldugu icin kotuye kullanimi sinirlamak
+    `ServerConfig.max_runs_per_user_per_day` ile yapiliyor, BYOK ile degil.
 
     Bu degerler ASLA API yanitinda donmemeli.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    # Hangi saglayicinin kullanilacagi. Anahtarlar kullanici basina saklandigi
-    # icin bu secim de kullaniciya ait: biri Gemini, digeri Together kullanabilir.
-    llm_provider: Literal["gemini", "together"] = Field(default="gemini")
-
-    # ARTIK ZORUNLU DEGIL. Zorunluyken Together'a gecmek imkansizdi -- anahtari
-    # olmayan bir kurulum yapilandirmayi hic kuramiyordu. Secilen saglayicinin
-    # anahtari `llm_api_key()` ile okunuyor; varligi calistirma baslatilirken
-    # (`api/deps.py`) kontrol ediliyor.
-    gemini_api_key: str | None = Field(default=None, description="Gemini API key")
-    together_api_key: str | None = Field(default=None, description="Together.ai API key")
-    youtube_data_api_key: str | None = Field(default=None)
     youtube_oauth_token_file: str = Field(default="data/cache/youtube_oauth_token.json")
     ytdlp_proxy: str | None = Field(default=None)
     ytdlp_cookies_from_browser: str | None = Field(default=None)
@@ -195,6 +187,19 @@ class ServerConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    # PAYLASIMLI LLM anahtari: tum kullanicilarin sorgulari BU anahtarla
+    # gidiyor, kullanici kendi anahtarini girmiyor. Hangi saglayicinin
+    # kullanilacagini da bu belirliyor (kullaniciya ozgu degil).
+    llm_provider: Literal["gemini", "together"] = Field(default="gemini")
+    gemini_api_key: str | None = Field(default=None, description="Gemini API key")
+    together_api_key: str | None = Field(default=None, description="Together.ai API key")
+    # PAYLASIMLI YouTube Data API anahtari (arama icin). Kota PROJE basina
+    # gunde 10.000 birim ve bir calistirma ~1.200 birim tuketiyor -- yani
+    # paylasimli anahtarla TUM kullanicilar icin toplam ~8 calistirma/gun.
+    # Bu yuzden `max_runs_per_user_per_day` ile kullanici basina sinirlamak
+    # sart (asagida).
+    youtube_data_api_key: str | None = Field(default=None)
+
     # Negatif = ayari hic gonderme (VARSAYILAN). 0 = "thinking" kapali.
     # Olcumde `thinking_budget=0` kabul eden modelde hiz kazandirmadi, kabul
     # etmeyen modelleri ise 400 ile tamamen kirdi.
@@ -219,14 +224,14 @@ class ServerConfig(BaseModel):
     # jetonlar duz metin yazilir. `python -m src.storage.crypto` ile uretilebilir.
     secret_encryption_key: str | None = Field(default=None)
 
-    # `single_user` (VARSAYILAN): her istek `DEFAULT_USER_ID`'ye ait, anahtarlar
-    # `.env`'den okunur. Bugunku kurulum ve gelistirme akisi boyle calisiyor.
+    # `single_user` (VARSAYILAN): her istek `DEFAULT_USER_ID`'ye ait, oturum
+    # cerezi yok. Bugunku kurulum ve gelistirme akisi boyle calisiyor.
     #
-    # `multi_user`: istek bir oturum cerezi tasimali, anahtarlar KULLANICI
-    # BASINA veritabanindan okunur. `.env` anahtarlari bu modda YEDEK OLARAK
-    # KULLANILMAZ -- kullanilsaydi anahtarini girmeyen bir kullanici sessizce
-    # kurulum sahibinin YouTube kotasini harcardi (kota proje basina gunde
-    # 10.000 birim ve bir calistirma ~1.200 birim).
+    # `multi_user`: istek bir oturum cerezi tasimali (Google girisi). LLM ve
+    # YouTube arama anahtarlari HER IKI MODDA DA `.env`'den, PAYLASIMLI olarak
+    # okunur -- kullanici hicbir anahtar girmiyor. `multi_user`'in tek farki
+    # kim oldugunu bilmek (gunluk sinir + yayinlama icin kisisel YouTube OAuth
+    # izni); anahtar yonetimiyle ilgisi yok.
     auth_mode: Literal["single_user", "multi_user"] = Field(default="single_user")
 
     # OAuth ISTEMCISI kuruluma ait, kullaniciya degil: uygulamanin Google'a
@@ -242,13 +247,15 @@ class ServerConfig(BaseModel):
     # kadar kisa.
     session_ttl_sec: int = Field(default=14 * 24 * 3600, ge=300)
 
-    # Kullanici basina 24 saatlik calistirma siniri. 0 = SINIRSIZ (varsayilan);
-    # tek kullanicili kurulumda sinir koymak anlamsiz.
+    # Kullanici basina 24 saatlik calistirma siniri. 0 = SINIRSIZ (varsayilan).
     #
-    # Neden gerekli: sinir olmadan tek bir kullanici gunluk YouTube kotasinin
-    # tamamini tuketebiliyor (kota proje basina 10.000 birim, bir calistirma
-    # 612 birim -- yani ~16 calistirma tum kullanicilar icin TOPLAM). BYOK'ta
-    # kota kullanicinin kendi projesinden ciktigi icin sinir opsiyonel kaliyor.
+    # LLM ve YouTube anahtarlari artik PAYLASIMLI (BYOK yok), yani maliyet/kota
+    # sunucu sahibine biniyor: sinir olmadan tek bir kullanici gunluk YouTube
+    # kotasinin tamamini tuketebilir (kota proje basina 10.000 birim, bir
+    # calistirma ~612-1200 birim -- yani ~8-16 calistirma TUM kullanicilar
+    # icin toplam). `multi_user` kurulumlari icin `.env.example` bunu 3 olarak
+    # ONERIR; varsayilan burada 0 kaliyor ki mevcut `single_user` kurulumlarin
+    # davranisi sessizce degismesin.
     max_runs_per_user_per_day: int = Field(default=0, ge=0)
 
     max_search_workers: int = Field(default=4)

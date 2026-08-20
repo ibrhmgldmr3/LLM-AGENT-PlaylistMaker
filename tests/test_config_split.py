@@ -28,13 +28,14 @@ def test_groups_do_not_overlap():
 
 def test_compose_merges_three_sources():
     config = AppConfig.compose(
-        server=ServerConfig(max_search_workers=7, data_dir="/tmp/x"),
-        credentials=UserCredentials(gemini_api_key="secret", youtube_data_api_key="yt"),
+        server=ServerConfig(max_search_workers=7, data_dir="/tmp/x", gemini_api_key="secret"),
+        credentials=UserCredentials(ytdlp_proxy="socks5://x"),
         options=RunOptions(max_subtopics=3, enable_asr_fallback=True),
     )
 
     assert config.max_search_workers == 7      # sunucu
-    assert config.gemini_api_key == "secret"   # kullanici
+    assert config.gemini_api_key == "secret"   # sunucu (paylasimli LLM anahtari, BYOK degil)
+    assert config.ytdlp_proxy == "socks5://x"  # kullanici
     assert config.max_subtopics == 3           # calistirma
     assert config.enable_asr_fallback is True
 
@@ -52,14 +53,21 @@ def test_round_trip_split_and_compose():
     assert rebuilt.model_dump() == original.model_dump()
 
 
-def test_credentials_carry_the_secrets():
-    """BYOK'ta kullanici basina saklanan grup."""
-    fields = set(UserCredentials.model_fields)
-    assert "gemini_api_key" in fields
-    assert "youtube_data_api_key" in fields
-    # Sunucu ayarlari buraya SIZMAMALI
-    assert "max_search_workers" not in fields
-    assert "sqlite_path" not in fields
+def test_llm_and_youtube_search_keys_are_shared_server_config():
+    """Artik BYOK degil: LLM ve YouTube arama anahtari PAYLASIMLI, sunucuya ait.
+
+    Kullanici hicbir anahtar girmiyor -- tum sorgular sunucunun `.env`'inden
+    okunan tek anahtarla gidiyor.
+    """
+    server_fields = set(ServerConfig.model_fields)
+    assert "gemini_api_key" in server_fields
+    assert "together_api_key" in server_fields
+    assert "youtube_data_api_key" in server_fields
+
+    user_fields = set(UserCredentials.model_fields)
+    assert "gemini_api_key" not in user_fields
+    assert "together_api_key" not in user_fields
+    assert "youtube_data_api_key" not in user_fields
 
 
 def test_oauth_client_belongs_to_the_installation_not_the_user():
