@@ -47,7 +47,7 @@ def search_candidates(
                 logger.info("Skipping %s because it is not configured", provider.name)
             continue
 
-        cooldown_until = store.get_provider_cooldown(provider.name, user_id=user_id)
+        cooldown_until = store.get_provider_cooldown(provider.name)
         if cooldown_until:
             if logger:
                 logger.warning("Skipping %s due to cooldown until %s", provider.name, cooldown_until)
@@ -79,7 +79,7 @@ def search_candidates(
             # Hiz siniri: tekrar denemeden dinlendir, sonraki saglayiciya gec.
             message = redact_secrets(str(exc))
             cooldown = exc.retry_after or config.rate_limit_cooldown_sec
-            store.mark_provider_cooldown(provider.name, message, cooldown, user_id=user_id)
+            store.mark_provider_cooldown(provider.name, message, cooldown)
             provider_errors.append(f"{provider.name}: rate limited ({cooldown}s cooldown)")
             if logger:
                 logger.warning("Rate limited on %s; cooling down for %ss", provider.name, cooldown)
@@ -98,7 +98,6 @@ def search_candidates(
                 message,
                 config.provider_cooldown_sec,
                 threshold=config.provider_failure_threshold,
-                user_id=user_id,
             )
             if logger:
                 logger.warning(
@@ -110,7 +109,7 @@ def search_candidates(
                 )
             continue
 
-        store.clear_provider_cooldown(provider.name, user_id=user_id)
+        store.clear_provider_cooldown(provider.name)
 
         deduped: dict[str, VideoCandidate] = {}
         for candidate in candidates:

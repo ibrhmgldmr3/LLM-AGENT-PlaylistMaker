@@ -30,8 +30,10 @@ def _config(tmp_path, **overrides):
     return config
 
 
-def _candidate():
-    return VideoCandidate(video_id="abc123def45", url="https://youtu.be/abc123def45", title="T", language="en")
+def _candidate(video_id: str = "abc123def45"):
+    return VideoCandidate(
+        video_id=video_id, url=f"https://youtu.be/{video_id}", title="T", language="en"
+    )
 
 
 # ------------------------------------------------------------------ transkript
@@ -189,30 +191,35 @@ def test_search_rate_limit_is_not_retried_and_cools_down(tmp_path, monkeypatch):
     assert [item.video_id for item in result] == ["v1"], "yedek saglayici devreye girmeli"
 
 
-# ------------------------------------------------- kullanici kapsamasi
+# --------------------------------------------- soguma kapsami: SUNUCU GENELI
+#
+# Bu iki test bir kez ters yonde yazilmisti (soguma "islemi yapan kullaniciya"
+# kapsanmali diye). O zamanki gercek hata YAZMA ve OKUMA taraflarinin FARKLI
+# kullanici kimligi kullanmasiydi: soguma hic tutmuyor, saglayici her video
+# icin yeniden deneniyordu. Kapsam tek ve sunucu geneli olunca o hata sinifi
+# yapisal olarak imkansiz -- yanlis gecilecek bir kimlik kalmadi.
+#
+# Asil olcut degismedi ve burada korunuyor: hiz sinirina takilan bir cagri,
+# SONRAKI cagrilarin gordugu bir soguma birakmali.
 
-def test_transcript_rate_limit_cooldown_is_scoped_to_the_acting_user(tmp_path, monkeypatch):
-    """Regresyon: hiz siniri sogumasi HER ZAMAN 'local' kullanicisina yaziliyordu.
 
-    `mark_provider_cooldown` cagrisi `user_id` GECMIYORDU (okuma tarafi
-    `get_provider_cooldown` geciyordu, yazma tarafi gecmiyordu). Cok kullanicili
-    kurulumda sonuc: gercek kullanicinin sogumasi hic KAYITLI OLMUYORDU, yani
-    ayni saglayici HER VIDEO icin yeniden deneniyor ve hiz sinirina tekrar tekrar
-    takiliyordu -- tam da bu dosyanin ustundeki regresyonun (24 istege
-    donusme) bir varyanti, ama bu kez kullanici kapsamasi yuzunden.
+def test_transcript_rate_limit_registers_a_cooldown_others_can_see(tmp_path, monkeypatch):
+    """Hiz siniri sogumasi yazilmali VE baska bir kullanicinin kosusunu da durdurmali.
 
-    Canli bir kosuda yakalandi: `mark_provider_cooldown` cagrisinin `user_id`
-    almadigi, tek kullanicili modda goze batmayan ama cok kullanicili modda
-    sogumanin hic tutmamasina yol acan bir eksiklikti.
+    Sinir sunucunun IP'sine bagli: ikinci kullanici ayni yerden cikiyor. Kapsam
+    kullanici basinayken o kullanici hic korunmuyor, ayni sinira yeniden
+    giriyor ve engeli uzatiyordu.
     """
     config = _config(tmp_path)
     store = SQLiteStore(config.sqlite_path)
-    other_user = "google:someone"
 
-    monkeypatch.setattr(
-        transcript_service, "_fetch_youtube_transcript",
-        lambda *a, **k: (_ for _ in ()).throw(ProviderRateLimitedError("429")),
-    )
+    cagrilar: list[str] = []
+
+    def rate_limited(*args, **kwargs):
+        cagrilar.append("youtube_transcript_api")
+        raise ProviderRateLimitedError("429")
+
+    monkeypatch.setattr(transcript_service, "_fetch_youtube_transcript", rate_limited)
     monkeypatch.setattr(
         transcript_service, "_fetch_ytdlp_subtitles",
         lambda *a, **k: (_ for _ in ()).throw(ProviderRateLimitedError("429")),
@@ -220,35 +227,44 @@ def test_transcript_rate_limit_cooldown_is_scoped_to_the_acting_user(tmp_path, m
 
     transcript_service.get_transcript(
         config, store, _candidate(), str(tmp_path), transcript_service.RunTranscriptState(),
-        user_id=other_user,
+        user_id="google:ali",
     )
 
-    assert store.get_provider_cooldown("youtube_transcript_api", user_id=other_user) is not None
-    assert store.get_provider_cooldown("youtube_transcript_api", user_id="local") is None, (
-        "soguma 'local'e sizmamali -- gercek kullaniciya kayitli olmali"
+    assert store.get_provider_cooldown("youtube_transcript_api") is not None
+    ilk_tur = len(cagrilar)
+
+    # BASKA bir kullanici, baska bir video: saglayici atlanmali.
+    transcript_service.get_transcript(
+        config, store, _candidate("baska-video"), str(tmp_path),
+        transcript_service.RunTranscriptState(), user_id="google:veli",
     )
 
+    assert len(cagrilar) == ilk_tur, "soguma ikinci kullaniciyi da durdurmaliydi"
 
-def test_search_rate_limit_cooldown_is_scoped_to_the_acting_user(tmp_path, monkeypatch):
-    """`search_candidates` tarafinda ayni regresyon."""
+
+def test_search_rate_limit_registers_a_cooldown_others_can_see(tmp_path, monkeypatch):
+    """`search_candidates` tarafinda ayni olcut."""
     config = _config(tmp_path)
     store = SQLiteStore(config.sqlite_path)
-    other_user = "google:someone"
+
+    cagrilar: list[str] = []
 
     def rate_limited_search(*args, **kwargs):
+        cagrilar.append("youtube_data_api")
         raise ProviderRateLimitedError("429 quota")
 
     monkeypatch.setattr(
         "src.providers.youtube_data_api_provider.YouTubeDataAPIProvider.search", rate_limited_search
     )
-    monkeypatch.setattr(
-        "src.providers.ytdlp_provider.YtDlpProvider.search",
-        lambda *a, **k: [],
-    )
+    monkeypatch.setattr("src.providers.ytdlp_provider.YtDlpProvider.search", lambda *a, **k: [])
+
+    search_service.search_candidates(config, store, "sorgu", FilterOptions(), user_id="google:ali")
+
+    assert store.get_provider_cooldown("youtube_data_api") is not None
+    ilk_tur = len(cagrilar)
 
     search_service.search_candidates(
-        config, store, "sorgu", FilterOptions(), user_id=other_user
+        config, store, "baska sorgu", FilterOptions(), user_id="google:veli"
     )
 
-    assert store.get_provider_cooldown("youtube_data_api", user_id=other_user) is not None
-    assert store.get_provider_cooldown("youtube_data_api", user_id="local") is None
+    assert len(cagrilar) == ilk_tur, "soguma ikinci kullaniciyi da durdurmaliydi"

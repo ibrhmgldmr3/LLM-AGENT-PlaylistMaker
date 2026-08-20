@@ -92,7 +92,7 @@ def get_transcript(
                 return cached
             continue
 
-        if store.get_provider_cooldown(provider_name, user_id=user_id):
+        if store.get_provider_cooldown(provider_name):
             # ONEMLI: cooldown durumu ARTIK transkript onbellegine yazilmiyor.
             # Eskiden 15 dakikalik cooldown, 1 saatlik bir "cooldown" onbellek kaydi
             # birakiyor ve saglayici iyilestikten sonra bile atlanmaya devam ediyordu.
@@ -125,7 +125,7 @@ def get_transcript(
             # dinlendir. Eskiden bu hata genel "gecici hata" sayiliyor, her video
             # icin 3 kez tekrarlaniyor ve IP blogunu derinlestiriyordu.
             cooldown = exc.retry_after or config.rate_limit_cooldown_sec
-            store.mark_provider_cooldown(provider_name, redact_secrets(str(exc)), cooldown, user_id=user_id)
+            store.mark_provider_cooldown(provider_name, redact_secrets(str(exc)), cooldown)
             if logger:
                 logger.warning(
                     "Rate limited on %s; cooling down for %ss without retrying", provider_name, cooldown
@@ -164,7 +164,6 @@ def get_transcript(
                 message,
                 config.provider_cooldown_sec,
                 threshold=config.provider_failure_threshold,
-                user_id=user_id,
             )
             if logger:
                 logger.warning(
@@ -188,12 +187,12 @@ def get_transcript(
         result.attempted_providers = attempted.copy()
         if result.status == "available":
             store.put_transcript_cache(result, config.transcript_cache_ttl_sec)
-            store.clear_provider_cooldown(provider_name, user_id=user_id)
+            store.clear_provider_cooldown(provider_name)
             return result
 
         store.put_transcript_cache(result, config.failure_cache_ttl_sec)
         # Saglayici cevap verdi ama icerik yok: bu bir saglayici arizasi degil.
-        store.clear_provider_cooldown(provider_name, user_id=user_id)
+        store.clear_provider_cooldown(provider_name)
 
     return TranscriptResult(
         video_id=candidate.video_id,

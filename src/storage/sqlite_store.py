@@ -29,6 +29,20 @@ CACHE_SCHEMA_VERSION = 2
 # satirlik; sonradan eklemek mevcut kayitlari ve tum sorgulari elden gecirmek olur.
 DEFAULT_USER_ID = "local"
 
+# Saglayici sogumasinin kapsami. Kullanici basina DEGIL, SUNUCU GENELI.
+#
+# Soguma iki seye karsi koruyor ve ikisi de kullaniciya gore ayrismiyor:
+#   - `yt_dlp` / `youtube_transcript_api`: sinir sunucunun IP'sine bagli
+#   - `youtube_data_api`: anahtar PAYLASIMLI, kota proje basina
+#
+# Kapsam kullanici basinayken ikinci kullanici hic korunmuyordu: ayni IP'den
+# ayni sinira tekrar giriyor ve engeli tipik olarak UZATIYORDU.
+#
+# `provider_cooldown.user_id` sutunu tarihsel adiyla duruyor; icerigi artik bir
+# KAPSAM ve tek degeri bu sabit. Sutunu yeniden adlandirmadik: bu tabloda
+# yerinde sema degisikligi bir kez CI'i kirdi (bkz. `_copy_legacy_provider_health`).
+SERVER_SCOPE = "__server__"
+
 _log = logging.getLogger(__name__)
 
 
@@ -199,6 +213,13 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, provider)
                 );
+                CREATE TABLE IF NOT EXISTS provider_event (
+                    day TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    event TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (day, provider, event)
+                );
                 CREATE TABLE IF NOT EXISTS api_usage (
                     day TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -283,12 +304,47 @@ class SQLiteStore:
             """
         )
 
+    @staticmethod
+    def _collapse_cooldowns_to_server_scope(conn: sqlite3.Connection) -> None:
+        """Kullanici basina yazilmis eski sogumalari sunucu kapsamina toplar.
+
+        Kapsam degisince eski satirlar ARTIK OKUNMUYOR; iclerinde suresi
+        dolmamis bir soguma varsa koruma bir anligina kaybolurdu. Saglayici
+        basina EN KORUMACI degeri (en ileri `cooldown_until`) sunucu kaydina
+        tasiyoruz.
+
+        Yikici adim YOK: tablo dusurulmuyor, sutun degistirilmiyor: yalnizca
+        satir yaziliyor. (Bu tabloda yerinde sema degisikligi bir kez CI'i
+        kirmisti -- bkz. `_copy_legacy_provider_health`.) Islem tekrarlanabilir:
+        ikinci calistirmada tasinacak satir kalmadigi icin etkisiz.
+        """
+        conn.execute(
+            """
+            INSERT INTO provider_cooldown
+                (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+            SELECT ?, provider, MAX(cooldown_until), MAX(last_error), 0, MAX(updated_at)
+            FROM provider_cooldown
+            WHERE user_id != ? AND cooldown_until IS NOT NULL
+            GROUP BY provider
+            ON CONFLICT(user_id, provider) DO UPDATE SET
+                cooldown_until = MAX(
+                    COALESCE(provider_cooldown.cooldown_until, ''),
+                    COALESCE(excluded.cooldown_until, '')
+                ),
+                updated_at = excluded.updated_at
+            """,
+            (SERVER_SCOPE, SERVER_SCOPE),
+        )
+        # Tasinan satirlar artik okunmuyor; birakmak veritabanini sisirirdi.
+        conn.execute("DELETE FROM provider_cooldown WHERE user_id != ?", (SERVER_SCOPE,))
+
     @classmethod
     def _migrate(cls, conn: sqlite3.Connection) -> None:
         cls._add_column_if_missing(
             conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
         )
         cls._copy_legacy_provider_health(conn)
+        cls._collapse_cooldowns_to_server_scope(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
 
     @staticmethod
@@ -375,11 +431,52 @@ class SQLiteStore:
                 ),
             )
 
-    def get_provider_cooldown(self, provider: str, user_id: str = DEFAULT_USER_ID) -> str | None:
+    # ---------------------------------------------------- saglayici olaylari
+    #
+    # Soguma ANLIK bir durum: `provider_cooldown` yalnizca "su an dinleniyor mu"
+    # sorusunu yanitliyor ve sure dolunca iz birakmadan kayboluyor. "Bu IP
+    # gunde kac kez hiz sinirina takildi" sorusunun ise hicbir cevabi yoktu --
+    # es zamanlilik ayarlarini (kac calistirma x kac isci) tahminle degil
+    # olcumle degistirebilmek icin gereken sayi tam olarak bu.
+
+    RATE_LIMITED = "rate_limited"
+    FAILURE = "failure"
+    COOLDOWN = "cooldown"
+
+    def _record_provider_event(self, conn: sqlite3.Connection, provider: str, event: str) -> None:
+        """Olayi gunluk sayaca ekler. ACIK bir baglanti aliyor: sayac, sayilan
+        durumu yazan islemle AYNI islemde artmali, yoksa ikisi ayrisabilir."""
+        conn.execute(
+            """
+            INSERT INTO provider_event (day, provider, event, count)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(day, provider, event) DO UPDATE SET count = count + 1
+            """,
+            (quota_day(), provider, event),
+        )
+
+    def get_provider_events(self, day: str | None = None) -> list[dict[str, Any]]:
+        """Bir gunun saglayici olay dokumu; en sik olandan aza dogru.
+
+        Gun kovasi kota raporuyla AYNI (Pasifik). Hiz sinirlari icin Pasifik
+        sinirinin kendi basina bir anlami yok, ama tek bir raporda iki farkli
+        "bugun" tanimi olmasi okuyani yanilturdu.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT provider, event, count FROM provider_event
+                WHERE day = ? ORDER BY count DESC, provider
+                """,
+                (day or quota_day(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_provider_cooldown(self, provider: str) -> str | None:
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT cooldown_until FROM provider_cooldown WHERE user_id = ? AND provider = ?",
-                (user_id, provider),
+                (SERVER_SCOPE, provider),
             ).fetchone()
         if not row:
             return None
@@ -389,9 +486,9 @@ class SQLiteStore:
             return cooldown_until
         return None
 
-    def mark_provider_cooldown(
-        self, provider: str, error: str, cooldown_sec: int, user_id: str = DEFAULT_USER_ID
-    ) -> None:
+    def mark_provider_cooldown(self, provider: str, error: str, cooldown_sec: int) -> None:
+        """Saglayiciyi SUNUCU GENELINDE dinlendirir (bkz. `SERVER_SCOPE`)."""
+        user_id = SERVER_SCOPE
         with self.connect() as conn:
             conn.execute(
                 """
@@ -405,6 +502,10 @@ class SQLiteStore:
                 """,
                 (user_id, provider, _iso_in(cooldown_sec), error, user_id, provider, _to_iso(_utc_now())),
             )
+            # Sayac BURADA, store icinde artiyor: cagri yerlerinde artirmak
+            # unutulabilir bir adim olurdu ve bir kez unutuldugunda olcum
+            # sessizce eksik kalirdi.
+            self._record_provider_event(conn, provider, self.RATE_LIMITED)
 
     def record_provider_failure(
         self,
@@ -412,13 +513,17 @@ class SQLiteStore:
         error: str,
         cooldown_sec: int,
         threshold: int = DEFAULT_FAILURE_THRESHOLD,
-        user_id: str = DEFAULT_USER_ID,
     ) -> tuple[int, bool]:
         """Ardisik hata sayacini arttirir; esik asilirsa cooldown uygular.
 
         Tek bir videonun hatasi artik tum saglayiciyi kapatmaz. (int, bool) olarak
         (guncel ardisik hata sayisi, cooldown uygulandi mi) doner.
+
+        Kapsam SUNUCU GENELI: buraya dusen hatalar altyapi hatalari. Videoya
+        OZGU kalici durumlar (`VideoUnavailableError`) cagiran tarafta ayri
+        yakalaniyor ve saglayiciyi hic cezalandirmiyor.
         """
+        user_id = SERVER_SCOPE
         now = _to_iso(_utc_now())
         with self.connect() as conn:
             conn.execute(
@@ -432,6 +537,7 @@ class SQLiteStore:
                 """,
                 (user_id, provider, error, now),
             )
+            self._record_provider_event(conn, provider, self.FAILURE)
             row = conn.execute(
                 "SELECT failure_count FROM provider_cooldown WHERE user_id = ? AND provider = ?",
                 (user_id, provider),
@@ -444,21 +550,40 @@ class SQLiteStore:
                     " WHERE user_id = ? AND provider = ?",
                     (_iso_in(cooldown_sec), now, user_id, provider),
                 )
+                self._record_provider_event(conn, provider, self.COOLDOWN)
         return failure_count, cooled_down
 
-    def clear_provider_cooldown(self, provider: str, user_id: str = DEFAULT_USER_ID) -> None:
+    def clear_provider_cooldown(self, provider: str) -> None:
+        """Basarili cagridan sonra ARDISIK HATA SAYACINI sifirlar.
+
+        Suresi DOLMAMIS bir sogumayi IPTAL ETMEZ. Kapsam sunucu geneline
+        cikinca bu bir yarisa donusuyordu: A calistirmasi hiz sinirina takilip
+        30 dakikalik soguma yaziyor, tam o sirada ucusta olan B calistirmasinin
+        basarili bir cagrisi sogumayi siliyor ve herkes yeniden ayni sinira
+        giriyordu. Ayrica dogrusu da bu: sunucu "1800 saniye bekle" dediyse
+        baska bir istegin sansli donmesi o talimati gecersiz kilmaz.
+
+        Soguma zaten kendiliginden sona eriyor -- `get_provider_cooldown`
+        suresi gecmis kaydi zaten `None` sayiyor.
+        """
+        now = _to_iso(_utc_now())
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
                 VALUES (?, ?, NULL, NULL, 0, ?)
                 ON CONFLICT(user_id, provider) DO UPDATE SET
-                    cooldown_until = NULL,
+                    cooldown_until = CASE
+                        WHEN provider_cooldown.cooldown_until IS NOT NULL
+                             AND provider_cooldown.cooldown_until > excluded.updated_at
+                        THEN provider_cooldown.cooldown_until
+                        ELSE NULL
+                    END,
                     last_error = NULL,
                     failure_count = 0,
                     updated_at = excluded.updated_at
                 """,
-                (user_id, provider, _to_iso(_utc_now())),
+                (SERVER_SCOPE, provider, now),
             )
 
     def purge_expired(self) -> int:
@@ -640,7 +765,7 @@ class SQLiteStore:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT user_id, provider, cooldown_until, last_error, failure_count
+                SELECT user_id AS scope, provider, cooldown_until, last_error, failure_count
                 FROM provider_cooldown
                 WHERE cooldown_until IS NOT NULL AND cooldown_until > ?
                 ORDER BY cooldown_until DESC
