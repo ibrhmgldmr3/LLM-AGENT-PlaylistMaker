@@ -33,7 +33,11 @@ geçmeye devam etmeli — regresyon ölçütümüz bu.
 
 ---
 
-## 2. Belirleyici karar: BYOK (kendi anahtarını getir)
+## 2. Belirleyici karar: anahtar sahipliği (BYOK → paylaşımlı)
+
+> **Bu bölüm bir kez tersine döndü.** Plan BYOK ile yazıldı ve Faz 0–4 o varsayımla
+> uygulandı; `33ff038` ile paylaşımlı sunucu anahtarına geçildi. Aşağıdaki kota
+> matematiği **hâlâ geçerli** — değişen tek şey, faturayı kimin ödediği.
 
 YouTube Data API kotası **proje başına günde 10.000 birim**. Bir çalıştırmanın maliyeti:
 
@@ -44,36 +48,47 @@ YouTube Data API kotası **proje başına günde 10.000 birim**. Bir çalıştı
 | `channels.list` | ~12 | 1 | ~12 |
 | | | | **≈ 1.224** |
 
-Paylaşımlı anahtarla **günde ~8 çalıştırma, tüm kullanıcılar toplamı.** Herkese açık bir
-serviste kullanılamaz. Gemini'nin ücretsiz katmanı da benzer şekilde sınırlı.
+Paylaşımlı anahtarla **günde ~8 çalıştırma, tüm kullanıcılar toplamı.**
 
-**Karar: her kullanıcı kendi Gemini ve YouTube anahtarını sağlar.**
+### Önce: BYOK (uygulandı, sonra geri alındı)
 
-Bu, mimarinin geri kalanını belirliyor:
+Bu matematik yüzünden ilk karar "her kullanıcı kendi Gemini ve YouTube anahtarını
+sağlar" oldu. Kimlik bilgileri şifreli olarak veritabanında tutuldu, `/api/credentials`
+ucu ve bir "Ayarlar" ekranı yazıldı.
 
-- `AppConfig` tek global nesne olmaktan çıkar → **sunucu ayarı** + **kullanıcı kimlik
-  bilgisi** + **çalıştırma seçeneği** olarak üçe ayrılır
-- Kimlik bilgileri veritabanında, **şifrelenmiş** saklanır (asla API yanıtında dönmez)
-- Kota tükenmesi kullanıcının kendi sorunu olur — adil ve ölçeklenebilir
-- Anahtarsız kullanıcı için `yt-dlp` yedeği çalışır ama sunucu IP'sinden hız sınırına
-  takılır (bu oturumda birebir yaşandı) — "sınırlı deneme modu" olarak konumlanabilir
+### Sonra: paylaşımlı sunucu anahtarı (bugünkü durum)
 
-### Config bölünmesi (ölçüldü: 45 değişken)
+Kullanıcıdan Google Cloud projesi açıp iki ayrı API anahtarı üretmesini istemek,
+hedeflenen kullanım için giriş engeli olarak fazla yüksek bulundu. Bugün **kullanıcı
+hiçbir anahtar girmiyor**; LLM (Gemini/Together) ve YouTube arama anahtarları
+`.env`'den, tüm kullanıcılar için ortak gelir.
+
+Kaldırılanlar: `/api/credentials` ucu, `CredentialsPanel` ekranı, `user_credential`
+tablosu ve `UserCredentials` içindeki anahtar alanları.
+
+**Kotanın bedeli artık sunucu sahibinde.** Bunu sınırlayan tek mekanizma
+`MAX_RUNS_PER_USER_PER_DAY`; `multi_user` modda 0 (sınırsız) bırakılırsa giriş yapan
+tek bir kullanıcı günü bitirebilir. Varsayılan 0 olduğu için bu durum kendiliğinden
+oluşuyor — `api/main.py` açılışta bu kombinasyonu uyarı olarak loglar.
+
+Şifreleme altyapısı (`SecretBox`) duruyor: YouTube **OAuth jetonları** hâlâ kullanıcı
+başına ve şifreli saklanıyor. Değişen, API *anahtarlarının* kullanıcıya ait olması.
+
+### Config bölünmesi (bugünkü sayılar)
 
 | Grup | Adet | Nereye gider |
 |---|---|---|
-| **Kullanıcı sırrı** | 8 | Şifreli DB, kullanıcı başına |
-| **Çalıştırma seçeneği** | 10 | İstek gövdesi / kullanıcı tercihi |
-| **Sunucu ayarı** | 27 | `.env`, tüm sunucu için ortak |
+| **Kullanıcı sırrı** | 4 | `UserCredentials` — API'den düzenlenmiyor |
+| **Çalıştırma seçeneği** | 13 | İstek gövdesi / kullanıcı tercihi |
+| **Sunucu ayarı** | 37 | `.env`, tüm sunucu için ortak |
 
-Kullanıcı sırları: `GEMINI_API_KEY`, `YOUTUBE_DATA_API_KEY`,
-`YOUTUBE_OAUTH_CLIENT_SECRET(_FILE)`, `YOUTUBE_OAUTH_TOKEN_FILE`, `YTDLP_PROXY`,
+Üçe bölme kararı BYOK geri alınınca da **değerini korudu**: `AppConfig`'in tek global
+nesne olmaktan çıkması, istek başına seçeneklerin gövdeden ezilebilmesini ve sırların
+yanıtlara sızmamasını sağlıyor. Geri dönüşte yalnızca alanlar `UserCredentials`'tan
+`ServerConfig`'e taşındı — mimari değişmedi.
+
+Kullanıcı sırrı olarak kalanlar: `YOUTUBE_OAUTH_TOKEN_FILE`, `YTDLP_PROXY`,
 `YTDLP_COOKIES_FROM_BROWSER`, `YTDLP_COOKIES_FILE`.
-
-Çalıştırma seçenekleri: `GEMINI_MODEL`, `MAX_SUBTOPICS`,
-`SEARCH_CANDIDATES_PER_SUBTOPIC`, `METADATA_TOP_K`, `TRANSCRIPT_ENRICHMENT_TOP_K`,
-`ENABLE_ASR_FALLBACK`, `MAX_ASR_VIDEOS_PER_RUN`, `INCLUDE_ENGLISH_BY_DEFAULT`,
-`CHANNEL_REPEAT_PENALTY`, `YOUTUBE_PLAYLIST_PRIVACY_STATUS`.
 
 ---
 
@@ -114,9 +129,9 @@ GET    /api/runs/{id}/export.md  → study_plan.md
 POST   /api/runs/{id}/publish    → YouTube playlist yayınla (build'den AYRI)
 
 GET    /api/config               → yetenekler: hangi anahtar kurulu, ASR hazır mı
-PUT    /api/settings/credentials → kullanıcı anahtarlarını kaydet (yalnız yazma)
 GET    /api/auth/youtube/start   → Google onay URL'i döndür
 GET    /api/auth/youtube/callback→ kodu token'a çevir, kullanıcıya bağla
+GET    /api/auth/me              → oturum durumu (401 değil, signed_in: false)
 ```
 
 **Neden SSE, WebSocket değil:** akış tek yönlü (sunucu → istemci). Mevcut
@@ -227,8 +242,10 @@ yakalanmamış `queue.Empty` ile ölüyordu.
 - [x] Çoklu abone: her sekme tüm olayları görür
 - [x] 8 yeni test
 
-Ayarlar ekranı (kullanıcı anahtarları) **bilerek Faz 5'e bırakıldı**: kimlik
-doğrulama ve şifreleme olmadan API anahtarı yazan bir ekran güvenlik açığıdır.
+Ayarlar ekranı (kullanıcı anahtarları) o gün **bilerek Faz 5'e bırakılmıştı**: kimlik
+doğrulama ve şifreleme olmadan API anahtarı yazan bir ekran güvenlik açığıdır. Faz 5'te
+yapıldı, ardından paylaşımlı anahtara geçilince tamamen **kaldırıldı** (§2) — bugün
+böyle bir ekran yok.
 
 ### Faz 3 — OAuth yeniden yazımı ✅ TAMAMLANDI
 
@@ -250,16 +267,6 @@ bağlanmadan yayınlama reddediliyor.
 > **Kurulum notu:** Google Cloud Console'da OAuth istemcisine
 > `http://localhost:8000/api/auth/youtube/callback` adresi *authorized redirect URI*
 > olarak eklenmeli. İstemci tipi **Web application** olmalı (Desktop değil).
-
-### Faz 3 — OAuth yeniden yazımı
-
-Tek gerçek yeniden yazım burada.
-
-- [ ] `run_local_server` çağrısını kaldır
-- [ ] `GET /api/auth/youtube/start` → Google onay URL'i (state parametresiyle CSRF koruması)
-- [ ] `GET /api/auth/youtube/callback` → kod → token, kullanıcıya bağla
-- [ ] Token'ı dosya yerine şifreli olarak DB'de sakla
-- [ ] Yayınlama akışını build'den ayır (`POST /api/runs/{id}/publish`)
 
 ### Faz 4 — Streamlit emekliye ayrıldı ✅ TAMAMLANDI
 
@@ -287,11 +294,11 @@ köken olduğu için CORS'a gerek kalmıyor.
 
 | Erteleniyor | Neden |
 |---|---|
-| Gerçek kimlik doğrulama sağlayıcısı | Dağıtım hedefi ve kullanıcı modeli belli değil; şimdi seçilen her şey tahmin olur |
-| Kullanıcı anahtarı yönetim ekranı | Auth olmadan API anahtarı yazan ekran güvenlik açığıdır |
+| ~~Gerçek kimlik doğrulama sağlayıcısı~~ | **Yapıldı**: Google OAuth girişi + `AUTH_MODE=multi_user` + oturum çerezi (`api/routers/auth.py`). `get_current_user` gövdesi değişti, hiçbir rota elden geçmedi — vaat tutuldu |
+| ~~Kullanıcı anahtarı yönetim ekranı~~ | Yapıldı, sonra **kaldırıldı** (§2): anahtarlar paylaşımlı, düzenlenecek bir şey kalmadı |
 | `CeleryJobRunner` + Redis | `JobRunner` arayüzü hazır; kullanıcı yokken altyapı kurmak erken optimizasyon |
-| Kullanıcı başına oran sınırlama | Çapraz kesen katman, gerçek trafikle tasarlanmalı |
-| `provider_health` kapsamı | BYOK'a geçince YouTube API sınırları zaten ayrışır; asıl soru sunucu IP'sine bağlı yt-dlp sınırları — gerçek çok kullanıcılı kullanımla ölçülmeli |
+| ~~Kullanıcı başına oran sınırlama~~ | **Yapıldı**: `MAX_RUNS_PER_USER_PER_DAY` (günlük kota, tek işlemde sayılıp yazılır). Paylaşımlı anahtara geçince zorunlu hale geldi (§2) |
+| `provider_health` kapsamı | Paylaşımlı anahtarla YouTube API sınırları **ayrışmıyor** (§2), yani global cooldown doğru davranış; kullanıcı başına ayırmak sunucu kotasını korumasız bırakırdı |
 
 Bunların hepsi **arayüzlerin arkasında** duruyor; sıra geldiğinde eklenecekler,
 yeniden yazım gerekmeyecek.
@@ -304,21 +311,23 @@ yeniden yazım gerekmeyecek.
 
 | Erteleniyor | Neden güvenli |
 |---|---|
-| Gerçek kimlik doğrulama | `get_current_user` stub'ı arkasında; imza değişmez |
+| ~~Gerçek kimlik doğrulama~~ | **Yapıldı** (Google OAuth); imza gerçekten değişmedi |
 | Redis / Celery | `JobRunner` arayüzü arkasında |
-| Oran sınırlama middleware | Çapraz kesen katman, sonradan eklenir |
+| Oran sınırlama middleware | Hâlâ yok; günlük kota (`MAX_RUNS_PER_USER_PER_DAY`) şimdilik yerini tutuyor |
 | Yatay ölçekleme | SQLite → Postgres geçişi ayrı bir iş |
-| Anahtar şifreleme | Faz 0'da alan hazır; şifreleme Faz 5'te |
+| ~~Anahtar şifreleme~~ | Yapıldı (`SecretBox`). Kapsamı daraldı: artık API anahtarlarını değil, kullanıcı başına **OAuth jetonlarını** şifreliyor (§2) |
 
 ---
 
 ## 6. Riskler ve açık sorular
 
-**`provider_health` global.** Şu an tek kullanıcı olduğu için doğru davranış. Çok
-kullanıcıda bir kullanıcının 429'u herkesi kilitler. Ama BYOK ile kullanıcılar farklı
-anahtar kullanacağı için YouTube *API* sınırları ayrışır; ayrışmayan şey sunucu IP'sine
-bağlı `yt-dlp` ve transkript sınırları. Karar gerekiyor: cooldown global mi kalsın
-(korumacı) yoksa kullanıcı başına mı olsun (adil ama IP'yi yakar)?
+**`provider_health` global — ve paylaşımlı anahtarla öyle KALMALI.** Bu soru BYOK
+varsayımıyla açılmıştı: kullanıcılar farklı anahtar kullansa YouTube *API* sınırları
+ayrışırdı, ayrışmayan şey yalnızca sunucu IP'sine bağlı `yt-dlp` sınırları olurdu.
+Anahtar paylaşımlı olunca (§2) ikisi de ayrışmıyor: kota da IP de tek ve ortak. Global
+cooldown artık "korumacı bir tercih" değil, doğru olan. Bir kullanıcının 429'u herkesi
+kilitliyor ama zaten herkes aynı kotayı harcıyor; adaleti sağlayan mekanizma cooldown
+değil `MAX_RUNS_PER_USER_PER_DAY`.
 
 **SSE bağlantı kopması.** Uzun ASR koşularında istemci kopabilir. Durum SQLite'ta zaten
 tutuluyor; yeniden bağlanınca son bilinen ilerlemeden devam edilmeli. `Last-Event-ID`
