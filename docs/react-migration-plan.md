@@ -321,13 +321,25 @@ yeniden yazım gerekmeyecek.
 
 ## 6. Riskler ve açık sorular
 
-**`provider_health` global — ve paylaşımlı anahtarla öyle KALMALI.** Bu soru BYOK
-varsayımıyla açılmıştı: kullanıcılar farklı anahtar kullansa YouTube *API* sınırları
-ayrışırdı, ayrışmayan şey yalnızca sunucu IP'sine bağlı `yt-dlp` sınırları olurdu.
-Anahtar paylaşımlı olunca (§2) ikisi de ayrışmıyor: kota da IP de tek ve ortak. Global
-cooldown artık "korumacı bir tercih" değil, doğru olan. Bir kullanıcının 429'u herkesi
-kilitliyor ama zaten herkes aynı kotayı harcıyor; adaleti sağlayan mekanizma cooldown
-değil `MAX_RUNS_PER_USER_PER_DAY`.
+**Sağlayıcı soğuması artık sunucu geneli** (`SERVER_SCOPE`). Bu soru BYOK varsayımıyla
+açılmıştı ve kapsam bir ara kullanıcı başına çekilmişti: kullanıcılar farklı anahtar
+kullansa YouTube *API* sınırları gerçekten ayrışırdı. Anahtar paylaşımlı olunca (§2)
+hiçbiri ayrışmıyor — kota da IP de tek ve ortak.
+
+Ölçüldü: kullanıcı başına kapsamda **ikinci kullanıcı hiç korunmuyordu.** Ali `yt_dlp`'de
+soğumaya girse bile Veli aynı sunucu IP'sinden gidip aynı sınıra takılıyor ve engeli
+uzatıyordu. Bir kullanıcının 429'u artık herkesi durduruyor; bu bir maliyet değil, doğru
+davranış — zaten herkes aynı IP'den çıkıyor. Adaleti sağlayan mekanizma soğuma değil
+`MAX_RUNS_PER_USER_PER_DAY`.
+
+Kapsam değişince ortaya çıkan bir yarış da kapatıldı: başarılı bir çağrı artık süresi
+dolmamış bir hız-sınırı soğumasını **iptal etmiyor** (eskiden B çalıştırmasının başarısı
+A'nın taze soğumasını siliyordu).
+
+**Açık kalan:** eşzamanlılık. 2 çalıştırma × 4 işçi = tek IP'den 8 eşzamanlı istek.
+Soğuma bir *tepki*; sınıra hiç girmemek için asıl ayar bu. `GET /api/admin/usage`
+artık günlük `rate_limited` / `failure` / `cooldown` sayılarını döndürüyor — ayar
+tahminle değil bu sayılara bakılarak değiştirilmeli.
 
 **SSE bağlantı kopması.** Uzun ASR koşularında istemci kopabilir. Durum SQLite'ta zaten
 tutuluyor; yeniden bağlanınca son bilinen ilerlemeden devam edilmeli. `Last-Event-ID`

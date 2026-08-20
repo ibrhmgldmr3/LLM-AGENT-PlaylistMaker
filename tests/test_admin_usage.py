@@ -195,3 +195,51 @@ def test_capabilities_includes_remaining_runs_once_signed_in(monkeypatch, tmp_pa
         client.cookies.set("map_session", "ali-jeton")
 
         assert client.get("/api/config").json()["runs_remaining_today"] == 3
+
+
+# ------------------------------------------- saglayici olaylari (hiz siniri)
+
+def test_report_counts_rate_limit_hits(monkeypatch, tmp_path):
+    """"Bu IP bugun kac kez hiz sinirina takildi" -- eskiden cevabi yoktu.
+
+    `provider_cooldown` yalnizca ANLIK durumu tutuyor ve sure dolunca iz
+    birakmadan kayboluyor. Es zamanlilik ayarlarini tahminle degil olcumle
+    degistirebilmek icin gunun toplami gerekiyor.
+    """
+    client, store = _client(monkeypatch, tmp_path, auth_mode="single_user")
+    with client:
+        store.mark_provider_cooldown("yt_dlp", "429", 1800)
+        store.mark_provider_cooldown("yt_dlp", "429", 1800)
+        store.mark_provider_cooldown("youtube_transcript_api", "429", 1800)
+
+        body = client.get("/api/admin/usage").json()
+
+    olaylar = {(e["provider"], e["event"]): e["count"] for e in body["provider_events"]}
+    assert olaylar[("yt_dlp", "rate_limited")] == 2
+    assert olaylar[("youtube_transcript_api", "rate_limited")] == 1
+
+
+def test_report_separates_failures_from_the_cooldown_they_trigger(monkeypatch, tmp_path):
+    """Esik dolana kadar hata sayilir; dolunca AYRICA bir soguma olayi yazilir."""
+    client, store = _client(monkeypatch, tmp_path, auth_mode="single_user")
+    with client:
+        for _ in range(3):
+            store.record_provider_failure("yt_dlp", "hata", cooldown_sec=900, threshold=3)
+
+        body = client.get("/api/admin/usage").json()
+
+    olaylar = {(e["provider"], e["event"]): e["count"] for e in body["provider_events"]}
+    assert olaylar[("yt_dlp", "failure")] == 3
+    assert olaylar[("yt_dlp", "cooldown")] == 1
+    assert ("yt_dlp", "rate_limited") not in olaylar, "genel hata, hiz siniri degil"
+
+
+def test_active_cooldowns_show_the_server_scope(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path, auth_mode="single_user")
+    with client:
+        store.mark_provider_cooldown("yt_dlp", "429", 1800)
+        body = client.get("/api/admin/usage").json()
+
+    assert len(body["active_cooldowns"]) == 1
+    assert body["active_cooldowns"][0]["provider"] == "yt_dlp"
+    assert body["active_cooldowns"][0]["scope"] == "__server__"

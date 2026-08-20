@@ -61,5 +61,12 @@ def usage(
         "by_user_units": by_user,
         "runs_last_24h": store.count_runs_by_user_since(),
         "max_runs_per_user_per_day": server.max_runs_per_user_per_day,
+        # ANLIK durum: su an hangi saglayici dinleniyor.
         "active_cooldowns": store.list_active_cooldowns(),
+        # GUNUN TOPLAMI: kac kez hiz sinirina takildik, kac kez sogumaya girdik.
+        # Sogumalar sure dolunca iz birakmadan kayboldugu icin anlik durum bu
+        # soruyu yanitlayamiyor. Es zamanlilik ayarlari (kac calistirma x kac
+        # isci) bu sayilara bakilarak degistirilmeli -- sinir sunucunun IP'sine
+        # bagli ve tahminle kurcalanacak bir sey degil.
+        "provider_events": store.get_provider_events(day),
     }
