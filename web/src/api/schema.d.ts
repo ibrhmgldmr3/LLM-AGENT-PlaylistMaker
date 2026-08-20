@@ -246,6 +246,9 @@ export interface paths {
          *     `runner.cancel(run_id)` cagiriyordu; silme dali `user_id` suzuyor olsa da
          *     iptal dali sizmiyordu, yani cok kullanicili kuruluma gecildiginde kimligi
          *     bilen herkes baskasinin calisan isini durdurabilirdi.
+         *
+         *     Silme DISKE de dokunuyor (bkz. `run_retention.delete_run`): eskiden yalnizca
+         *     veritabani satirlari gidiyor, calisma plani ve sonuc JSON'u diskte kaliyordu.
          */
         delete: operations["cancel_or_delete_run_api_runs__run_id__delete"];
         options?: never;
@@ -370,6 +373,11 @@ export interface components {
             llm_configured: boolean;
             /** Runs Remaining Today */
             runs_remaining_today: number | null;
+            /**
+             * Service Capacity Reached
+             * @default false
+             */
+            service_capacity_reached: boolean;
             /** Youtube Publish Configured */
             youtube_publish_configured: boolean;
             /** Youtube Search Configured */

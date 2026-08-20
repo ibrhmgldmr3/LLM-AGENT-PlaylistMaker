@@ -135,5 +135,9 @@ class CapabilitiesResponse(BaseModel):
     # ancak 429 yiyince ogreniyordu -- forma konuyu yazdiktan SONRA. Bu alan
     # sayesinde arayuz durumu ONCEDEN gosterebiliyor.
     runs_remaining_today: int | None = None
+    # Servisin BUGUNKU ortak kapasitesi doldu mu. Kullanici basina siniri
+    # olmayan bir kullanicinin bile calistirma baslatamayacagi durum: arama
+    # kotasi tum kullanicilar icin ortak.
+    service_capacity_reached: bool = False
     defaults: dict[str, Any] = Field(default_factory=dict)
 

@@ -35,6 +35,8 @@ def usage(
 
     spent = sum(row["units"] for row in rows)
     limit = server.youtube_daily_quota_units or DEFAULT_DAILY_QUOTA_UNITS
+    # Servisin kendine koydugu tavan; projenin kotasindan DUSUK olabilir.
+    budget = server.daily_unit_budget()
 
     by_endpoint: dict[str, dict[str, int]] = {}
     by_user: dict[str, int] = {}
@@ -56,6 +58,9 @@ def usage(
             # bir calistirmanin kac arama yapacagi alt konu sayisina ve
             # onbellek isabetine bagli, yani ONCEDEN bilinmiyor.
             "remaining_searches": max(0, limit - spent) // 100,
+            # Kabul kontrolunun kullandigi tavan (bkz. MAX_UNITS_PER_DAY).
+            "budget_units": budget,
+            "budget_remaining_units": max(0, budget - spent),
         },
         "by_endpoint": by_endpoint,
         "by_user_units": by_user,

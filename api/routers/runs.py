@@ -31,9 +31,11 @@ from src.config import RunOptions, ServerConfig, UserCredentials
 from src.jobs import JobRunner, JobState, new_job_id
 from src.models import PlaylistRequest
 from src.services.playlist_publish_service import create_youtube_playlist
+from src.providers.youtube_data_api_provider import estimate_run_units
 from src.services.playlist_service import build_playlist
 from src.services.run_retention import delete_run as delete_run_everywhere
 from src.storage import SQLiteStore
+from src.storage.sqlite_store import seconds_until_next_quota_day
 from src.utils.logging_utils import redact_secrets
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -110,19 +112,41 @@ def create_run(
     #
     # Sinir neden var: kota proje basina gunde 10.000 birim, bir calistirma 612
     # birim, yani ~16 calistirma TUM KULLANICILAR icin toplam.
-    accepted = store.create_run_within_daily_limit(
+    # Iki dilli kesif alt konu basina IKI arama yapiyor; tahmin bunu bilmeli.
+    queries_per_subtopic = (
+        2
+        if request.filters.include_english
+        and not request.filters.language.lower().startswith("en")
+        else 1
+    )
+    admission = store.create_run_within_daily_limit(
         run_id,
         request.topic,
         request.filters.model_dump(),
         user_id=user_id,
         max_per_day=server.max_runs_per_user_per_day,
+        max_units_per_day=server.daily_unit_budget(),
+        estimated_units=estimate_run_units(options.max_subtopics, queries_per_subtopic),
     )
-    if not accepted:
+    if not admission:
+        # `Retry-After` gercek sifirlanma anina gore: kota Pasifik saatiyle
+        # donuyor ve Turkiye'den bakan biri icin bu gun ORTASINA denk geliyor.
+        # Sabit "3600" hem yanlis hem de kullanicinin bosuna denemesine yol
+        # aciyordu.
+        retry_after = seconds_until_next_quota_day()
+        if admission.reason == "service_budget":
+            detail = (
+                "Servisin bugünkü kapasitesi doldu. Arama kotası tüm kullanıcılar "
+                "için ortak ve bugünlük tükendi; kota sıfırlandığında tekrar deneyin."
+            )
+        else:
+            detail = (
+                f"Günlük çalıştırma hakkınız doldu ({server.max_runs_per_user_per_day})."
+            )
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
-            f"Günlük çalıştırma hakkınız doldu ({server.max_runs_per_user_per_day}). "
-            "Yarın tekrar deneyin.",
-            headers={"Retry-After": "3600"},
+            detail,
+            headers={"Retry-After": str(retry_after)},
         )
 
     handle = runner.submit(run_id, user_id, work)

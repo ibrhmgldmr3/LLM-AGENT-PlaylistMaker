@@ -14,6 +14,7 @@ from api.deps import (
 )
 from api.schemas import CapabilitiesResponse
 from src.config import RunOptions, ServerConfig, UserCredentials
+from src.providers.youtube_data_api_provider import estimate_run_units
 from src.storage import SQLiteStore
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -45,8 +46,17 @@ def get_capabilities(
         used = store.count_runs_since(user_id)
         remaining = max(0, server.max_runs_per_user_per_day - used)
 
+    # Ortak kapasite: bir sonraki calistirmayi kaldiracak butce kaldi mi.
+    # Kullanici basina hakki olsa BILE burada durabilir -- kota paylasimli.
+    budget = server.daily_unit_budget()
+    spent = store.sum_api_units()
+    # Varsayilan secenekler uzerinden en kotu durum; istek govdesi bunu
+    # degistirebilir ama arayuze gosterilecek isaret icin dogru olcek bu.
+    typical_run = estimate_run_units(defaults.max_subtopics, 2 if defaults.include_english_by_default else 1)
+
     return CapabilitiesResponse(
         **capabilities,
         runs_remaining_today=remaining,
+        service_capacity_reached=spent + typical_run > budget,
         defaults=defaults.model_dump(),
     )

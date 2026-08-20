@@ -159,6 +159,7 @@ describe("RunForm", () => {
       asr_available: false,
       cookies_configured: false,
       runs_remaining_today: null,
+      service_capacity_reached: false,
       defaults: {},
     };
     const { rerender } = render(<RunForm capabilities={configured} busy={false} onSubmit={vi.fn()} />);
@@ -183,6 +184,7 @@ describe("RunForm", () => {
       asr_available: false,
       cookies_configured: false,
       runs_remaining_today: null,
+      service_capacity_reached: false,
       defaults: {},
     };
 
@@ -209,6 +211,23 @@ describe("RunForm", () => {
       expect(screen.queryByText(/Bugün kalan çalıştırma hakkınız: 2/)).not.toBeNull();
       fillTopic("kuantum");
       expect(submitButton().disabled).toBe(false);
+    });
+
+    it("servisin ortak kapasitesi dolduysa kullanicinin hakki olsa BILE engeller", () => {
+      // Kota tum kullanicilar icin ortak: kisisel hak tek basina yetmiyor.
+      render(
+        <RunForm
+          capabilities={{ ...base, runs_remaining_today: 3, service_capacity_reached: true }}
+          busy={false}
+          onSubmit={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByText(/Servisin bugünkü kapasitesi doldu/)).not.toBeNull();
+      fillTopic("kuantum");
+      expect(submitButton().disabled).toBe(true);
+      // Iki mesaj birden cikmasin: ortak kapasite kisisel haktan onceliklidir.
+      expect(screen.queryByText(/kalan çalıştırma hakkınız/i)).toBeNull();
     });
 
     it("hak bittiğinde uyarır ve göndermeyi engeller", () => {

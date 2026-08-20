@@ -205,5 +205,11 @@ export interface Capabilities {
   // Kullanici eskiden hakkinin doldugunu ancak formu doldurup gonderdikten
   // SONRA, 429 ile ogreniyordu.
   runs_remaining_today: number | null;
+  /**
+   * Servisin BUGUNKU ortak kapasitesi doldu mu. Arama kotasi tum kullanicilar
+   * icin ortak, dolayisiyla kullanicinin kendi hakki dolmamis olsa bile
+   * calistirma baslatilamayabilir.
+   */
+  service_capacity_reached: boolean;
   defaults: Record<string, unknown>;
 }
