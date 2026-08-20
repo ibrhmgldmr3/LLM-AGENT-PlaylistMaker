@@ -191,7 +191,6 @@ def create_youtube_playlist(
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
-        from googleapiclient.errors import HttpError
     except ImportError as exc:
         raise RuntimeError(
             "Google OAuth bağımlılıkları kurulu değil. `pip install -r requirements.txt` çalıştırın."
@@ -239,10 +238,16 @@ def create_youtube_playlist(
                 },
             ).execute()
             added += 1
-        except HttpError as exc:
+        except Exception as exc:
             # Tek bir videonun eklenememesi tum playlist'i cope atmamali.
             # Eskiden ilk hata yukari firliyor, kullanicinin hesabinda yarim kalan
             # bir playlist ve hicbir URL bildirimi olmadan kaliyordu.
+            #
+            # `HttpError` DEGIL `Exception` yakaliyoruz: playlist bu noktada
+            # YouTube'da ZATEN olusmus durumda, dolayisiyla buradan yukari
+            # firlayan HER istisna ayni sahipsiz-playlist sonucunu veriyor.
+            # Soket hatasi / timeout / DNS gibi `HttpError` olmayan durumlar
+            # pratikte en sik gorulenlerdi ve tam da bu delikten kaciyordu.
             warnings.append(
                 f"'{recommendation.video.title}' playlist'e eklenemedi: {getattr(exc, 'reason', None) or exc}"
             )

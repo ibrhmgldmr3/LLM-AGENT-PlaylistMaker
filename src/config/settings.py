@@ -385,9 +385,38 @@ class AppConfig(ServerConfig, UserCredentials, RunOptions):
                 self.youtube_oauth_client_secret_file
                 or (self.youtube_oauth_client_id and self.youtube_oauth_client_secret)
             ),
-            "asr_available": self.asr_backend != "auto" or bool(self.whisper_cpp_cli_path),
+            "asr_available": self.asr_backend_available(),
             "cookies_configured": bool(self.ytdlp_cookies_from_browser or self.ytdlp_cookies_file),
         }
+
+    def asr_backend_available(self) -> bool:
+        """`select_transcription_backend` gercekten bir arka uc bulabilir mi.
+
+        Eskiden bu soru `asr_backend != "auto" or whisper_cpp_cli_path` ile
+        yanitlaniyordu ve iki yonden de yanlisti: `auto` modda `faster-whisper`
+        kurulu olsa bile `False` donuyordu (secim mantiginda ONCELIKLI olan o),
+        `auto` disi modlarda ise arka ucun kurulu olup olmadigina hic bakmadan
+        `True` donuyordu.
+
+        `transcript_service` import EDILMIYOR: bu modul yapilandirma katmani ve
+        servis katmanini cagirmasi dairesel bagimlilik yaratirdi. Kontrol,
+        saglayicilarin `is_available()` govdeleriyle birebir ayni -- ikisi
+        birlikte degismek zorunda.
+        """
+        import importlib.util
+
+        faster_whisper = importlib.util.find_spec("faster_whisper") is not None
+        whisper_cpp = bool(
+            self.whisper_cpp_cli_path
+            and self.whisper_cpp_model_path
+            and os.path.exists(self.whisper_cpp_cli_path)
+            and os.path.exists(self.whisper_cpp_model_path)
+        )
+        if self.asr_backend == "faster-whisper":
+            return faster_whisper
+        if self.asr_backend == "whisper.cpp":
+            return whisper_cpp
+        return faster_whisper or whisper_cpp
 
     # NOT: Dogrulayicilar artik alanlarin ait oldugu alt modellerde
     # (ServerConfig / UserCredentials / RunOptions) tanimli ve kalitimla geliyor.

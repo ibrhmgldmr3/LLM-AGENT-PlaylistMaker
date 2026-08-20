@@ -27,6 +27,25 @@ from src.services.playlist_publish_service import (
 from src.storage import DEFAULT_USER_ID, SQLiteStore
 from src.utils.logging_utils import redact_secrets
 
+
+def _request_is_https(request: Request) -> bool:
+    """Istek KULLANICIYA kadar HTTPS mi.
+
+    `request.url.scheme` yalnizca uygulamaya gelen BACAGI gosteriyor. Tipik
+    kurulumda (nginx/Caddy/Traefik + uvicorn) TLS ters proxy'de sonlaniyor ve
+    uygulamaya duz `http` geliyor; bu durumda `secure` bayragi yanlislikla
+    dusuyor ve oturum cerezi sifresiz baglantida da gonderilebilir hale
+    geliyordu. Proxy'nin bildirdigi orijinal semayi once ona soruyoruz.
+
+    Basligin ilk degeri aliniyor: zincirli proxy'lerde `X-Forwarded-Proto`
+    virgulle ayrilmis liste olabiliyor ve ISTEMCIYE en yakin olan bastaki.
+    """
+    forwarded = request.headers.get("x-forwarded-proto")
+    if forwarded:
+        return forwarded.split(",")[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
 router = APIRouter(prefix="/api/auth/youtube", tags=["auth"])
 
 PROVIDER = "youtube"
@@ -174,7 +193,7 @@ def youtube_callback(
         max_age=server.session_ttl_sec,
         httponly=True,  # JavaScript okuyamasin: XSS ile jeton calinmasini engeller
         samesite="lax",  # CSRF'e karsi; `lax` OAuth geri donusundeki yonlendirmeyi bozmuyor
-        secure=request.url.scheme == "https",
+        secure=_request_is_https(request),
         path="/",
     )
     return response

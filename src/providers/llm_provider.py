@@ -194,6 +194,14 @@ class GeminiLLMProvider:
         yerine fabrika bunu tek yerde saglıyor. Iki cagiran (alt konu uretimi ve
         calisma notu) FARKLI config'ler kullaniyor, bu yuzden fabrika parametrik.
         """
+        # Karar SORULDUGU AN aliniyor, `except` icinde degil: `_thinking_unsupported`
+        # is parcaciklari arasinda PAYLASILIYOR ve iki thread ayni modeli ilk kez
+        # es zamanli cagirirsa, A'nin basarili retry'i modeli sete ekleyip B'nin
+        # kendi retry hakkini elinden aliyordu -- B, hic gondermedigi bir
+        # parametre yuzunden "desteklenmiyor" diye `raise` ediyordu. Bu calisma
+        # notu uretiminde (`max_transcript_workers > 1`) sahte kalici hataya
+        # donusuyordu. Artik olcut "BU cagri thinking_config gonderdi mi".
+        sent_thinking = model_name not in self._thinking_unsupported
         try:
             response = self.client.models.generate_content(
                 model=model_name, contents=prompt, config=config_factory(model_name)
@@ -201,7 +209,8 @@ class GeminiLLMProvider:
         except Exception as exc:
             # Bazi modeller `thinking_config`'i hic kabul etmiyor ve 400 donuyor.
             # Bu bir yapilandirma uyumsuzlugu; modeli elemek yerine parametresiz tekrar dene.
-            if _is_invalid_argument_error(exc) and model_name not in self._thinking_unsupported:
+            if _is_invalid_argument_error(exc) and sent_thinking:
+                # `set.add` CPython'da atomik; ayrica kilide gerek yok.
                 self._thinking_unsupported.add(model_name)
                 response = self.client.models.generate_content(
                     model=model_name, contents=prompt, config=config_factory(model_name)
