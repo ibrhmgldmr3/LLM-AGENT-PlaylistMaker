@@ -12,6 +12,7 @@ katmanina bilerek SIZDIRILMAZ.
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -21,6 +22,9 @@ from enum import Enum
 from typing import Any, Callable, Iterator, Protocol
 
 from src.models import ProgressEvent
+from src.utils.logging_utils import redact_secrets
+
+_log = logging.getLogger(__name__)
 
 
 class JobState(str, Enum):
@@ -179,7 +183,17 @@ class InProcessJobRunner:
                 raise
             except Exception as exc:
                 handle.state = JobState.FAILED
-                handle.error = str(exc)
+                # MASKELENEREK saklaniyor: bu alan `GET /api/runs/{id}` yanitina
+                # ve SSE `done` olayina girip DOGRUDAN istemciye gidiyor.
+                # Saglayicilar kendi istisnalarini uretirken zaten maskeliyor
+                # ama burasi yakalanmamis HER istisnanin gectigi ortak yol --
+                # projedeki diger tum istemciye-cikan yollar (`api/main.py`
+                # istisna isleyicileri) maskeliyor, bu yol atlanmisti.
+                handle.error = redact_secrets(str(exc))
+                # Yigin izi SUNUCUDA kalir. Future hicbir zaman beklenmedigi
+                # icin is icindeki istisnalar buraya kadar hic loglanmiyordu:
+                # calistirma "failed" gorunuyor, sebebi hicbir yerde yazmiyordu.
+                _log.exception("Job %s failed", job_id)
                 raise
             finally:
                 channel.close()
