@@ -173,13 +173,6 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, provider)
                 );
-                CREATE TABLE IF NOT EXISTS user_credential (
-                    user_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (user_id, name)
-                );
                 CREATE TABLE IF NOT EXISTS session (
                     token_hash TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -525,23 +518,7 @@ class SQLiteStore:
                 (json.dumps(result.model_dump(), ensure_ascii=False), run_id),
             )
 
-    # ---------------------------------------------------------- OAuth token
-    # Token KULLANICI BASINA saklanir: dosya yolu tek kullanicili varsayimdi ve
-    # cok kullanicili moda gecerken en cok direnc gosteren yerdi.
-    #
-    # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
-    # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
-    # boylece anahtar sonradan eklenebilir.
-
-    # ------------------------------------------------- kullanici anahtarlari
-    #
-    # BYOK: cok kullanicili kurulumda her kullanici kendi API anahtarini
-    # getiriyor. Paylasimli anahtar mumkun degil -- YouTube Data API kotasi
-    # PROJE basina gunde 10.000 birim ve bir calistirma ~1.200 birim tuketiyor,
-    # yani ikinci kullanici gunu bitiriyor.
-    #
-    # Degerler jetonlarla AYNI kutuyla sifreleniyor; anahtar yoksa duz metin
-    # yazilir ve eski davranis korunur.
+    # ------------------------------------------------------- sifre cozme yardimcisi
 
     def _decrypt_or_none(self, stored: str, what: str) -> str | None:
         """Cozulemeyen kaydi HATA yerine "yok" sayar.
@@ -566,34 +543,6 @@ class SQLiteStore:
                 exc,
             )
             return None
-
-    def save_user_credential(self, user_id: str, name: str, value: str) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO user_credential (user_id, name, value, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (user_id, name, self._secrets.encrypt(value), _to_iso(_utc_now())),
-            )
-
-    def get_user_credentials(self, user_id: str) -> dict[str, str]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT name, value FROM user_credential WHERE user_id = ?", (user_id,)
-            ).fetchall()
-        decrypted = {
-            row["name"]: self._decrypt_or_none(row["value"], f"`{row['name']}` kimlik bilgisi")
-            for row in rows
-        }
-        return {name: value for name, value in decrypted.items() if value is not None}
-
-    def delete_user_credential(self, user_id: str, name: str) -> bool:
-        with self.connect() as conn:
-            cursor = conn.execute(
-                "DELETE FROM user_credential WHERE user_id = ? AND name = ?", (user_id, name)
-            )
-            return cursor.rowcount > 0
 
     # ------------------------------------------------------------- oturumlar
     #
@@ -643,6 +592,14 @@ class SQLiteStore:
                 "DELETE FROM session WHERE token_hash = ?", (self.hash_session_token(token),)
             )
             return cursor.rowcount > 0
+
+    # ---------------------------------------------------------- OAuth token
+    # Token KULLANICI BASINA saklanir: dosya yolu tek kullanicili varsayimdi ve
+    # cok kullanicili moda gecerken en cok direnc gosteren yerdi.
+    #
+    # `SECRET_ENCRYPTION_KEY` tanimliysa jetonlar SIFRELI yazilir. Anahtar
+    # yoksa duz metin kalir (eski davranis) ve okuma her iki bicimi de destekler,
+    # boylece anahtar sonradan eklenebilir.
 
     def save_oauth_token(self, user_id: str, provider: str, token_json: str) -> None:
         with self.connect() as conn:

@@ -25,49 +25,6 @@ def _raw(tmp_path, sql):
     return sqlite3.connect(tmp_path / "app.db").execute(sql).fetchall()
 
 
-# ------------------------------------------------- genel kullanici basina sir deposu
-# (Artik uygulama tarafindan cagrilmiyor -- LLM/YouTube arama anahtari
-# PAYLASIMLI. Alt yapi genel amacli oldugu ve halen calistigi icin duruyor.)
-
-def test_user_credentials_are_scoped_per_user(store):
-    store.save_user_credential("ali", "gemini_api_key", "ALI-KEY")
-    store.save_user_credential("veli", "gemini_api_key", "VELI-KEY")
-
-    assert store.get_user_credentials("ali")["gemini_api_key"] == "ALI-KEY"
-    assert store.get_user_credentials("veli")["gemini_api_key"] == "VELI-KEY"
-    assert store.get_user_credentials("bilinmeyen") == {}
-
-
-def test_user_credentials_are_encrypted_at_rest(store, tmp_path):
-    """Anahtarlar diskte DUZ METIN durmamali.
-
-    Kullanicinin kendi API anahtarini emanet etmesini istiyoruz; veritabani
-    dosyasi yedeklere, senkronize klasorlere ve hata raporlarina karisiyor.
-    """
-    store.save_user_credential("ali", "gemini_api_key", "COK-GIZLI-DEGER")
-
-    rows = _raw(tmp_path, "SELECT value FROM user_credential")
-
-    assert rows, "kayit yazilmamis"
-    assert all("COK-GIZLI-DEGER" not in row[0] for row in rows)
-
-
-def test_saving_the_same_name_replaces_it(store):
-    store.save_user_credential("ali", "gemini_api_key", "ESKI")
-    store.save_user_credential("ali", "gemini_api_key", "YENI")
-
-    assert store.get_user_credentials("ali")["gemini_api_key"] == "YENI"
-
-
-def test_deleting_one_credential_keeps_the_others(store):
-    store.save_user_credential("ali", "gemini_api_key", "G")
-    store.save_user_credential("ali", "youtube_data_api_key", "Y")
-
-    assert store.delete_user_credential("ali", "gemini_api_key") is True
-    assert store.delete_user_credential("ali", "gemini_api_key") is False
-    assert set(store.get_user_credentials("ali")) == {"youtube_data_api_key"}
-
-
 # ----------------------------------------------------------------- oturumlar
 
 def test_session_round_trips(store):

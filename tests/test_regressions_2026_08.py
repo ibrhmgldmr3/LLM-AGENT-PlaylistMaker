@@ -96,18 +96,6 @@ def test_unreadable_oauth_token_reads_as_missing_not_error(tmp_path):
     assert rotated.get_oauth_token("ali", "youtube") == '{"token": "yeni"}'
 
 
-def test_unreadable_user_credential_is_skipped_not_raised(tmp_path):
-    db = str(tmp_path / "app.db")
-    original = SQLiteStore(db, encryption_key=KEY)
-    original.save_user_credential("ali", "eski_anahtar", "GIZLI")
-
-    rotated = SQLiteStore(db, encryption_key="x" * 44)
-    rotated.save_user_credential("ali", "yeni_anahtar", "OKUNABILIR")
-
-    # Cozulemeyen satir sessizce DUSUYOR, cagriyi patlatmiyor.
-    assert rotated.get_user_credentials("ali") == {"yeni_anahtar": "OKUNABILIR"}
-
-
 # ------------------------------------------------ asr_available dogrulugu
 
 def test_asr_available_follows_real_backend_selection(monkeypatch, tmp_path):
@@ -381,6 +369,8 @@ def test_non_http_error_while_adding_items_still_returns_the_playlist_url(monkey
     assert "Video 2" in published.warnings[0]
     # Hata, KALAN videolarin eklenmesini de durdurmamali.
     assert service.playlistItems().seen == ["v1", "v2", "v3"]
+
+
 # ------------------- paylasimli anahtar + sinirsiz calistirma acilista gorunsun
 
 def _client_with(monkeypatch, tmp_path, **config_overrides):
