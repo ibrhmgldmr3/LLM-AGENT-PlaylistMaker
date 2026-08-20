@@ -191,7 +191,11 @@ class SQLiteStore:
                     filters_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     result_json TEXT,
-                    user_id TEXT NOT NULL DEFAULT 'local'
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    -- Sunucu yeniden baslarken YARIDA kalan calistirmalar.
+                    -- Gunluk hak sayiminda haric tutulur: kullanici hicbir sey
+                    -- almadan hakkini kaybetmemeli.
+                    interrupted_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS run_subtopic (
                     run_id TEXT NOT NULL,
@@ -343,6 +347,7 @@ class SQLiteStore:
         cls._add_column_if_missing(
             conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
         )
+        cls._add_column_if_missing(conn, "run", "interrupted_at", "interrupted_at TEXT")
         cls._copy_legacy_provider_health(conn)
         cls._collapse_cooldowns_to_server_scope(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
@@ -586,15 +591,73 @@ class SQLiteStore:
                 (SERVER_SCOPE, provider, now),
             )
 
-    def purge_expired(self) -> int:
-        """Suresi dolmus onbellek satirlarini siler; veritabaninin sinirsiz buyumesini onler."""
+    # Gunluk sayaclarin (`api_usage`, `provider_event`) saklanma suresi.
+    # Isletme sorularinin tamami "bugun/bu hafta" olceginde; uc aylik gecmis
+    # egilim icin fazlasiyla yeterli ve satirlar minik.
+    COUNTER_RETENTION_DAYS = 90
+
+    def purge_expired(self) -> dict[str, int]:
+        """Suresi dolmus/eskimis satirlari siler. Silinenleri tablo bazinda doner.
+
+        Eskiden YALNIZCA iki onbellek tablosuna bakiyordu. Digerleri sessizce
+        sinirsiz buyuyordu:
+
+        - `session`: suresi gecen kayit yalnizca O JETONLA tekrar gelindiginde
+          siliniyordu. Kimse donmezse satir kaliyor -- herkese acik bir serviste
+          bu, giris yapip bir daha gelmeyen her ziyaretci demek.
+        - `api_usage` / `provider_event`: gunluk sayaclar, hicbir zaman.
+        """
         now = _to_iso(_utc_now())
-        removed = 0
+        cutoff_day = quota_day(_utc_now() - timedelta(days=self.COUNTER_RETENTION_DAYS))
+        removed: dict[str, int] = {}
+
+        def _count(cursor) -> int:
+            return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
         with self.connect() as conn:
             for table in ("search_cache", "transcript_cache"):
-                cursor = conn.execute(f"DELETE FROM {table} WHERE expires_at <= ?", (now,))
-                removed += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+                removed[table] = _count(
+                    conn.execute(f"DELETE FROM {table} WHERE expires_at <= ?", (now,))
+                )
+            removed["session"] = _count(
+                conn.execute("DELETE FROM session WHERE expires_at <= ?", (now,))
+            )
+            for table in ("api_usage", "provider_event"):
+                removed[table] = _count(
+                    conn.execute(f"DELETE FROM {table} WHERE day < ?", (cutoff_day,))
+                )
         return removed
+
+    def mark_interrupted_runs(self) -> int:
+        """Yarida kalmis calistirmalari isaretler; isaretlenen sayiyi doner.
+
+        YALNIZCA ACILISTA cagrilmali. Olcut "sonucu yok" -- ve bu, ancak hicbir
+        is calismiyorken dogru bir olcut: surec icinde calisan bir calistirmanin
+        da sonucu henuz yoktur. Acilista tanim geregi hicbir is calismiyor
+        (`InProcessJobRunner` durumu bellekte tutuyor ve yeniden baslamayla
+        kayboluyor), dolayisiyla sonucu olmayan her satir gercekten yarida
+        kalmis demektir.
+
+        Neden isaretleniyor da SILINMIYOR: gecmis listesinde "yarim kaldi"
+        olarak gorunmeye devam etmeli. Kullaniciya yalan soylemeden hakkini
+        geri vermenin yolu bu.
+        """
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE run SET interrupted_at = ?"
+                " WHERE result_json IS NULL AND interrupted_at IS NULL",
+                (_to_iso(_utc_now()),),
+            )
+            return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
+    def list_run_ids(self) -> set[str]:
+        """Veritabaninda kayitli tum calistirma kimlikleri.
+
+        Diskteki sahipsiz calistirma dizinlerini bulmak icin: dosya sistemi
+        ile veritabanini karsilastiran taraf servis katmani (depolama katmani
+        disk hakkinda hicbir sey bilmiyor)."""
+        with self.connect() as conn:
+            return {row["run_id"] for row in conn.execute("SELECT run_id FROM run")}
 
     def create_run(
         self, run_id: str, topic: str, filters: dict[str, Any], user_id: str = DEFAULT_USER_ID
@@ -637,7 +700,8 @@ class SQLiteStore:
             if max_per_day:
                 cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
                 row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM run WHERE user_id = ? AND created_at >= ?",
+                    "SELECT COUNT(*) AS n FROM run"
+                    " WHERE user_id = ? AND created_at >= ? AND interrupted_at IS NULL",
                     (user_id, cutoff),
                 ).fetchone()
                 if (int(row["n"]) if row else 0) >= max_per_day:
@@ -742,7 +806,8 @@ class SQLiteStore:
         cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM run WHERE user_id = ? AND created_at >= ?",
+                "SELECT COUNT(*) AS n FROM run"
+                " WHERE user_id = ? AND created_at >= ? AND interrupted_at IS NULL",
                 (user_id, cutoff),
             ).fetchone()
         return int(row["n"]) if row else 0

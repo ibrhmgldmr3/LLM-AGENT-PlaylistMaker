@@ -353,8 +353,13 @@ def _run_pipeline(
 
     try:
         removed = store.purge_expired()
-        if removed and logger:
-            logger.info("Purged %s expired cache rows", removed)
+        toplam = sum(removed.values())
+        if toplam and logger:
+            logger.info(
+                "Purged %s expired rows (%s)",
+                toplam,
+                ", ".join(f"{table}={count}" for table, count in removed.items() if count),
+            )
     except Exception:
         if logger:
             logger.warning("Cache purge failed", exc_info=True)

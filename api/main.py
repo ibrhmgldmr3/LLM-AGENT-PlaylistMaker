@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.deps import get_server_config
+from api.deps import _base_config, get_server_config
 from api.routers import admin as admin_router
 from api.routers import auth as auth_router
 from api.routers import config as config_router
@@ -72,11 +72,55 @@ def _warn_on_unbounded_shared_quota() -> None:
         )
 
 
+def _mark_interrupted_runs() -> None:
+    """Onceki surecte yarida kalan calistirmalari isaretler.
+
+    Acilista tanim geregi hicbir is calismiyor, dolayisiyla sonucu olmayan her
+    satir gercekten yarida kalmis. Isaretlenenler gunluk hak sayimindan
+    dusuluyor: sunucu yeniden basladi diye kullanici hicbir sey almadan hakkini
+    kaybetmemeli. Gecmiste "yarim kaldi" olarak gorunmeye devam ediyorlar.
+    """
+    try:
+        from src.storage import SQLiteStore
+
+        server = get_server_config()
+        store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+        marked = store.mark_interrupted_runs()
+        if marked:
+            logger.info("Yarıda kalan %s çalıştırma işaretlendi (günlük hak iade edildi)", marked)
+    except Exception:
+        logger.warning("Yarıda kalan çalıştırmalar işaretlenemedi", exc_info=True)
+
+
+def _purge_orphan_run_dirs() -> None:
+    """Veritabaninda karsiligi kalmayan calistirma dizinlerini toplar.
+
+    ACILISTA calisiyor, her calistirmadan sonra degil: silme artik diski de
+    temizledigi icin (bkz. `run_retention.delete_run`) sahipsiz dizin yalnizca
+    cokme/yarida kalma sonucu olusuyor. Dizin taramasini her calistirmaya
+    yaymak, cozdugu sorunla orantisiz bir maliyet olurdu.
+    """
+    try:
+        from src.services.run_retention import purge_orphan_run_dirs
+        from src.storage import SQLiteStore
+
+        server = get_server_config()
+        store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+        removed = purge_orphan_run_dirs(_base_config(), store)
+        if removed:
+            logger.info("Sahipsiz %s çalıştırma dizini silindi", removed)
+    except Exception:
+        # Bakim adimi acilisi DUSURMEMELI.
+        logger.warning("Sahipsiz çalıştırma dizinleri temizlenemedi", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if os.name == "nt":
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     _warn_on_unbounded_shared_quota()
+    _mark_interrupted_runs()
+    _purge_orphan_run_dirs()
     # Es zamanli calistirma sayisi bilerek dusuk: her is zaten kendi icinde
     # arama/transkript icin thread havuzu aciyor ve YouTube hiz sinirlari
     # sunucu IP'sine bagli.

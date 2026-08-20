@@ -32,6 +32,7 @@ from src.jobs import JobRunner, JobState, new_job_id
 from src.models import PlaylistRequest
 from src.services.playlist_publish_service import create_youtube_playlist
 from src.services.playlist_service import build_playlist
+from src.services.run_retention import delete_run as delete_run_everywhere
 from src.storage import SQLiteStore
 from src.utils.logging_utils import redact_secrets
 
@@ -221,6 +222,9 @@ def cancel_or_delete_run(
     user_id: str = Depends(get_current_user),
     runner: JobRunner = Depends(get_job_runner),
     store: SQLiteStore = Depends(get_store),
+    credentials: UserCredentials = Depends(get_user_credentials),
+    defaults: RunOptions = Depends(get_default_run_options),
+    server: ServerConfig = Depends(get_server_config),
 ) -> Response:
     """Calisan isi iptal eder; bitmis calistirmayi gecmisten siler.
 
@@ -228,10 +232,14 @@ def cancel_or_delete_run(
     `runner.cancel(run_id)` cagiriyordu; silme dali `user_id` suzuyor olsa da
     iptal dali sizmiyordu, yani cok kullanicili kuruluma gecildiginde kimligi
     bilen herkes baskasinin calisan isini durdurabilirdi.
+
+    Silme DISKE de dokunuyor (bkz. `run_retention.delete_run`): eskiden yalnizca
+    veritabani satirlari gidiyor, calisma plani ve sonuc JSON'u diskte kaliyordu.
     """
     if _owned_handle(runner, run_id, user_id) is not None and runner.cancel(run_id):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-    if store.delete_run(run_id, user_id=user_id):
+    config = build_run_config(credentials, defaults, server)
+    if delete_run_everywhere(config, store, run_id, user_id=user_id):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
 
