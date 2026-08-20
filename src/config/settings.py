@@ -46,6 +46,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "MAX_RUNS_PER_USER_PER_DAY": "max_runs_per_user_per_day",
     "ADMIN_USER_IDS": "admin_user_ids",
     "YOUTUBE_DAILY_QUOTA_UNITS": "youtube_daily_quota_units",
+    "MAX_UNITS_PER_DAY": "max_units_per_day",
     "INCLUDE_ENGLISH_BY_DEFAULT": "include_english_by_default",
     "MAX_SUBTOPICS": "max_subtopics",
     "SEARCH_CANDIDATES_PER_SUBTOPIC": "search_candidates_per_subtopic",
@@ -274,6 +275,25 @@ class ServerConfig(BaseModel):
     # YouTube'un varsayilani (10.000 birim/gun) kabul edilir; sayi tek yerde,
     # `src/providers/youtube_data_api_provider.py` icinde tanimli.
     youtube_daily_quota_units: int | None = Field(default=None, ge=1)
+
+    # SERVIS GENELI gunluk kota tavani (birim). Kullanici basina sinirin
+    # (`max_runs_per_user_per_day`) yaninda, TOPLAM tuketimi sinirlar.
+    #
+    # `None` (varsayilan) = tavan `youtube_daily_quota_units`, yani projenin
+    # kendi kotasi. Burasi BILEREK "sinirsiz" degil: gercek tavan zaten var ve
+    # ona carpmanin bedeli YouTube'dan 403 alip calistirmanin YARIDA olmesi --
+    # LLM cagrisi da bosa gider. Onceden reddetmek her durumda daha iyi.
+    #
+    # Daha DUSUK bir deger vermek anlamli: gunun bir kismini kendine ya da
+    # beklenmedik yuke pay birakmak icin.
+    max_units_per_day: int | None = Field(default=None, ge=1)
+
+    def daily_unit_budget(self) -> int:
+        """Bugun harcanabilecek toplam kota birimi."""
+        from src.providers.youtube_data_api_provider import DEFAULT_DAILY_QUOTA_UNITS
+
+        project_quota = self.youtube_daily_quota_units or DEFAULT_DAILY_QUOTA_UNITS
+        return min(self.max_units_per_day or project_quota, project_quota)
 
     def admin_ids(self) -> set[str]:
         """`admin_user_ids` alanini kume olarak verir. Bos/bosluk girdiler elenir."""

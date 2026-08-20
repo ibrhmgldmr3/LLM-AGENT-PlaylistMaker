@@ -37,6 +37,30 @@ ENDPOINT_NAMES: dict[str, str] = {
     CHANNELS_URL: "channels.list",
 }
 
+# Bir aramanin TOPLAM maliyeti: `search.list` (100) + o sonuclar icin birer
+# `videos.list` (1) ve `channels.list` (1) toplu cagrisi.
+UNITS_PER_SEARCH = QUOTA_UNITS[SEARCH_URL] + QUOTA_UNITS[VIDEOS_URL] + QUOTA_UNITS[CHANNELS_URL]
+
+
+def estimate_run_units(subtopic_count: int, queries_per_subtopic: int) -> int:
+    """Bir calistirmanin EN KOTU durumda harcayacagi kota.
+
+    Kabul kontrolu icin (bkz. `SQLiteStore.create_run_within_daily_limit`):
+    calistirma baslamadan once "bugunun butcesi bunu kaldirir mi" sorusunu
+    yanitliyor.
+
+    Bilerek EN KOTU durum: onbellek isabetinde gercek maliyet sifira kadar
+    inebiliyor ama bunu onceden bilmek mumkun degil. Dusuk tahmin, tavani
+    asan ve YouTube'un 403'uyle YARIDA olen bir calistirma demek olurdu --
+    LLM cagrisi da bosa gider. Yuksek tahminin maliyeti yalnizca birkac yuz
+    birimlik kullanilmamis pay.
+
+    Olculdu: 6 alt konu, iki dilli -> 12 arama -> 1224 birim. Bu formul o
+    sayiyi birebir veriyor.
+    """
+    return max(1, subtopic_count) * max(1, queries_per_subtopic) * UNITS_PER_SEARCH
+
+
 # Varsayilan gunluk proje kotasi. Google Cloud Console'dan arttirilabilir;
 # arttirildiysa `YOUTUBE_DAILY_QUOTA_UNITS` ile bildirilir.
 DEFAULT_DAILY_QUOTA_UNITS = 10_000

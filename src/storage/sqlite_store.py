@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,29 @@ DEFAULT_USER_ID = "local"
 # yerinde sema degisikligi bir kez CI'i kirdi (bkz. `_copy_legacy_provider_health`).
 SERVER_SCOPE = "__server__"
 
+
+@dataclass(frozen=True)
+class RunAdmission:
+    """Calistirma kabul edildi mi, edilmediyse NEDEN.
+
+    `bool` yerine nesne: iki farkli ret sebebi var ve cagiranin bunlari
+    ayirmasi sart -- "senin gunluk hakkin doldu" ile "servisin bugunku
+    kapasitesi doldu" kullanici icin bambaska seyler. Yine de `__bool__`
+    tanimli, cunku cagiranlarin cogunu yalnizca kabul edilip edilmedigi
+    ilgilendiriyor.
+    """
+
+    accepted: bool
+    reason: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.accepted
+
+
+ACCEPTED = RunAdmission(True)
+USER_LIMIT = RunAdmission(False, "user_limit")
+SERVICE_BUDGET = RunAdmission(False, "service_budget")
+
 _log = logging.getLogger(__name__)
 
 
@@ -58,22 +82,38 @@ def _utc_now() -> datetime:
 _QUOTA_TZ_NAME = "America/Los_Angeles"
 
 
-def quota_day(moment: datetime | None = None) -> str:
-    """Verilen anin ait oldugu YouTube kota gunu (`YYYY-MM-DD`, Pasifik saati)."""
-    moment = moment or _utc_now()
+def _quota_tz():
     try:
         from zoneinfo import ZoneInfo
 
-        tz = ZoneInfo(_QUOTA_TZ_NAME)
+        return ZoneInfo(_QUOTA_TZ_NAME)
     except Exception:
-        # `tzdata` kurulu degil (cıplak Windows Python'u). Sabit PST'ye dusuyoruz:
-        # yaz saatinde sinir 1 saat kayar ama UTC'ye dusmekten cok daha yakin.
+        # `tzdata` kurulu degil (ciplak Windows Python'u). Sabit PST'ye
+        # dusuyoruz: yaz saatinde sinir 1 saat kayar ama UTC'ye dusmekten cok
+        # daha yakin.
         _log.warning(
             "`%s` saat dilimi bulunamadi (tzdata kurulu mu?); kota gunu sabit UTC-8 ile hesaplaniyor",
             _QUOTA_TZ_NAME,
         )
-        tz = timezone(timedelta(hours=-8))
-    return moment.astimezone(tz).date().isoformat()
+        return timezone(timedelta(hours=-8))
+
+
+def seconds_until_next_quota_day(moment: datetime | None = None) -> int:
+    """Kota gununun donmesine kac saniye kaldi. `Retry-After` icin.
+
+    Kullaniciya "yarin tekrar deneyin" demek yetmiyor: gun siniri Pasifik
+    saatine gore ve Turkiye'den bakan biri icin gun ortasinda donuyor.
+    """
+    moment = moment or _utc_now()
+    tz = _quota_tz()
+    yerel = moment.astimezone(tz)
+    ertesi = (yerel + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(1, int((ertesi - yerel).total_seconds()))
+
+
+def quota_day(moment: datetime | None = None) -> str:
+    """Verilen anin ait oldugu YouTube kota gunu (`YYYY-MM-DD`, Pasifik saati)."""
+    return (moment or _utc_now()).astimezone(_quota_tz()).date().isoformat()
 
 
 def _to_iso(value: datetime) -> str:
@@ -195,7 +235,10 @@ class SQLiteStore:
                     -- Sunucu yeniden baslarken YARIDA kalan calistirmalar.
                     -- Gunluk hak sayiminda haric tutulur: kullanici hicbir sey
                     -- almadan hakkini kaybetmemeli.
-                    interrupted_at TEXT
+                    interrupted_at TEXT,
+                    -- Kabul aninda butceden AYRILAN kota. Calistirma bitince
+                    -- (ya da yarida kaldigi anlasilinca) sifirlanir.
+                    reserved_units INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS run_subtopic (
                     run_id TEXT NOT NULL,
@@ -348,6 +391,9 @@ class SQLiteStore:
             conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
         )
         cls._add_column_if_missing(conn, "run", "interrupted_at", "interrupted_at TEXT")
+        cls._add_column_if_missing(
+            conn, "run", "reserved_units", "reserved_units INTEGER NOT NULL DEFAULT 0"
+        )
         cls._copy_legacy_provider_health(conn)
         cls._collapse_cooldowns_to_server_scope(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
@@ -644,7 +690,7 @@ class SQLiteStore:
         """
         with self.connect() as conn:
             cursor = conn.execute(
-                "UPDATE run SET interrupted_at = ?"
+                "UPDATE run SET interrupted_at = ?, reserved_units = 0"
                 " WHERE result_json IS NULL AND interrupted_at IS NULL",
                 (_to_iso(_utc_now()),),
             )
@@ -663,10 +709,19 @@ class SQLiteStore:
         self, run_id: str, topic: str, filters: dict[str, Any], user_id: str = DEFAULT_USER_ID
     ) -> None:
         with self.connect() as conn:
+            # `INSERT OR REPLACE` DEGIL: is parcacigi calistirmaya baslarken bu
+            # satiri yeniden yaziyor ve REPLACE, kabul aninda ayrilan
+            # `reserved_units` ile `created_at`i sifirlardi -- rezervasyon
+            # kaybolunca butce kontrolu de anlamini yitirirdi. Cakismada
+            # yalnizca istegin tasidigi alanlar guncelleniyor.
             conn.execute(
                 """
-                INSERT OR REPLACE INTO run (run_id, topic, filters_json, created_at, result_json, user_id)
+                INSERT INTO run (run_id, topic, filters_json, created_at, result_json, user_id)
                 VALUES (?, ?, ?, ?, NULL, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    topic = excluded.topic,
+                    filters_json = excluded.filters_json,
+                    user_id = excluded.user_id
                 """,
                 (run_id, topic, json.dumps(filters, ensure_ascii=False), _to_iso(_utc_now()), user_id),
             )
@@ -680,20 +735,29 @@ class SQLiteStore:
         *,
         max_per_day: int,
         within_sec: int = 86400,
-    ) -> bool:
-        """Gunluk siniri kontrol edip satiri AYNI islemde yazar. Sinir asildiysa `False`.
+        max_units_per_day: int = 0,
+        estimated_units: int = 0,
+    ) -> RunAdmission:
+        """Iki tavani birden kontrol edip satiri AYNI islemde yazar.
 
-        `count_recent_runs` + `create_run` ayri iki islem oldugu surece iki es
-        zamanli istek de kontrolu ayni (eski) sayiyla gecip siniri asabiliyordu.
-        `BEGIN IMMEDIATE` yazma kilidini SAYMADAN once aldigi icin ikinci istek,
-        birincinin INSERT'i islenmeden sayima baslayamiyor.
+        1. `max_per_day` -- KULLANICI basina gunluk calistirma (0 = sinirsiz)
+        2. `max_units_per_day` -- SERVIS geneli gunluk kota butcesi (0 = kapali)
 
-        `max_per_day` 0 ise sinir yok; yine de ayni yoldan geciyoruz ki cagiran
-        tarafta iki ayri kod dali olusmasin.
+        Ikisi de burada, tek `BEGIN IMMEDIATE` islemi icinde: sayma ve yazma
+        ayrildigi anda iki es zamanli istek de kontrolu ayni (eski) sayiyla
+        gecip tavani asabiliyor. Kullanici sinirinde bu olculdu -- 3 sinirinda
+        12 es zamanli istekten 11'i kabul ediliyordu. Servis butcesi icin ayni
+        yaris daha da pahali: asildiginda YouTube 403 doner ve o gun HERKES
+        icin biter.
+
+        `estimated_units` EN KOTU durum tahmini (bkz. `estimate_run_units`).
+        Onbellek isabetinde gercek maliyet sifira inebilir ama bunu onceden
+        bilmenin yolu yok; dusuk tahmin, butceyi asip yarida olen bir
+        calistirma demek olurdu.
 
         Ayri bir sayac tablosu YOK: `run` tablosu zaten `user_id` ve
-        `created_at` tasiyor. Ikinci bir kaynak tutmak, ikisinin birbirinden
-        ayrilabilecegi bir yer daha yaratirdi.
+        `created_at`, `api_usage` da gunluk birimleri tasiyor. Ucuncu bir
+        kaynak tutmak, birbirinden ayrilabilecek bir yer daha yaratirdi.
         """
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -705,15 +769,49 @@ class SQLiteStore:
                     (user_id, cutoff),
                 ).fetchone()
                 if (int(row["n"]) if row else 0) >= max_per_day:
-                    return False
+                    return USER_LIMIT
+            if max_units_per_day:
+                spent = int(
+                    conn.execute(
+                        "SELECT COALESCE(SUM(units), 0) AS total FROM api_usage WHERE day = ?",
+                        (quota_day(),),
+                    ).fetchone()["total"]
+                )
+                # UCUSTAKI calistirmalarin ayrilmis kotasi da sayiliyor.
+                #
+                # Yalnizca gerceklesmis harcamaya bakmak YETMIYOR: harcama
+                # kabulden DAKIKALAR sonra olusuyor, dolayisiyla es zamanli
+                # istekler ayni "harcanan" degerini okuyup hepsi geciyordu.
+                # Olculdu: 5 calistirmalik butceye 6 calistirma kabul edildi.
+                reserved = int(
+                    conn.execute(
+                        "SELECT COALESCE(SUM(reserved_units), 0) AS total FROM run"
+                        " WHERE result_json IS NULL AND interrupted_at IS NULL"
+                    ).fetchone()["total"]
+                )
+                # Ucustaki bir calistirma hem rezervasyonunu hem o ana kadarki
+                # gercek harcamasini tasiyor, yani kisa sureligine IKI KEZ
+                # sayiliyor. Bilerek: fazla saymanin bedeli birkac yuz birimlik
+                # kullanilmayan pay, eksik saymanin bedeli o gunu herkes icin
+                # bitiren bir 403.
+                if spent + reserved + estimated_units > max_units_per_day:
+                    return SERVICE_BUDGET
             conn.execute(
                 """
-                INSERT OR REPLACE INTO run (run_id, topic, filters_json, created_at, result_json, user_id)
-                VALUES (?, ?, ?, ?, NULL, ?)
+                INSERT OR REPLACE INTO run
+                    (run_id, topic, filters_json, created_at, result_json, user_id, reserved_units)
+                VALUES (?, ?, ?, ?, NULL, ?, ?)
                 """,
-                (run_id, topic, json.dumps(filters, ensure_ascii=False), _to_iso(_utc_now()), user_id),
+                (
+                    run_id,
+                    topic,
+                    json.dumps(filters, ensure_ascii=False),
+                    _to_iso(_utc_now()),
+                    user_id,
+                    estimated_units,
+                ),
             )
-            return True
+            return ACCEPTED
 
     def add_run_subtopic(self, run_id: str, position: int, payload: dict[str, Any]) -> None:
         with self.connect() as conn:
@@ -737,8 +835,10 @@ class SQLiteStore:
 
     def finalize_run(self, run_id: str, result: PlaylistResult) -> None:
         with self.connect() as conn:
+            # Rezervasyon BURADA birakiliyor: calistirma bitti, artik gercek
+            # harcamasi `api_usage`ta ve iki kez sayilmasina gerek yok.
             conn.execute(
-                "UPDATE run SET result_json = ? WHERE run_id = ?",
+                "UPDATE run SET result_json = ?, reserved_units = 0 WHERE run_id = ?",
                 (json.dumps(result.model_dump(), ensure_ascii=False), run_id),
             )
 

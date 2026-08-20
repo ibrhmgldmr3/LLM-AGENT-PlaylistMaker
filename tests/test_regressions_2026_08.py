@@ -57,7 +57,7 @@ def test_daily_limit_holds_under_concurrent_requests(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert sum(accepted) == limit
+    assert sum(1 for karar in accepted if karar) == limit
     assert len(store.list_runs(user_id="ali", limit=100, offset=0)) == limit
 
 
