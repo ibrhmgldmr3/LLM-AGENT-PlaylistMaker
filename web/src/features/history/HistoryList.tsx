@@ -14,6 +14,14 @@ export function HistoryList({ onOpen }: { onOpen: (runId: string) => void }) {
     api
       .listRuns(PAGE_SIZE, nextOffset)
       .then((body) => {
+        // Bos sayfa + sifirdan buyuk offset = sayfanin son ogesi silinmis.
+        // Eskiden burada durulup "Henuz calistirma yok" gosteriliyordu; ayni
+        // kosul sayfalama dugmelerini de gizledigi icin onceki sayfadaki
+        // calistirmalara donus yolu KALMIYORDU. Bir sayfa geri kayip tekrar dene.
+        if (body.items.length === 0 && nextOffset > 0) {
+          load(Math.max(0, nextOffset - PAGE_SIZE));
+          return;
+        }
         setItems(body.items);
         setTotal(body.total);
         setOffset(body.offset);
