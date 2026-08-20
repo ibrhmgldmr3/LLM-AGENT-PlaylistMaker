@@ -18,6 +18,11 @@ export default function App() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [openedResult, setOpenedResult] = useState<PlaylistResult | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  // `createRun` yaniti donene KADAR true. `run.state` tek basina yetmiyordu:
+  // istek ucusta iken hicbir sey "calisiyor" gorunmuyor, hizli cift tiklama
+  // ya da yavas ag iki AYRI sunucu calistirmasi baslatiyor ve ikincisi
+  // izlenmedigi icin sahipsiz kaliyordu.
+  const [submitting, setSubmitting] = useState(false);
 
   const run = useRunStream();
 
@@ -36,13 +41,15 @@ export default function App() {
     (payload: CreateRunRequest) => {
       setSubmitError(null);
       setOpenedResult(null);
+      setSubmitting(true);
       api
         .createRun(payload)
         .then((accepted) => run.watch(accepted.run_id))
         .catch((error: ApiError) => {
           const suffix = error.retryAfter ? ` (${error.retryAfter} sn sonra tekrar deneyin)` : "";
           setSubmitError(error.message + suffix);
-        });
+        })
+        .finally(() => setSubmitting(false));
     },
     [run],
   );
@@ -54,7 +61,10 @@ export default function App() {
     });
   }, []);
 
-  const busy = run.state === "running";
+  // Form kilidi istegin GONDERILDIGI anda basliyor (cift gonderim korumasi);
+  // ilerleme paneli ise ancak gercek bir calistirma varken anlamli.
+  const busy = submitting || run.state === "running";
+  const running = run.state === "running";
   const shownResult = openedResult ?? run.result;
 
   return (
@@ -112,7 +122,7 @@ export default function App() {
             </p>
           )}
 
-          {busy && (
+          {running && (
             <RunProgress
               progress={run.progress}
               stage={run.stage}
