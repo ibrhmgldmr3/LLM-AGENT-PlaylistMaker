@@ -18,6 +18,24 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Oturum dustugunde cagrilir.
+ *
+ * Merkezi olmasinin sebebi: oturum durumu uygulama ACILIRKEN bir kez
+ * ogreniliyordu. Cerez sonradan duserse (14 gunluk omur dolar, kullanici
+ * temizler, sunucu oturumu siler) arayuz uygulamayi gostermeye devam ediyor
+ * ama her istek 401 aliyordu -- giris ekrani gelmiyor, kullanicinin sayfayi
+ * elle yenilemesi gerekiyordu.
+ *
+ * Her cagriya tek tek eklenmedi: 401 herhangi bir uctan gelebilir ve her
+ * cagiranin bunu hatirlamasi gerekmemeli.
+ */
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -25,6 +43,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
+    // `/api/auth/me` ve `/api/config` oturumsuzken de 200 donuyor, dolayisiyla
+    // buraya dusen bir 401 gercekten "oturum gitti" demek.
+    if (response.status === 401) onUnauthorized?.();
     // API hatalari `{ detail, code }` seklinde donuyor.
     let detail = `${response.status} ${response.statusText}`;
     try {
