@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.deps import get_server_config
+from api.routers import admin as admin_router
 from api.routers import auth as auth_router
 from api.routers import config as config_router
 from api.routers import runs as runs_router
@@ -105,6 +106,7 @@ app.include_router(runs_router.router)
 app.include_router(config_router.router)
 app.include_router(auth_router.router)
 app.include_router(auth_router.session_router)
+app.include_router(admin_router.router)
 
 
 @app.get("/api/health", tags=["meta"])
