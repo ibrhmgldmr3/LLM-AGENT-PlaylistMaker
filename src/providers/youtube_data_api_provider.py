@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -21,6 +21,25 @@ from src.utils.logging_utils import redact_secrets
 SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+
+# Kota maliyetleri (birim/cagri). Google'in resmi listesi; `search.list`
+# digerlerinden 100 KAT pahali ve gunluk kotanin pratikte tamamini o yiyor.
+QUOTA_UNITS: dict[str, int] = {
+    SEARCH_URL: 100,
+    VIDEOS_URL: 1,
+    CHANNELS_URL: 1,
+}
+
+# Raporlamada kullanilan uc adlari (URL yerine okunabilir etiket).
+ENDPOINT_NAMES: dict[str, str] = {
+    SEARCH_URL: "search.list",
+    VIDEOS_URL: "videos.list",
+    CHANNELS_URL: "channels.list",
+}
+
+# Varsayilan gunluk proje kotasi. Google Cloud Console'dan arttirilabilir;
+# arttirildiysa `YOUTUBE_DAILY_QUOTA_UNITS` ile bildirilir.
+DEFAULT_DAILY_QUOTA_UNITS = 10_000
 
 # YouTube Data API sinirlari
 MAX_SEARCH_RESULTS = 50
@@ -71,6 +90,14 @@ class YouTubeDataAPIProvider:
     config: AppConfig
 
     name: str = "youtube_data_api"
+
+    # Her BASARILI API cagrisinda `(uc_adi, kota_birimi)` ile cagrilir.
+    #
+    # Geri cagri olarak alinmasinin sebebi: sayaci yazacak olan `SQLiteStore` ve
+    # cagriyi yapan kullanicinin kimligi bu katmanda YOK ve buraya tasinmasi
+    # saglayiciyi depolama katmanina baglardi. Cagiran taraf (arama servisi)
+    # ikisine de sahip, dolayisiyla baglanti orada kuruluyor.
+    usage_recorder: Callable[[str, int], None] | None = None
 
     def is_configured(self) -> bool:
         return bool(self.config.youtube_data_api_key)
@@ -189,10 +216,27 @@ class YouTubeDataAPIProvider:
 
         if response.status_code >= 400:
             raise self._classify_error(response, label)
+
+        # Kota yalnizca BASARILI yanitlarda sayiliyor. Kotasi dolmus (403
+        # quotaExceeded) bir istek Google tarafindan da ucretlendirilmiyor;
+        # 4xx'leri saymak, dolan kotayi bir de biz sisirmek olurdu.
+        self._record_usage(url)
+
         try:
             return response.json()
         except ValueError as exc:
             raise ProviderTemporaryError(f"YouTube Data API {label} returned invalid JSON") from exc
+
+    def _record_usage(self, url: str) -> None:
+        """Tuketimi bildirir; olcum hatasi ISI dusurmemeli."""
+        if self.usage_recorder is None:
+            return
+        try:
+            self.usage_recorder(ENDPOINT_NAMES.get(url, url), QUOTA_UNITS.get(url, 0))
+        except Exception:
+            # Sayac yazilamadi diye arama basarisiz sayilmaz: olcum, islevin
+            # kendisinden daha az onemli.
+            pass
 
     def _classify_error(self, response: requests.Response, label: str) -> Exception:
         """HTTP durumunu ve API'nin `reason` alanini kullanarak kalici/gecici ayrimi yapar.

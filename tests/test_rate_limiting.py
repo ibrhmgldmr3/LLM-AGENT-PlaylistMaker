@@ -179,8 +179,8 @@ def test_search_rate_limit_is_not_retried_and_cools_down(tmp_path, monkeypatch):
     store = SQLiteStore(config.sqlite_path)
     primary = _RateLimitedProvider()
 
-    monkeypatch.setattr(search_service, "YouTubeDataAPIProvider", lambda c: primary)
-    monkeypatch.setattr(search_service, "YtDlpProvider", lambda c: _OkProvider())
+    monkeypatch.setattr(search_service, "YouTubeDataAPIProvider", lambda c, **kwargs: primary)
+    monkeypatch.setattr(search_service, "YtDlpProvider", lambda c, **kwargs: _OkProvider())
 
     result = search_service.search_candidates(config, store, "q", FilterOptions())
 

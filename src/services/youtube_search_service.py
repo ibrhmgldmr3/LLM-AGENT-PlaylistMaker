@@ -29,7 +29,16 @@ def search_candidates(
     saglayiciya gecilir. Onceki surum bos listeyi dondurup 6 saat onbellekliyor ve
     yt-dlp yedegini tamamen devre disi birakiyordu.
     """
-    providers = [YouTubeDataAPIProvider(config), YtDlpProvider(config)]
+    # Kota sayaci BURADA baglaniyor: `store` ve `user_id` yalnizca bu katmanda
+    # birlikte var. Onbellek isabetlerinde saglayici hic cagrilmadigi icin
+    # sayac da hic artmiyor -- olcum bu sayede gercek tuketimi gosteriyor.
+    def _record(endpoint: str, units: int) -> None:
+        store.record_api_usage(user_id, YouTubeDataAPIProvider.name, endpoint, units)
+
+    providers = [
+        YouTubeDataAPIProvider(config, usage_recorder=_record),
+        YtDlpProvider(config),
+    ]
     provider_errors: list[str] = []
 
     for provider in providers:

@@ -39,8 +39,8 @@ class FakeProvider:
 
 
 def _install(monkeypatch, primary, fallback):
-    monkeypatch.setattr(search_service, "YouTubeDataAPIProvider", lambda config: primary)
-    monkeypatch.setattr(search_service, "YtDlpProvider", lambda config: fallback)
+    monkeypatch.setattr(search_service, "YouTubeDataAPIProvider", lambda config, **kwargs: primary)
+    monkeypatch.setattr(search_service, "YtDlpProvider", lambda config, **kwargs: fallback)
 
 
 def _candidate(video_id="v1"):

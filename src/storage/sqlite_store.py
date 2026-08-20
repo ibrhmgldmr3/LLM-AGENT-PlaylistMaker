@@ -36,6 +36,32 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# YouTube Data API kotasi UTC'de DEGIL, Pasifik saatiyle gece yarisi sifirlaniyor.
+# Gunu UTC'ye gore kovalamak, Turkiye saatiyle aksamustu "kotam doldu" derken
+# Google'a gore gunun coktan donmus olmasi (ya da tersi) demekti -- 10 saate varan
+# kayma. Tuketim raporunun tek isi bu soruyu dogru yanitlamak oldugu icin gun
+# siniri Google'in kullandigi saate gore hesaplaniyor.
+_QUOTA_TZ_NAME = "America/Los_Angeles"
+
+
+def quota_day(moment: datetime | None = None) -> str:
+    """Verilen anin ait oldugu YouTube kota gunu (`YYYY-MM-DD`, Pasifik saati)."""
+    moment = moment or _utc_now()
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(_QUOTA_TZ_NAME)
+    except Exception:
+        # `tzdata` kurulu degil (cıplak Windows Python'u). Sabit PST'ye dusuyoruz:
+        # yaz saatinde sinir 1 saat kayar ama UTC'ye dusmekten cok daha yakin.
+        _log.warning(
+            "`%s` saat dilimi bulunamadi (tzdata kurulu mu?); kota gunu sabit UTC-8 ile hesaplaniyor",
+            _QUOTA_TZ_NAME,
+        )
+        tz = timezone(timedelta(hours=-8))
+    return moment.astimezone(tz).date().isoformat()
+
+
 def _to_iso(value: datetime) -> str:
     # Sabit hassasiyet: mikrosaniyeli/mikrosaniyesiz karisimi sozluksel
     # karsilastirmayi bozuyordu. Artik karsilastirma Python tarafinda yapiliyor
@@ -172,6 +198,15 @@ class SQLiteStore:
                     token_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, provider)
+                );
+                CREATE TABLE IF NOT EXISTS api_usage (
+                    day TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    calls INTEGER NOT NULL DEFAULT 0,
+                    units INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (day, user_id, provider, endpoint)
                 );
                 CREATE TABLE IF NOT EXISTS session (
                     token_hash TEXT PRIMARY KEY,
@@ -517,6 +552,102 @@ class SQLiteStore:
                 "UPDATE run SET result_json = ? WHERE run_id = ?",
                 (json.dumps(result.model_dump(), ensure_ascii=False), run_id),
             )
+
+    # ------------------------------------------------------------ kota olcumu
+    #
+    # Neden GERCEK cagrilar sayiliyor da "calistirma sayisi x 1.200" tahmini
+    # kullanilmiyor: arama sonuclari 6 saat onbellekleniyor (`search_cache`),
+    # yani ayni konuyu tekrar isleyen bir calistirma SIFIR kota harciyor.
+    # Tahmin, gercekte harcanmayan kotayi harcanmis gosterip "hakkim doldu mu"
+    # sorusunu yanlis yanitlardi.
+
+    def record_api_usage(
+        self, user_id: str, provider: str, endpoint: str, units: int, day: str | None = None
+    ) -> None:
+        """Bir API cagrisini gunluk sayaca ekler.
+
+        Cagri BASARILI olduğunda cagriliyor; dolayisiyla rapor bir ALT SINIR.
+        Kotasi dolmus (403) bir istek Google tarafindan da ucretlendirilmiyor,
+        yani alt sinir pratikte gercege cok yakin.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO api_usage (day, user_id, provider, endpoint, calls, units)
+                VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(day, user_id, provider, endpoint) DO UPDATE SET
+                    calls = calls + 1,
+                    units = units + excluded.units
+                """,
+                (day or quota_day(), user_id, provider, endpoint, int(units)),
+            )
+
+    def sum_api_units(self, user_id: str | None = None, day: str | None = None) -> int:
+        """Bir kota gununde harcanan toplam birim. `user_id=None` = tum kullanicilar."""
+        sql = "SELECT COALESCE(SUM(units), 0) AS total FROM api_usage WHERE day = ?"
+        params: list[Any] = [day or quota_day()]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        with self.connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return int(row["total"]) if row else 0
+
+    def get_api_usage(self, day: str | None = None) -> list[dict[str, Any]]:
+        """Bir kota gununun tuketim dokumu; cok harcayandan aza dogru."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id, provider, endpoint, calls, units
+                FROM api_usage WHERE day = ?
+                ORDER BY units DESC, endpoint
+                """,
+                (day or quota_day(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_runs_since(self, user_id: str, within_sec: int = 86400) -> int:
+        """Son `within_sec` saniyede bu kullanicinin baslattigi calistirma sayisi.
+
+        Yalnizca RAPORLAMA icin. Gunluk siniri UYGULAYAN yol bu degil --
+        o kontrol `create_run_within_daily_limit` icinde, yazmayla ayni islemde
+        yapiliyor (bkz. oradaki TOCTOU aciklamasi). Ikisi bilerek ayri: burada
+        yarisa duyarli olmayan bir okuma yeterli.
+        """
+        cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM run WHERE user_id = ? AND created_at >= ?",
+                (user_id, cutoff),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_runs_by_user_since(self, within_sec: int = 86400) -> list[dict[str, Any]]:
+        cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id, COUNT(*) AS runs FROM run
+                WHERE created_at >= ? GROUP BY user_id ORDER BY runs DESC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_active_cooldowns(self) -> list[dict[str, Any]]:
+        """Su an devre disi olan saglayicilar. Suresi gecmis satirlar elenir."""
+        now = _to_iso(_utc_now())
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id, provider, cooldown_until, last_error, failure_count
+                FROM provider_cooldown
+                WHERE cooldown_until IS NOT NULL AND cooldown_until > ?
+                ORDER BY cooldown_until DESC
+                """,
+                (now,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------- sifre cozme yardimcisi
 
