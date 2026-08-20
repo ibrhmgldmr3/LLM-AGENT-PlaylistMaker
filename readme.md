@@ -34,7 +34,7 @@ the API serves the built frontend from `web/dist`, so a single process is enough
 |---|---|
 | Python | **3.13** — the version CI tests and development targets. 3.11/3.12 should work but are not verified. |
 | **An LLM key** | Gemini **or** Together.ai — `LLM_PROVIDER` selects which, and only that one's key is read |
-| YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used |
+| YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used. **Its daily quota is the binding constraint for a shared deployment** — see below |
 | YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
 | A JS runtime (`node`) | needed for audio download; see below |
 | `ffmpeg` | needed only when ASR is enabled |
@@ -237,7 +237,69 @@ chain — configured model → `gemini-3.7-flash` → `gemini-flash-latest` → 
 and retries without `thinking_config` for models that reject it.
 
 **Secrets** are redacted from logs and user-facing warnings: the YouTube API key travels as
-a query parameter, so exception text can contain it.
+a query parameter, so exception text can contain it. That includes the one path a caught
+exception can still reach a client through — a failed job's `error` field, which feeds both
+`GET /api/runs/{id}` and the SSE `done` event.
+
+---
+
+## Running it for more than one person
+
+`AUTH_MODE` decides the shape of the deployment:
+
+| Mode | Who the request belongs to |
+|---|---|
+| `single_user` (default) | everyone is `local`; no session cookie, no sign-in |
+| `multi_user` | a Google sign-in is required; the session cookie identifies the user |
+
+`multi_user` exists to know *who* is asking — for the daily limits and for personal YouTube
+publishing consent. It has nothing to do with keys; those are shared in both modes.
+
+### The quota arithmetic, which decides everything else
+
+One run costs roughly **1,224 quota units** — measured, not estimated: 6 subtopics × 2
+queries (bilingual discovery) × 102 units per search (`search.list` 100 + `videos.list` 1 +
+`channels.list` 1). A Google Cloud project gets **10,000 units per day** by default.
+
+> **≈ 8 runs per day, for all users combined.**
+
+That number, not CPU or memory, is what limits how many people this can serve. Two ceilings
+guard it, and they answer different questions:
+
+| Setting | Question it answers |
+|---|---|
+| `MAX_RUNS_PER_USER_PER_DAY` | "has this person had their share?" |
+| `MAX_UNITS_PER_DAY` | "does the service have capacity left at all?" |
+
+Both are enforced inside the same transaction that writes the run row. Splitting the check
+from the write lets concurrent requests pass the same stale count — measured, the per-user
+limit admitted 11 runs against a limit of 3, and the service budget admitted 2.1× its cap.
+
+The budget check also **reserves** the estimated cost at admission time rather than only
+reading what has been spent. Actual spend lands minutes later, while the run is still
+working; a check that reads only spend lets every in-flight run pass against the same
+figure. The reservation is released when the run finishes or is found interrupted.
+
+The estimate is deliberately worst-case. Cached searches can make a run cost nothing, but
+that is unknowable in advance, and under-estimating means a run dies mid-way on a `403`
+with the LLM call already paid for.
+
+**Raising the quota** is the real fix for a public deployment: request an increase in Google
+Cloud Console (YouTube Data API → Quotas). Set `YOUTUBE_DAILY_QUOTA_UNITS` to the new figure
+afterwards — no code changes, and both ceilings scale with it.
+
+### Watching it
+
+`GET /api/admin/usage` reports the day's real consumption, the per-endpoint breakdown,
+per-user totals, runs in the last 24 hours, active provider cooldowns, and the day's
+rate-limit events. Access is governed by `ADMIN_USER_IDS`; in `single_user` mode it is
+always open, and in `multi_user` mode an **empty list closes it to everyone** — the report
+carries user identities, so the failure mode of forgetting to configure it should be a
+locked door rather than an open one.
+
+The quota day follows **Pacific time**, because that is when Google resets it. `Retry-After`
+on a 429 points at that reset, which from most of the world lands in the middle of the day
+rather than at midnight.
 
 ---
 
@@ -262,9 +324,11 @@ installed — the existing `requests` dependency carries it. Both providers shar
 prompt and one field contract; only the schema *dialect* differs (Gemini wants
 uppercase types, OpenAI-compatible endpoints want standard JSON Schema).
 
-In multi-user mode the provider follows the key the user saved: enter a Together key
-and Together is used, otherwise Gemini. There is no separate "pick a provider" control
-— with no key the choice is meaningless, and with one key it is already decided.
+Keys are **server-side and shared**. Users never enter an API key — `LLM_PROVIDER` and the
+keys below apply to every request regardless of who made it. An earlier design had each user
+bring their own key; that was reversed because asking someone to create a Google Cloud
+project before their first playlist is a wall, not an onboarding step. The cost moved to
+whoever runs the server, which is why the daily ceilings below exist.
 
 ### Models and discovery
 
@@ -296,6 +360,18 @@ and Together is used, otherwise Gemini. There is no separate "pick a provider" c
 | `WHISPER_CPP_TIMEOUT_SEC` | `1800` |
 | `FFMPEG_PATH` | — |
 
+### Study notes
+
+Off by default. When enabled, each selected video that has a transcript gets a short study
+note written from that transcript — one extra LLM call per selected video, which is why it
+is opt-in rather than automatic. The run form exposes it as a checkbox; the request body
+can override the server default per run.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ENABLE_STUDY_NOTES` | `false` | one additional LLM call per selected video |
+| `STUDY_NOTE_TRANSCRIPT_CHAR_LIMIT` | `24000` | transcript is truncated to this before prompting |
+
 ### yt-dlp
 
 | Variable | Default | Notes |
@@ -324,6 +400,23 @@ Google Cloud client must be of type **Web application**, with
 > Tokens are encrypted at rest when `SECRET_ENCRYPTION_KEY` is set (generate one with
 > `python -m src.storage.crypto`). Without a key they are stored in plaintext. Adding a key
 > later is safe — existing plaintext rows keep working and are encrypted on next write.
+
+### Multi-user, limits, and quota
+
+| Variable | Default | Notes |
+|---|---|---|
+| `AUTH_MODE` | `single_user` | `single_user` \| `multi_user` (Google sign-in) |
+| `SESSION_TTL_SEC` | `1209600` (14 d) | session cookie lifetime |
+| `MAX_RUNS_PER_USER_PER_DAY` | `0` | per user; `0` = unlimited. **`3` is recommended for `multi_user`** |
+| `MAX_UNITS_PER_DAY` | — | service-wide quota ceiling; empty = the project quota below |
+| `YOUTUBE_DAILY_QUOTA_UNITS` | `10000` | tell it here if you had the quota raised |
+| `ADMIN_USER_IDS` | — | comma-separated ids that may read `/api/admin/usage`. Empty in `multi_user` = nobody |
+
+Leaving `MAX_RUNS_PER_USER_PER_DAY` at `0` in `multi_user` mode lets one signed-in user
+drain the shared quota for everyone; the server logs a warning about that combination at
+startup rather than failing, since a closed deployment may want it.
+
+To find your own id for `ADMIN_USER_IDS`, sign in and call `GET /api/auth/me`.
 
 ### Concurrency, retries, caching
 
@@ -361,13 +454,28 @@ SQLite state lives at `data/cache/app.db`:
 |---|---|
 | `search_cache` | search results per provider/query/filters |
 | `transcript_cache` | transcripts and per-video failures |
-| `provider_health` | cooldowns and consecutive-failure counters |
+| `provider_cooldown` | cooldowns and consecutive-failure counters, **server-wide** |
 | `run`, `run_subtopic`, `run_video` | run history, scoped by `user_id` |
+| `session` | sign-in sessions; the token is stored as a SHA-256 digest, never in the clear |
 | `oauth_token` | YouTube OAuth tokens, per user, encrypted when a key is set |
+| `api_usage` | quota units spent per day, per user, per endpoint |
+| `provider_event` | per-day counts of rate limits, failures and cooldowns |
 
-Expired rows are purged at the end of each run. The cache key carries a schema version, so
-changing the candidate model invalidates stale entries automatically instead of serving
-records that are missing new fields.
+Cooldowns are **not** scoped per user, despite the run history being. Every limit they
+guard against is shared: `yt-dlp` and the transcript API are throttled by the server's IP,
+and the Data API key is one key for everyone. Scoped per user, the second person was simply
+unprotected — they walked into the same limit from the same address and typically extended
+it. A success clears the failure streak but does not cancel an unexpired rate-limit
+cooldown; a lucky request does not override a server that asked for a pause.
+
+Expired rows are purged at the end of each run — caches, finished sessions, and daily
+counters older than 90 days. The cache key carries a schema version, so changing the
+candidate model invalidates stale entries automatically instead of serving records that are
+missing new fields.
+
+**Deleting a run deletes its files too.** A run lives in two places, and for a long time
+only the database half was removed: the study plan and result JSON stayed on disk after the
+user pressed delete. Directories left behind by crashes are collected at startup.
 
 ---
 
@@ -375,11 +483,11 @@ records that are missing new fields.
 
 ```
 api/                        FastAPI layer — the application entry point
-  main.py                   app, CORS, provider-error → HTTP mapping
-  deps.py                   current user (stub), config composition, job runner
+  main.py                   app, CORS, provider-error → HTTP mapping, startup housekeeping
+  deps.py                   current user (session or single-user), admin guard, config composition
   schemas.py                request/response contracts
   sse.py                    Server-Sent Events for live progress
-  routers/                  runs, config
+  routers/                  runs, config, auth, admin
 web/                        React + Vite + TypeScript frontend
   src/api/                  typed client
   src/hooks/useRunStream.ts EventSource wrapper for live progress
@@ -391,7 +499,7 @@ src/
   models/domain.py          pydantic domain models
   providers/                external systems, one module each
     errors.py               temporary / rate-limited / permanent / video-level
-    llm_provider.py         Gemini, with a model fallback chain
+    llm_provider.py         Gemini and Together.ai, with a model fallback chain
     youtube_data_api_provider.py
     ytdlp_provider.py       search, subtitles, audio download
     youtube_transcript_api_provider.py
@@ -402,10 +510,12 @@ src/
     metadata_ranker.py      scoring
     recommendation_service.py  global assignment
     topic_service.py / transcript_service.py / playlist_publish_service.py
-  storage/sqlite_store.py   cache, provider health, run history, OAuth tokens
+    run_retention.py        deleting a run from the database AND from disk
+  storage/sqlite_store.py   cache, provider cooldowns, run history, OAuth tokens, quota counters
+  storage/crypto.py         at-rest encryption for stored OAuth tokens
   jobs/                     JobRunner abstraction (in-process today)
   utils/                    text, retry, logging, yt-dlp options
-tests/                      218 tests
+tests/                      359 tests
 ```
 
 ## Tests
@@ -414,7 +524,7 @@ tests/                      218 tests
 pytest -q
 ```
 
-287 backend tests, no network access, under 10 seconds. Each significant bug fixed in this codebase
+359 backend tests, no network access, around ten seconds. Each significant bug fixed in this codebase
 has a regression test named after the behaviour it locks in. The suite runs without a `.env`
 and without any API key — CI has neither.
 
@@ -422,7 +532,7 @@ and without any API key — CI has neither.
 cd web && npm test
 ```
 
-20 frontend tests. Most cover `useRunStream` — the SSE hook, which holds the most intricate
+47 frontend tests. Most cover `useRunStream` — the SSE hook, which holds the most intricate
 logic on that side. They run against a fake `EventSource`, which is what makes them
 deterministic: the test decides when `progress`, `done`, or a bodiless `error` arrives, so
 nothing waits on a timer. The fake mirrors the browser contract in two details that matter —
