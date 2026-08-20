@@ -491,17 +491,24 @@ def _collect_env_warnings() -> list[str]:
 
 
 def load_config() -> AppConfig:
-    dotenv_path = find_dotenv(usecwd=True)
+    # Iki arama BILEREK zincirli: `usecwd=True` calisma dizininden yukari arar,
+    # parametresiz cagri BU dosyadan (settings.py) yukari arar. Ikincisi, sunucu
+    # proje kokunun disindan baslatildiginda `.env`'i yine de buluyor.
+    #
+    # Eskiden yedek yol `load_dotenv()`'i PARAMETRESIZ cagiriyordu ve bu, ayni
+    # aramayi python-dotenv'in kendi icinde yaptiriyordu: bulunan dosya
+    # `_check_dotenv_encoding`'i HIC gormeden yukleniyordu -- yani fonksiyonun
+    # tam da engellemek icin var oldugu durum yedek yoldan sizabiliyordu.
+    # Artik once YOL cozuluyor, sonra kontrol edilen dosyanin AYNISI yukleniyor.
+    dotenv_path = find_dotenv(usecwd=True) or find_dotenv()
     if dotenv_path:
         _check_dotenv_encoding(dotenv_path)
-    try:
-        # Cozulen yolu ACIKCA gecir: kontrol ettigimiz dosya ile yuklenen dosya
-        # ayni olsun (ve testler gecici bir `.env`'i hedefleyebilsin).
-        load_dotenv(dotenv_path) if dotenv_path else load_dotenv()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"`.env` dosyası okunamadı ({exc}). Dosyanın UTF-8 kodlu olduğundan emin olun."
-        ) from exc
+        try:
+            load_dotenv(dotenv_path)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"`.env` dosyası okunamadı ({exc}). Dosyanın UTF-8 kodlu olduğundan emin olun."
+            ) from exc
     values: dict[str, str] = {}
     for env_name, field_name in ENV_TO_FIELD.items():
         raw = os.getenv(env_name)

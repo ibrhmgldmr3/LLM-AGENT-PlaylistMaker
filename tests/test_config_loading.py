@@ -73,3 +73,26 @@ def test_missing_env_file_is_not_an_error(tmp_path, monkeypatch):
     config = load_config()
 
     assert config.gemini_api_key == "abc"
+
+
+def test_missing_env_file_does_not_fall_back_to_an_unchecked_file(tmp_path, monkeypatch):
+    """`.env` bulunamayinca KONTROL EDILMEMIS bir dosyaya dusmemeli.
+
+    Yedek yol eskiden `load_dotenv()`'i parametresiz cagiriyordu; python-dotenv
+    de aramayi kendi icinde, `settings.py`'den yukari yuruyerek yapiyordu.
+    Bulunan dosya `_check_dotenv_encoding`'i HIC gormeden yukleniyordu.
+
+    Yan etkisi test paketinde gorundu: bu dosyadaki "eksik .env" testi aslinda
+    GELISTIRICININ gercek `.env`'ini okuyordu ve o dosyaya UTF-16 bir satir
+    eklenince (PowerShell `>>`) alakasiz bir testin dusmesine yol acti.
+    """
+    yuklenenler: list[tuple] = []
+    monkeypatch.setattr(settings, "find_dotenv", lambda usecwd=True: "")
+    monkeypatch.setattr(settings, "load_dotenv", lambda *args, **kwargs: yuklenenler.append(args))
+    monkeypatch.setenv("GEMINI_API_KEY", "abc")
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config()
+
+    assert yuklenenler == [], "hicbir `.env` bulunamadiginda hicbiri yuklenmemeli"
+    assert config.gemini_api_key == "abc"
