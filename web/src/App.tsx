@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError } from "./api/client";
+import { api, ApiError, setUnauthorizedHandler } from "./api/client";
 import type { Capabilities, CreateRunRequest, PlaylistResult } from "./api/types";
 import { useRunStream } from "./hooks/useRunStream";
 import { RunForm } from "./features/run/RunForm";
@@ -29,6 +29,15 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
+
+  // Herhangi bir uctan 401 gelirse oturum durumunu YENIDEN ogren. `me()` 401
+  // donmuyor (oturumsuzken `signed_in: false` doner), yani burada dongu yok.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      api.me().then(setSession).catch(() => setSession(null));
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   useEffect(() => {
     api.capabilities().then(setCapabilities).catch(() => setCapabilities(null));

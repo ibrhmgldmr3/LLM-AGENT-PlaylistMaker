@@ -68,7 +68,8 @@ def test_purge_expired_removes_only_stale_rows(tmp_path):
 
     removed = store.purge_expired()
 
-    assert removed >= 1
+    assert sum(removed.values()) >= 1
+    assert removed["search_cache"] >= 1
     assert store.get_search_cache("p", "fresh", filters.model_dump()) is not None
     assert store.get_transcript_cache("keepme12345", "p") is not None
 

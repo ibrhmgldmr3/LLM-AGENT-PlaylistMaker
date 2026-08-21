@@ -113,8 +113,29 @@ export function useRunStream() {
           close();
           const data = JSON.parse(raw);
           setState((previous) => ({ ...previous, state: "failed", error: data.detail }));
+          // Sunucunun kendi mesaji daha bilgilendirici; asagidaki genel
+          // metinle EZILMEMELI.
+          return;
         }
-        // Govdesiz `error` baglanti kopmasidir; EventSource kendisi yeniden dener.
+        // Govdesiz `error`: ya gecici kopma ya da KALICI kapanma. Ikisini
+        // `readyState` ayiriyor -- gecici kopmada tarayici CONNECTING'e donup
+        // kendisi yeniden deniyor, sunucu 200 disi yanit verdiginde (oturum
+        // dustu ve 401 geldi, sunucu kapandi) baglanti CLOSED oluyor ve bir
+        // daha denenmiyor.
+        //
+        // Eskiden ikisi de sessizce yok sayiliyordu: kalici kapanmada arayuz
+        // SONSUZA KADAR "calisiyor"da asili kaliyor, ilerleme cubugu donuyor
+        // ve kullaniciya hicbir sey olmadigini soyleyen bir sey yoktu.
+        if (source.readyState === 2 /* EventSource.CLOSED */) {
+          close();
+          setState((previous) => ({
+            ...previous,
+            state: "failed",
+            error:
+              "Çalıştırma akışıyla bağlantı kesildi. Oturumunuz düşmüş olabilir; " +
+              "sayfayı yenileyip geçmişten kontrol edin.",
+          }));
+        }
       });
     },
     [close],

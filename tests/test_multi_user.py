@@ -12,6 +12,7 @@ import sqlite3
 import pytest
 
 from src.storage import SQLiteStore
+from src.storage.sqlite_store import SERVER_SCOPE
 
 KEY = "k" * 44
 
@@ -299,44 +300,101 @@ def test_logout_revokes_the_session_on_the_server(multi_user_client):
 
 
 # ------------------------------------------------ saglayici sagligi kapsami
+#
+# KAPSAM BIR KEZ TERSINE DONDU. Once kurulum geneliydi, sonra kullanici basina
+# cekildi (BYOK: herkes kendi anahtarini getiriyordu, dolayisiyla kotalar
+# gercekten ayrisiyordu), simdi yeniden SUNUCU GENELI.
+#
+# Sebep: BYOK kaldirildi. Bugun sogumanin korudugu her sinir paylasimli --
+# `yt_dlp` ve `youtube_transcript_api` sunucunun IP'sine, `youtube_data_api`
+# ise paylasimli proje anahtarina bagli. Kullanici basina kapsamda ikinci
+# kullanici hic korunmuyor, ayni sinira yeniden giriyor ve engeli uzatiyordu.
 
-def test_one_users_cooldown_does_not_affect_others(store):
-    """Regresyon: `provider_health` KURULUM GENELINDE tutuluyordu.
 
-    Birincil anahtar yalnizca `provider` idi. Bir kullanicinin kota asimi ya da
-    art arda hatalari saglayiciyi sogutunca DIGER HERKESIN aramasi da duruyordu.
-    Tek kullanicili kurulumda goze batmiyordu; ikinci kullanici gelir gelmez
-    somut bir hata.
+def test_a_cooldown_protects_every_user(store):
+    """Sinir PAYLASIMLI oldugu icin koruma da paylasimli olmali.
+
+    Kullanici basina kapsamda olculdu: Ali `yt_dlp`'de sogumaya girse bile
+    Veli AYNI SUNUCU IP'sinden gidiyor ve ayni sinira tekrar takiliyordu --
+    bu tipik olarak engeli uzatiyor.
     """
-    store.mark_provider_cooldown("youtube", "kota asildi", 900, user_id="ali")
+    store.mark_provider_cooldown("yt_dlp", "429 Too Many Requests", 900)
 
-    assert store.get_provider_cooldown("youtube", user_id="ali") is not None
-    assert store.get_provider_cooldown("youtube", user_id="veli") is None
+    assert store.get_provider_cooldown("yt_dlp") is not None
 
 
-def test_failure_counters_are_counted_per_user(store):
-    """Esik sayaci da ayri: birinin hatalari digerini esige yaklastirmamali."""
+def test_failure_counters_are_server_wide(store):
+    """Ardisik hata sayaci da sunucu geneli.
+
+    Buraya dusen hatalar ALTYAPI hatalari: videoya ozgu kalici durumlar
+    (`VideoUnavailableError`) cagiran tarafta ayri yakalaniyor ve saglayiciyi
+    hic cezalandirmiyor. Altyapi herkes icin ayni oldugundan sayacin
+    kullaniciya gore bolunmesi esigi hicbir zaman doldurmuyordu.
+    """
     for _ in range(2):
-        store.record_provider_failure("yt_dlp", "hata", cooldown_sec=900, threshold=3, user_id="ali")
+        store.record_provider_failure("yt_dlp", "hata", cooldown_sec=900, threshold=3)
 
-    count, cooled = store.record_provider_failure(
-        "yt_dlp", "hata", cooldown_sec=900, threshold=3, user_id="veli"
+    count, cooled = store.record_provider_failure("yt_dlp", "hata", cooldown_sec=900, threshold=3)
+
+    assert (count, cooled) == (3, True)
+
+
+def test_a_success_does_not_cancel_an_active_rate_limit_cooldown(store):
+    """Basarili bir cagri, sunucunun "bekle" talimatini gecersiz kilmaz.
+
+    Kapsam sunucu geneline cikinca bu bir yarisa donusuyordu: A calistirmasi
+    hiz sinirina takilip soguma yaziyor, tam o sirada ucusta olan B
+    calistirmasinin basarili bir cagrisi sogumayi siliyor ve herkes yeniden
+    ayni sinira giriyordu.
+    """
+    store.mark_provider_cooldown("yt_dlp", "429", 900)
+
+    store.clear_provider_cooldown("yt_dlp")
+
+    assert store.get_provider_cooldown("yt_dlp") is not None, "soguma iptal edilmemeliydi"
+
+
+def test_a_success_still_resets_the_failure_streak(store):
+    """Soguma korunuyor diye sayac da donmus kalmamali."""
+    for _ in range(2):
+        store.record_provider_failure("yt_dlp", "hata", cooldown_sec=900, threshold=3)
+
+    store.clear_provider_cooldown("yt_dlp")
+    count, cooled = store.record_provider_failure("yt_dlp", "hata", cooldown_sec=900, threshold=3)
+
+    assert (count, cooled) == (1, False)
+
+
+def test_old_per_user_cooldowns_are_carried_over_not_dropped(tmp_path):
+    """Kapsam degisiminde suresi dolmamis koruma KAYBOLMAMALI.
+
+    Eski satirlar artik okunmuyor; tasinmasalardi yukseltmeden hemen sonra
+    saglayici korumasiz kalirdi. Saglayici basina EN KORUMACI deger tasiniyor.
+    """
+    db_path = tmp_path / "eski.db"
+    SQLiteStore(str(db_path), encryption_key=KEY)  # semayi kur
+
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        INSERT INTO provider_cooldown (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
+        VALUES ('google:ali',  'yt_dlp', '2099-01-01T00:00:00+00:00', '429', 0, '2026-01-01T00:00:00+00:00'),
+               ('google:veli', 'yt_dlp', '2098-01-01T00:00:00+00:00', '429', 0, '2026-01-01T00:00:00+00:00');
+        """
     )
+    raw.commit()
+    raw.close()
 
-    assert (count, cooled) == (1, False), "veli, ali'nin sayacini devralmamali"
+    store = SQLiteStore(str(db_path), encryption_key=KEY)  # migration burada calisir
 
-
-def test_clearing_one_users_cooldown_leaves_the_other(store):
-    store.mark_provider_cooldown("youtube", "hata", 900, user_id="ali")
-    store.mark_provider_cooldown("youtube", "hata", 900, user_id="veli")
-
-    store.clear_provider_cooldown("youtube", user_id="ali")
-
-    assert store.get_provider_cooldown("youtube", user_id="ali") is None
-    assert store.get_provider_cooldown("youtube", user_id="veli") is not None
+    assert store.get_provider_cooldown("yt_dlp") == "2099-01-01T00:00:00+00:00"
+    kalan = sqlite3.connect(db_path).execute(
+        "SELECT COUNT(*) FROM provider_cooldown WHERE user_id != ?", (SERVER_SCOPE,)
+    ).fetchone()[0]
+    assert kalan == 0, "tasinan satirlar birakilmamali"
 
 
-def test_existing_rows_survive_the_per_user_migration(tmp_path):
+def test_legacy_provider_health_rows_survive_the_migration(tmp_path):
     """Eski veritabani acildiginda kayitlar KAYBOLMAMALI.
 
     Eski tablo YERINDE DEGISTIRILMIYOR: `DROP` + `RENAME` yapan ilk surum,
@@ -363,7 +421,7 @@ def test_existing_rows_survive_the_per_user_migration(tmp_path):
 
     store = SQLiteStore(str(db_path))
 
-    assert store.get_provider_cooldown("yt_dlp", user_id="local") is not None
+    assert store.get_provider_cooldown("yt_dlp") is not None
     columns = {
         row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(provider_cooldown)")
     }

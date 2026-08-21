@@ -321,21 +321,52 @@ yeniden yazım gerekmeyecek.
 
 ## 6. Riskler ve açık sorular
 
-**`provider_health` global — ve paylaşımlı anahtarla öyle KALMALI.** Bu soru BYOK
-varsayımıyla açılmıştı: kullanıcılar farklı anahtar kullansa YouTube *API* sınırları
-ayrışırdı, ayrışmayan şey yalnızca sunucu IP'sine bağlı `yt-dlp` sınırları olurdu.
-Anahtar paylaşımlı olunca (§2) ikisi de ayrışmıyor: kota da IP de tek ve ortak. Global
-cooldown artık "korumacı bir tercih" değil, doğru olan. Bir kullanıcının 429'u herkesi
-kilitliyor ama zaten herkes aynı kotayı harcıyor; adaleti sağlayan mekanizma cooldown
-değil `MAX_RUNS_PER_USER_PER_DAY`.
+**Sağlayıcı soğuması artık sunucu geneli** (`SERVER_SCOPE`). Bu soru BYOK varsayımıyla
+açılmıştı ve kapsam bir ara kullanıcı başına çekilmişti: kullanıcılar farklı anahtar
+kullansa YouTube *API* sınırları gerçekten ayrışırdı. Anahtar paylaşımlı olunca (§2)
+hiçbiri ayrışmıyor — kota da IP de tek ve ortak.
 
-**SSE bağlantı kopması.** Uzun ASR koşularında istemci kopabilir. Durum SQLite'ta zaten
-tutuluyor; yeniden bağlanınca son bilinen ilerlemeden devam edilmeli. `Last-Event-ID`
-başlığı ile çözülür.
+Ölçüldü: kullanıcı başına kapsamda **ikinci kullanıcı hiç korunmuyordu.** Ali `yt_dlp`'de
+soğumaya girse bile Veli aynı sunucu IP'sinden gidip aynı sınıra takılıyor ve engeli
+uzatıyordu. Bir kullanıcının 429'u artık herkesi durduruyor; bu bir maliyet değil, doğru
+davranış — zaten herkes aynı IP'den çıkıyor. Adaleti sağlayan mekanizma soğuma değil
+`MAX_RUNS_PER_USER_PER_DAY`.
 
-**`os.environ` mutasyonu.** `KMP_DUPLICATE_LIB_OK` import zamanında ayarlanıyor
-(`app.py` ve `build_playlist`). ASGI worker'larında süreç genelinde etkili — gözden
-geçirilmeli.
+Kapsam değişince ortaya çıkan bir yarış da kapatıldı: başarılı bir çağrı artık süresi
+dolmamış bir hız-sınırı soğumasını **iptal etmiyor** (eskiden B çalıştırmasının başarısı
+A'nın taze soğumasını siliyordu).
+
+**Açık kalan:** eşzamanlılık. 2 çalıştırma × 4 işçi = tek IP'den 8 eşzamanlı istek.
+Soğuma bir *tepki*; sınıra hiç girmemek için asıl ayar bu. `GET /api/admin/usage`
+artık günlük `rate_limited` / `failure` / `cooldown` sayılarını döndürüyor — ayar
+tahminle değil bu sayılara bakılarak değiştirilmeli.
+
+**Bugünkü veri: yok.** `provider_event` tablosu boş; sayaç eklendiğinden bu yana tek
+bir çalıştırma yapıldı (1.224 birim) ve hiçbir sınıra takılmadı. Yani ayarı şimdi
+değiştirmek, tam da bu maddenin yasakladığı tahmin olurdu. Sayaçların gerçekten
+yazdığı 5 testle kilitlendi (`tests/test_provider_events.py`) — biri 429'u sağlayıcı
+seviyesinde atıp sayacı servis yolunun sonundan okuyor. Bir ölçüm aracının en kötü
+arızası sessizce hiçbir şey kaydetmemesidir: boş tablo "sorun yok" gibi okunur ve
+arıza tam da karar verilecek anda görünmez olur.
+
+**~~SSE bağlantı kopması~~ — çözüldü (Faz 2b).** Bu madde bir süre burada, "çözülür"
+kipinde, çoktan çözülmüş olarak durdu. Olay günlüğü eklemeli; her olay `id:` taşıyor ve
+yeniden bağlanan istemci `Last-Event-ID` ile yalnızca kaçırdıklarını alıyor
+(`api/sse.py`, `api/routers/runs.py`). Geçersiz başlık baştan başlatıyor.
+
+**~~`os.environ` mutasyonu~~ — çözüldü.** Gözden geçirilince ortaya çıkan şey bir
+ölçekleme riski değil, **ölü bir ayardı**: `KMP_DUPLICATE_LIB_OK`, `src/__init__.py`
+içinde koşulsuz kuruluyordu. O modül config okunmadan önce yükleniyor, üstelik
+`setdefault` olduğu için sonraki (config'e bakan) kontrolleri de etkisiz bırakıyordu —
+yani `ALLOW_UNSAFE_OPENMP_WORKAROUND=false` diyen kullanıcının seçimi Windows'ta
+sessizce eziliyordu. `api/main.py` lifespan'indeki kopya zaten fazlalıktı (paket importu
+çoktan çalışmış oluyor).
+
+İkisi de kaldırıldı. Bayrak artık yalnızca `build_playlist` girişinde ve
+`FasterWhisperProvider.transcribe` içinde, **config'e bakarak** kuruluyor; `faster_whisper`
+importu `_load_model` içinde tembel olduğu için bu noktalar hâlâ yeterince erken.
+4 test kilitliyor (`tests/test_openmp_workaround.py`), biri `os.name`'i sahteleyerek
+regresyonu Windows dışında da görünür kılıyor.
 
 **ASR ve sunucu kaynakları.** Whisper CPU'da video başına 90–120 sn. Çok kullanıcıda
 ayrı bir worker havuzu ve sıkı kota gerekir; muhtemelen ücretli katman özelliği olmalı.

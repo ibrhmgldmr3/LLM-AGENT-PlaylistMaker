@@ -28,6 +28,8 @@ from src.services.topic_service import generate_subtopics
 from src.services.transcript_service import RunTranscriptState, get_transcript
 from src.services.youtube_search_service import search_candidates
 from src.storage import DEFAULT_USER_ID, SQLiteStore
+from src.providers.youtube_data_api_provider import DEFAULT_DAILY_QUOTA_UNITS
+from src.storage.sqlite_store import quota_day
 from src.utils.logging_utils import close_logger, redact_secrets, run_log_path, setup_logger
 
 
@@ -111,12 +113,65 @@ def build_playlist(
     log_file = run_log_path(str(run_dir))
     logger = setup_logger("playlist", log_file)
 
+    # Kota olcumu calistirmanin ETRAFINDAN aliniyor: `record_api_usage` gunluk
+    # sayaci tutuyor, tek bir calistirmanin maliyetini degil. Once/sonra farki
+    # bu bosluğu kapatiyor ve "hangi calistirma pahaliydi" sorusu yanitlanabilir
+    # hale geliyor -- onbellek isabeti yuzunden bu, calistirmadan calistirmaya
+    # 0 ile ~1.200 birim arasinda degisiyor.
+    day = quota_day()
+    units_before = store.sum_api_units(user_id=user_id, day=day)
+    outcome = "failed"
+
     try:
-        return _run_pipeline(
+        result = _run_pipeline(
             config, request, run_id, run_dir, store, logger, progress_callback, user_id
         )
+        outcome = "ok"
+        return result
     finally:
+        # `finally` icinde: basarisiz calistirma da kota harciyor ve raporun
+        # onu atlamasi, tuketimi oldugundan az gostermek olurdu.
+        _log_run_summary(config, store, logger, run_id, user_id, request, day, units_before, outcome)
         close_logger("playlist", log_file)
+
+
+def _log_run_summary(
+    config: AppConfig,
+    store: SQLiteStore,
+    logger,
+    run_id: str,
+    user_id: str,
+    request: PlaylistRequest,
+    day: str,
+    units_before: int,
+    outcome: str,
+) -> None:
+    """Calistirma basina tek satirlik isletme ozeti.
+
+    Olcum hatasi calistirmayi dusurmemeli: bu fonksiyon `finally` icinde
+    cagriliyor ve buradan cikacak bir istisna, ISIN KENDI hatasini maskeleyip
+    yerine alakasiz bir yigin izi koyardi.
+    """
+    if logger is None:
+        return
+    try:
+        spent = store.sum_api_units(user_id=user_id, day=day) - units_before
+        day_total = store.sum_api_units(day=day)
+        limit = config.youtube_daily_quota_units or DEFAULT_DAILY_QUOTA_UNITS
+        logger.info(
+            "RUN SUMMARY run=%s user=%s outcome=%s topic=%r "
+            "quota_units_this_run=%s quota_units_today=%s quota_remaining=%s quota_day=%s",
+            run_id,
+            user_id,
+            outcome,
+            request.topic,
+            spent,
+            day_total,
+            max(0, limit - day_total),
+            day,
+        )
+    except Exception:
+        logger.warning("Run summary could not be written", exc_info=True)
 
 
 def _run_pipeline(
@@ -298,8 +353,13 @@ def _run_pipeline(
 
     try:
         removed = store.purge_expired()
-        if removed and logger:
-            logger.info("Purged %s expired cache rows", removed)
+        toplam = sum(removed.values())
+        if toplam and logger:
+            logger.info(
+                "Purged %s expired rows (%s)",
+                toplam,
+                ", ".join(f"{table}={count}" for table, count in removed.items() if count),
+            )
     except Exception:
         if logger:
             logger.warning("Cache purge failed", exc_info=True)

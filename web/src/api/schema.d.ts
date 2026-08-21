@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/admin/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Usage
+         * @description Bugunku kota tuketimi, calistirma dagilimi ve devre disi saglayicilar.
+         */
+        get: operations["usage_api_admin_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/logout": {
         parameters: {
             query?: never;
@@ -226,6 +246,9 @@ export interface paths {
          *     `runner.cancel(run_id)` cagiriyordu; silme dali `user_id` suzuyor olsa da
          *     iptal dali sizmiyordu, yani cok kullanicili kuruluma gecildiginde kimligi
          *     bilen herkes baskasinin calisan isini durdurabilirdi.
+         *
+         *     Silme DISKE de dokunuyor (bkz. `run_retention.delete_run`): eskiden yalnizca
+         *     veritabani satirlari gidiyor, calisma plani ve sonuc JSON'u diskte kaliyordu.
          */
         delete: operations["cancel_or_delete_run_api_runs__run_id__delete"];
         options?: never;
@@ -348,6 +371,13 @@ export interface components {
             gemini_configured: boolean;
             /** Llm Configured */
             llm_configured: boolean;
+            /** Runs Remaining Today */
+            runs_remaining_today: number | null;
+            /**
+             * Service Capacity Reached
+             * @default false
+             */
+            service_capacity_reached: boolean;
             /** Youtube Publish Configured */
             youtube_publish_configured: boolean;
             /** Youtube Search Configured */
@@ -772,6 +802,28 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    usage_api_admin_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     logout_api_auth_logout_post: {
         parameters: {
             query?: never;

@@ -6,6 +6,11 @@ python-dotenv>=1.0.0,<2.0.0
 # (pydantic metadata'si `Requires-Python >=3.8` diyor, 3.13 uyumsuzlugunu bildirmiyor).
 pydantic>=2.8.0,<3.0.0
 requests>=2.31.0,<3.0.0
+# YouTube kotasi Pasifik saatiyle sifirlaniyor ve "bugun ne kadar kaldi"
+# hesabi bu sinira dayaniyor. Linux/macOS sistem saat dilimi veritabanini
+# getiriyor ama Windows getirmiyor; `zoneinfo` orada tzdata olmadan
+# "America/Los_Angeles"i cozemiyor.
+tzdata>=2024.1; sys_platform == "win32"
 
 # API (arayuz React; bkz. web/)
 fastapi>=0.115.0,<1.0.0

@@ -158,6 +158,8 @@ describe("RunForm", () => {
       youtube_publish_configured: false,
       asr_available: false,
       cookies_configured: false,
+      runs_remaining_today: null,
+      service_capacity_reached: false,
       defaults: {},
     };
     const { rerender } = render(<RunForm capabilities={configured} busy={false} onSubmit={vi.fn()} />);
@@ -171,6 +173,78 @@ describe("RunForm", () => {
       />,
     );
     expect(screen.queryByText(/YouTube Data API anahtarı tanımlı değil/)).toBeNull();
+  });
+
+  describe("kalan çalıştırma hakkı", () => {
+    const base: Capabilities = {
+      gemini_configured: true,
+      llm_configured: true,
+      youtube_search_configured: true,
+      youtube_publish_configured: false,
+      asr_available: false,
+      cookies_configured: false,
+      runs_remaining_today: null,
+      service_capacity_reached: false,
+      defaults: {},
+    };
+
+    it("sınır yoksa (null) hiçbir şey göstermez", () => {
+      // `null` "sunucuda sınır tanımlı değil" demek; 0 ile karıştırılırsa
+      // sınırsız kurulumda kullanıcıya "hakkın doldu" denirdi.
+      render(<RunForm capabilities={base} busy={false} onSubmit={vi.fn()} />);
+
+      expect(screen.queryByText(/kalan çalıştırma hakkınız/i)).toBeNull();
+      expect(screen.queryByText(/hakkınız doldu/i)).toBeNull();
+      fillTopic("kuantum");
+      expect(submitButton().disabled).toBe(false);
+    });
+
+    it("kalan hakkı gösterir", () => {
+      render(
+        <RunForm
+          capabilities={{ ...base, runs_remaining_today: 2 }}
+          busy={false}
+          onSubmit={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByText(/Bugün kalan çalıştırma hakkınız: 2/)).not.toBeNull();
+      fillTopic("kuantum");
+      expect(submitButton().disabled).toBe(false);
+    });
+
+    it("servisin ortak kapasitesi dolduysa kullanicinin hakki olsa BILE engeller", () => {
+      // Kota tum kullanicilar icin ortak: kisisel hak tek basina yetmiyor.
+      render(
+        <RunForm
+          capabilities={{ ...base, runs_remaining_today: 3, service_capacity_reached: true }}
+          busy={false}
+          onSubmit={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByText(/Servisin bugünkü kapasitesi doldu/)).not.toBeNull();
+      fillTopic("kuantum");
+      expect(submitButton().disabled).toBe(true);
+      // Iki mesaj birden cikmasin: ortak kapasite kisisel haktan onceliklidir.
+      expect(screen.queryByText(/kalan çalıştırma hakkınız/i)).toBeNull();
+    });
+
+    it("hak bittiğinde uyarır ve göndermeyi engeller", () => {
+      // Sunucu zaten 429 dönecek; kullaniciya tiklamadan ONCE soylemek daha durust.
+      const onSubmit = vi.fn();
+      render(
+        <RunForm
+          capabilities={{ ...base, runs_remaining_today: 0 }}
+          busy={false}
+          onSubmit={onSubmit}
+        />,
+      );
+
+      expect(screen.queryByText(/Bugünlük çalıştırma hakkınız doldu/)).not.toBeNull();
+      fillTopic("kuantum");
+      expect(submitButton().disabled).toBe(true);
+    });
   });
 
   it("capabilities null iken uyarı göstermez", () => {

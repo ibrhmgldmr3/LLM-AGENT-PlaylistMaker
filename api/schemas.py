@@ -129,5 +129,15 @@ class CapabilitiesResponse(BaseModel):
     youtube_publish_configured: bool
     asr_available: bool
     cookies_configured: bool
+    # Kullanicinin BUGUN kalan calistirma hakki. `None` = sinir yok.
+    #
+    # Neden yetenek ucundan donuyor: kullanici bugune kadar hakkinin dolduğunu
+    # ancak 429 yiyince ogreniyordu -- forma konuyu yazdiktan SONRA. Bu alan
+    # sayesinde arayuz durumu ONCEDEN gosterebiliyor.
+    runs_remaining_today: int | None = None
+    # Servisin BUGUNKU ortak kapasitesi doldu mu. Kullanici basina siniri
+    # olmayan bir kullanicinin bile calistirma baslatamayacagi durum: arama
+    # kotasi tum kullanicilar icin ortak.
+    service_capacity_reached: bool = False
     defaults: dict[str, Any] = Field(default_factory=dict)
 

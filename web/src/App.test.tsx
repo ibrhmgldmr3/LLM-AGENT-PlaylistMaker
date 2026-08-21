@@ -18,6 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   uninstall();
   cleanup();
   vi.restoreAllMocks();
@@ -65,6 +66,39 @@ describe("App", () => {
     });
 
     expect(createRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("herhangi bir uctan 401 gelirse giris ekranina doner", async () => {
+    // Oturum durumu ACILIRKEN bir kez ogreniliyordu. Cerez sonradan duserse
+    // arayuz uygulamayi gostermeye devam ediyor ama her istek 401 aliyordu --
+    // giris ekrani gelmiyor, kullanicinin sayfayi elle yenilemesi gerekiyordu.
+    //
+    // `createRun` BILEREK taklit edilmiyor: 401'in gercek `request()`
+    // katmanindan gecip kancayi tetikledigini dogrulamak istiyoruz. `fetch`
+    // taklit ediliyor, uzerindeki her sey gercek.
+    const me = vi.spyOn(api, "me");
+    me.mockResolvedValue({ auth_required: true, signed_in: true, email: null } as never);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        json: async () => ({ detail: "Oturum açmanız gerekiyor" }),
+        headers: { get: () => null },
+      })),
+    );
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByLabelText("Konu")).toBeTruthy());
+
+    // Sunucu oturumu artik tanimiyor.
+    me.mockResolvedValue({ auth_required: true, signed_in: false, email: null } as never);
+
+    fireEvent.change(screen.getByLabelText("Konu"), { target: { value: "kuantum" } });
+    fireEvent.click(submitButton());
+
+    await waitFor(() => expect(screen.getByText("Giriş yapın")).toBeTruthy());
   });
 
   it("createRun hata verirse form tekrar kullanilabilir olur", async () => {

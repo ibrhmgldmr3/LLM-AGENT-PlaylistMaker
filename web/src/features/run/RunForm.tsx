@@ -8,6 +8,10 @@ interface Props {
 }
 
 export function RunForm({ capabilities, busy, onSubmit }: Props) {
+  const outOfRuns = capabilities?.runs_remaining_today === 0;
+  // Ortak kapasite kullanicinin kendi hakkindan BAGIMSIZ: hakki olsa bile
+  // servisin gunluk kota butcesi bittiyse calistirma baslatilamiyor.
+  const serviceFull = capabilities?.service_capacity_reached === true;
   const [topic, setTopic] = useState("");
   const [language, setLanguage] = useState<Language>("tr");
   const [difficulty, setDifficulty] = useState<Difficulty>("mixed");
@@ -126,8 +130,31 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
         </p>
       )}
 
+      {serviceFull && (
+        <p className="alert alert--error" style={{ marginTop: "0.9rem" }}>
+          Servisin bugünkü kapasitesi doldu. Arama kotası tüm kullanıcılar için ortak;
+          kota sıfırlandığında (Pasifik saatiyle gece yarısı) tekrar deneyebilirsiniz.
+        </p>
+      )}
+
+      {/* Kalan hak yalnizca sunucuda sinir varsa (`null` degilse) gosteriliyor.
+          Hak bittiginde gonder dugmesi de kapaniyor: sunucu zaten 429 donecek,
+          onu tiklamadan once soylemek daha durust. */}
+      {!serviceFull &&
+        capabilities?.runs_remaining_today !== null &&
+        capabilities?.runs_remaining_today !== undefined && (
+          <p
+            className={capabilities.runs_remaining_today === 0 ? "alert alert--error" : "muted"}
+            style={{ marginTop: "0.9rem" }}
+          >
+            {capabilities.runs_remaining_today === 0
+              ? "Bugünlük çalıştırma hakkınız doldu. Yarın tekrar deneyebilirsiniz."
+              : `Bugün kalan çalıştırma hakkınız: ${capabilities.runs_remaining_today}`}
+          </p>
+        )}
+
       <div style={{ marginTop: "1rem" }}>
-        <button type="submit" disabled={busy || !topic.trim()}>
+        <button type="submit" disabled={busy || !topic.trim() || outOfRuns || serviceFull}>
           {busy ? "Oluşturuluyor…" : "Playlist Oluştur"}
         </button>
       </div>

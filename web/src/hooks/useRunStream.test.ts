@@ -306,6 +306,31 @@ describe("useRunStream", () => {
     expect(result.current.error).toBe("404 Bilinmeyen çalıştırma");
   });
 
+  it("akis KALICI kapandiginda 'calisiyor'da asili kalmaz", () => {
+    // Sunucu 200 disi yanit verirse (oturum dustu ve 401 geldi, sunucu kapandi)
+    // tarayici baglantiyi kalici kapatir ve BIR DAHA DENEMEZ. Eskiden bu durum
+    // gecici kopmayla ayni sayilip sessizce yok sayiliyordu: ilerleme cubugu
+    // sonsuza kadar donuyordu.
+    const { result } = renderHook(() => useRunStream());
+    act(() => result.current.watch("kosu-1"));
+
+    act(() => FakeEventSource.last.failPermanently());
+
+    expect(result.current.state).toBe("failed");
+    expect(result.current.error).toMatch(/bağlantı kesildi/i);
+  });
+
+  it("GECICI kopmayi hata saymaz -- tarayici kendisi yeniden dener", () => {
+    const { result } = renderHook(() => useRunStream());
+    act(() => result.current.watch("kosu-1"));
+
+    // `readyState` CONNECTING'de kaliyor: kopma gecici.
+    act(() => FakeEventSource.last.emit("error"));
+
+    expect(result.current.state).toBe("running");
+    expect(result.current.error).toBeNull();
+  });
+
   it("`reset` durumu bosaltir ve akisi kapatir", () => {
     const { result } = renderHook(() => useRunStream());
     act(() => result.current.watch("kosu-1"));

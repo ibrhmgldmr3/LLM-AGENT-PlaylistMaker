@@ -29,7 +29,16 @@ def search_candidates(
     saglayiciya gecilir. Onceki surum bos listeyi dondurup 6 saat onbellekliyor ve
     yt-dlp yedegini tamamen devre disi birakiyordu.
     """
-    providers = [YouTubeDataAPIProvider(config), YtDlpProvider(config)]
+    # Kota sayaci BURADA baglaniyor: `store` ve `user_id` yalnizca bu katmanda
+    # birlikte var. Onbellek isabetlerinde saglayici hic cagrilmadigi icin
+    # sayac da hic artmiyor -- olcum bu sayede gercek tuketimi gosteriyor.
+    def _record(endpoint: str, units: int) -> None:
+        store.record_api_usage(user_id, YouTubeDataAPIProvider.name, endpoint, units)
+
+    providers = [
+        YouTubeDataAPIProvider(config, usage_recorder=_record),
+        YtDlpProvider(config),
+    ]
     provider_errors: list[str] = []
 
     for provider in providers:
@@ -38,7 +47,7 @@ def search_candidates(
                 logger.info("Skipping %s because it is not configured", provider.name)
             continue
 
-        cooldown_until = store.get_provider_cooldown(provider.name, user_id=user_id)
+        cooldown_until = store.get_provider_cooldown(provider.name)
         if cooldown_until:
             if logger:
                 logger.warning("Skipping %s due to cooldown until %s", provider.name, cooldown_until)
@@ -70,7 +79,7 @@ def search_candidates(
             # Hiz siniri: tekrar denemeden dinlendir, sonraki saglayiciya gec.
             message = redact_secrets(str(exc))
             cooldown = exc.retry_after or config.rate_limit_cooldown_sec
-            store.mark_provider_cooldown(provider.name, message, cooldown, user_id=user_id)
+            store.mark_provider_cooldown(provider.name, message, cooldown)
             provider_errors.append(f"{provider.name}: rate limited ({cooldown}s cooldown)")
             if logger:
                 logger.warning("Rate limited on %s; cooling down for %ss", provider.name, cooldown)
@@ -89,7 +98,6 @@ def search_candidates(
                 message,
                 config.provider_cooldown_sec,
                 threshold=config.provider_failure_threshold,
-                user_id=user_id,
             )
             if logger:
                 logger.warning(
@@ -101,7 +109,7 @@ def search_candidates(
                 )
             continue
 
-        store.clear_provider_cooldown(provider.name, user_id=user_id)
+        store.clear_provider_cooldown(provider.name)
 
         deduped: dict[str, VideoCandidate] = {}
         for candidate in candidates:

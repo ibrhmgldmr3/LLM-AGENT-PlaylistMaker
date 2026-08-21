@@ -25,8 +25,21 @@ export class FakeEventSource {
     return source;
   }
 
+  /** `EventSource.CLOSED`. Gercegiyle ayni sayi olmali. */
+  static readonly CLOSED = 2;
+
   readonly url: string;
   closed = false;
+
+  /**
+   * Gercek `EventSource`in durum makinesi: 0 CONNECTING, 1 OPEN, 2 CLOSED.
+   *
+   * Ayrim onemli: gecici bir kopmada tarayici CONNECTING'e donup kendisi
+   * yeniden dener; sunucu 200 disi yanit verirse (ornegin oturum dustu ve
+   * 401 geldi) baglantiyi KALICI olarak kapatir ve bir daha denemez. Ikisi de
+   * govdesiz bir `error` olayi yayiyor, tek fark bu alan.
+   */
+  readyState = 1;
 
   private readonly listeners = new Map<string, Set<(event: MessageEvent) => void>>();
 
@@ -47,6 +60,15 @@ export class FakeEventSource {
 
   close(): void {
     this.closed = true;
+    this.readyState = FakeEventSource.CLOSED;
+  }
+
+  /** Sunucunun 200 disi yanit vermesi: kalici kapanma, yeniden deneme YOK. */
+  failPermanently(): void {
+    this.readyState = FakeEventSource.CLOSED;
+    for (const listener of this.listeners.get("error") ?? []) {
+      listener(new Event("error") as MessageEvent);
+    }
   }
 
   /**

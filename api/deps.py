@@ -39,31 +39,39 @@ def get_server_config() -> ServerConfig:
 SESSION_COOKIE = "map_session"
 
 
-def get_current_user(request: Request) -> str:
-    """Istegin sahibi olan kullanici.
+def get_current_user_optional(request: Request) -> str | None:
+    """Istegin sahibi; oturum yoksa `None`. 401 FIRLATMAZ.
+
+    "Sunucuda ne yapilandirilmis" sorusunu yanitlayan uclar (`/api/config`)
+    icin: o uclarin oturuma bagimli olmasi tavuk-yumurta hatasi yaratiyor --
+    arayuz daha giris ekranini cizerken yetenekleri soruyor ve 401 yiyince
+    hepsini SESSIZCE kaybediyor. Kullaniciya OZGU alanlar (kalan calistirma
+    hakki) oturum yokken bos birakilir; geri kalan yanit yine dolu doner.
 
     `single_user` modunda (varsayilan) her istek `DEFAULT_USER_ID`'ye ait --
     tek kisilik kurulum ve gelistirme akisi boyle calisiyor.
-
-    `multi_user` modunda istek gecerli bir oturum cerezi tasimali. Cerezdeki
-    jeton veritabaninda OZETIYLE aranir; kayit yoksa ya da suresi gecmisse
-    401 doner.
-
-    Kimligi yalnizca burada cozmek bilincli: rotalarin hicbiri oturum
-    mekanigini bilmiyor, `Depends(get_current_user)` yeterli.
     """
     server = _base_config().server_config()
     if server.auth_mode == "single_user":
         return DEFAULT_USER_ID
 
     token = request.cookies.get(SESSION_COOKIE)
-    if token:
-        store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
-        session = store.get_session(token)
-        if session:
-            return session["user_id"]
+    if not token:
+        return None
+    store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+    session = store.get_session(token)
+    return session["user_id"] if session else None
 
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Oturum açmanız gerekiyor")
+
+def get_current_user(user_id: str | None = Depends(get_current_user_optional)) -> str:
+    """Istegin sahibi olan kullanici; oturum sartsa YOKSA 401.
+
+    Kimligi yalnizca burada cozmek bilincli: rotalarin hicbiri oturum
+    mekanigini bilmiyor, `Depends(get_current_user)` yeterli.
+    """
+    if user_id is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Oturum açmanız gerekiyor")
+    return user_id
 
 
 def get_user_credentials(server: ServerConfig = Depends(get_server_config)) -> UserCredentials:
@@ -81,6 +89,27 @@ def get_user_credentials(server: ServerConfig = Depends(get_server_config)) -> U
             "Sunucu için LLM sağlayıcı anahtarı yapılandırılmamış (GEMINI_API_KEY veya TOGETHER_API_KEY)",
         )
     return UserCredentials()
+
+
+def require_admin(
+    user_id: str = Depends(get_current_user),
+    server: ServerConfig = Depends(get_server_config),
+) -> str:
+    """Kullanim raporunu gorebilecek kullaniciyi dogrular.
+
+    `single_user` modda tek kullanici zaten sunucunun sahibi -- ayrica bir
+    yetki kavrami uydurmanin anlami yok.
+
+    `multi_user` modda `ADMIN_USER_IDS` listesi belirleyici ve BOSKEN HERKESE
+    KAPALI. Ters varsayilan (liste bossa herkese acik) yapilandirmayi unutan
+    kurulumlarda kullanici kimliklerini ve kullanim aliskanligini herkese
+    gosterirdi; bu, sessizce olusan turden bir sizinti olurdu.
+    """
+    if server.auth_mode == "single_user":
+        return user_id
+    if user_id in server.admin_ids():
+        return user_id
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Bu sayfayı görme yetkiniz yok")
 
 
 def get_default_run_options() -> RunOptions:

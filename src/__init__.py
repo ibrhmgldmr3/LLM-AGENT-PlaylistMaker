@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-import os
-
-
-# Mixed Conda environments that combine TensorFlow and whisper/ctranslate2 on Windows
-# can crash on duplicate Intel OpenMP runtime initialization. Set the workaround as
-# early as possible so imports later in the process inherit it.
-if os.name == "nt":
-    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+# Burada BILEREK `KMP_DUPLICATE_LIB_OK` ayarlanmiyor.
+#
+# Karisik Conda ortamlarinda (TensorFlow + ctranslate2) Windows'ta cift Intel
+# OpenMP calisma zamani cokmeye yol aciyor ve bayrak bunu asiyor. Ama import
+# zamaninda kurmak, `ALLOW_UNSAFE_OPENMP_WORKAROUND=false` diyen kullanicinin
+# secimini SESSIZCE eziyordu: bu modul config okunmadan once yukleniyor ve
+# `setdefault` sonraki (config'e bakan) cagrilari da etkisiz birakiyordu --
+# ayar README'de duruyor ama hicbir sey yapmiyordu.
+#
+# Bayrak artik yalnizca gercekten gerektigi iki yerde, config'e BAKARAK
+# kuruluyor: `build_playlist` girisinde ve `FasterWhisperProvider.transcribe`
+# icinde. Ikisi de `faster_whisper` import edilmeden once calisiyor (import
+# `_load_model` icinde tembel), yani erkenlik korunuyor.
