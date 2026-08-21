@@ -10,7 +10,6 @@ Calistirma:
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -116,8 +115,6 @@ def _purge_orphan_run_dirs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if os.name == "nt":
-        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     _warn_on_unbounded_shared_quota()
     _mark_interrupted_runs()
     _purge_orphan_run_dirs()

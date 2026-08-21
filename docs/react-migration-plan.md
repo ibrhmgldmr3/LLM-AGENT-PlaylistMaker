@@ -345,9 +345,19 @@ tahminle değil bu sayılara bakılarak değiştirilmeli.
 tutuluyor; yeniden bağlanınca son bilinen ilerlemeden devam edilmeli. `Last-Event-ID`
 başlığı ile çözülür.
 
-**`os.environ` mutasyonu.** `KMP_DUPLICATE_LIB_OK` import zamanında ayarlanıyor
-(`app.py` ve `build_playlist`). ASGI worker'larında süreç genelinde etkili — gözden
-geçirilmeli.
+**~~`os.environ` mutasyonu~~ — çözüldü.** Gözden geçirilince ortaya çıkan şey bir
+ölçekleme riski değil, **ölü bir ayardı**: `KMP_DUPLICATE_LIB_OK`, `src/__init__.py`
+içinde koşulsuz kuruluyordu. O modül config okunmadan önce yükleniyor, üstelik
+`setdefault` olduğu için sonraki (config'e bakan) kontrolleri de etkisiz bırakıyordu —
+yani `ALLOW_UNSAFE_OPENMP_WORKAROUND=false` diyen kullanıcının seçimi Windows'ta
+sessizce eziliyordu. `api/main.py` lifespan'indeki kopya zaten fazlalıktı (paket importu
+çoktan çalışmış oluyor).
+
+İkisi de kaldırıldı. Bayrak artık yalnızca `build_playlist` girişinde ve
+`FasterWhisperProvider.transcribe` içinde, **config'e bakarak** kuruluyor; `faster_whisper`
+importu `_load_model` içinde tembel olduğu için bu noktalar hâlâ yeterince erken.
+4 test kilitliyor (`tests/test_openmp_workaround.py`), biri `os.name`'i sahteleyerek
+regresyonu Windows dışında da görünür kılıyor.
 
 **ASR ve sunucu kaynakları.** Whisper CPU'da video başına 90–120 sn. Çok kullanıcıda
 ayrı bir worker havuzu ve sıkı kota gerekir; muhtemelen ücretli katman özelliği olmalı.
