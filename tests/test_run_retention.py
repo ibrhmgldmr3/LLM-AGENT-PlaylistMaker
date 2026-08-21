@@ -80,7 +80,6 @@ def test_orphan_directories_are_collected(tmp_path):
 def test_a_suspicious_run_id_never_escapes_the_runs_directory(tmp_path):
     """`run_id` bir yol parcasi olarak kullaniliyor; alfanumerik degilse dokunma."""
     config, store = _setup(tmp_path)
-    komsu = config.data_dir_path.parent if hasattr(config, "data_dir_path") else tmp_path
     hedef = config.runs_dir.parent / "dokunulmaz"
     hedef.mkdir(parents=True, exist_ok=True)
     (hedef / "onemli.txt").write_text("silinmemeli", encoding="utf-8")

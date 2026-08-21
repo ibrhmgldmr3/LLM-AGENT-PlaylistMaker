@@ -136,7 +136,6 @@ def test_usage_is_attributed_per_user(tmp_path, monkeypatch):
 def test_failed_calls_are_not_counted(tmp_path):
     """Kotasi dolmus istek Google tarafindan ucretlendirilmiyor; biz de saymayiz."""
     config = _config(tmp_path)
-    store = SQLiteStore(config.sqlite_path, encryption_key=None)
     kayitlar: list[tuple[str, int]] = []
 
     provider = YouTubeDataAPIProvider(

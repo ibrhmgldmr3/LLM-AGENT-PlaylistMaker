@@ -6,7 +6,6 @@ kimin ne kadar harcadigi. Yetki testleri bu yuzden burada agirlikta.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from src.config import AppConfig

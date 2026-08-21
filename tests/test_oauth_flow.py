@@ -108,6 +108,39 @@ def test_start_registers_a_state_for_csrf(client, monkeypatch):
     assert state in auth_router._pending_states
 
 
+def test_pending_states_are_capped(client, monkeypatch):
+    """Bekleyen state sozlugu sinirsiz buyuyememeli.
+
+    `/start` oturum GEREKTIRMIYOR -- gerektirseydi giris yapmak icin once giris
+    yapmis olmak gerekirdi. Tek sinir TTL olsaydi, 10 dakikalik pencere icinde
+    sozlugu istedigi kadar buyutebilen kimliksiz bir yol kalirdi.
+    """
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s, **kw: ("https://x", "v"))
+    monkeypatch.setattr(auth_router, "MAX_PENDING_STATES", 3)
+
+    for _ in range(5):
+        client.get("/api/auth/youtube/start")
+
+    assert len(auth_router._pending_states) == 3
+
+
+def test_capacity_eviction_keeps_the_newest_states(client, monkeypatch):
+    """Tavan asilinca EN ESKI bekleyenler atilmali.
+
+    Yon onemli: en yeniyi atmak, sozlugu doldurmayi basaran birinin tum yeni
+    girisleri kilitlemesi demek olurdu. En eskiyi atarken az once tiklamis
+    gercek kullanicinin kaydi -- en taze olan -- ayakta kaliyor.
+    """
+    monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s, **kw: ("https://x", "v"))
+    monkeypatch.setattr(auth_router, "MAX_PENDING_STATES", 3)
+
+    states = [client.get("/api/auth/youtube/start").json()["state"] for _ in range(5)]
+
+    assert [state in auth_router._pending_states for state in states] == [
+        False, False, True, True, True
+    ]
+
+
 # --------------------------------------------------------------------- PKCE
 
 def test_flow_asks_for_a_pkce_verifier_explicitly(monkeypatch):

@@ -51,6 +51,11 @@ router = APIRouter(prefix="/api/auth/youtube", tags=["auth"])
 PROVIDER = "youtube"
 STATE_TTL_SECONDS = 600
 
+# Bekleyen state sayisinin ust siniri. Bu uc OTURUM GEREKTIRMIYOR (gerektiremez,
+# bkz. `start_authorization`), yani tek sinir TTL olsaydi 10 dakikalik pencere
+# icinde sozlugu istedigi kadar buyutebilen kimliksiz bir yol kalirdi.
+MAX_PENDING_STATES = 10_000
+
 # Bekleyen yetkilendirmeler: state -> (user_id, code_verifier, son kullanma).
 # `code_verifier` PKCE icin ZORUNLU olarak burada tutuluyor; yalnizca URL'i
 # ureten `Flow` nesnesinde yasadigi icin callback'e baska turlu tasinamiyor.
@@ -70,6 +75,26 @@ def _expire_states() -> None:
     now = time.monotonic()
     expired = [key for key, (_user, _verifier, expiry) in _pending_states.items() if expiry < now]
     for key in expired:
+        _pending_states.pop(key, None)
+
+
+def _enforce_capacity() -> None:
+    """Tavan asilirsa EN ESKI bekleyenleri atar.
+
+    Yeni istegi reddetmek de bir secenekti; atmak tercih edildi. Reddetmek,
+    sozlugu doldurmayi basaran birinin TUM yeni girisleri kilitlemesi demek
+    olurdu. En eskiyi atarken kaybedilen state, ya suresi dolmak uzere olan ya
+    da hic tamamlanmayacak bir akisa ait; az once tiklamis gercek kullanicinin
+    kaydi en TAZE olan, yani en son atilacak olan.
+
+    Kaybedilen state'in bedeli de sinirli: kullanici callback'te "gecersiz veya
+    suresi dolmus state" gorup akisi bastan baslatir.
+    """
+    excess = len(_pending_states) - MAX_PENDING_STATES
+    if excess <= 0:
+        return
+    oldest = sorted(_pending_states, key=lambda key: _pending_states[key][2])[:excess]
+    for key in oldest:
         _pending_states.pop(key, None)
 
 
@@ -132,6 +157,7 @@ def start_authorization(
         code_verifier,
         time.monotonic() + STATE_TTL_SECONDS,
     )
+    _enforce_capacity()
     return {"authorization_url": url, "state": placeholder}
 
 
