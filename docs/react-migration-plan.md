@@ -341,9 +341,18 @@ Soğuma bir *tepki*; sınıra hiç girmemek için asıl ayar bu. `GET /api/admin
 artık günlük `rate_limited` / `failure` / `cooldown` sayılarını döndürüyor — ayar
 tahminle değil bu sayılara bakılarak değiştirilmeli.
 
-**SSE bağlantı kopması.** Uzun ASR koşularında istemci kopabilir. Durum SQLite'ta zaten
-tutuluyor; yeniden bağlanınca son bilinen ilerlemeden devam edilmeli. `Last-Event-ID`
-başlığı ile çözülür.
+**Bugünkü veri: yok.** `provider_event` tablosu boş; sayaç eklendiğinden bu yana tek
+bir çalıştırma yapıldı (1.224 birim) ve hiçbir sınıra takılmadı. Yani ayarı şimdi
+değiştirmek, tam da bu maddenin yasakladığı tahmin olurdu. Sayaçların gerçekten
+yazdığı 5 testle kilitlendi (`tests/test_provider_events.py`) — biri 429'u sağlayıcı
+seviyesinde atıp sayacı servis yolunun sonundan okuyor. Bir ölçüm aracının en kötü
+arızası sessizce hiçbir şey kaydetmemesidir: boş tablo "sorun yok" gibi okunur ve
+arıza tam da karar verilecek anda görünmez olur.
+
+**~~SSE bağlantı kopması~~ — çözüldü (Faz 2b).** Bu madde bir süre burada, "çözülür"
+kipinde, çoktan çözülmüş olarak durdu. Olay günlüğü eklemeli; her olay `id:` taşıyor ve
+yeniden bağlanan istemci `Last-Event-ID` ile yalnızca kaçırdıklarını alıyor
+(`api/sse.py`, `api/routers/runs.py`). Geçersiz başlık baştan başlatıyor.
 
 **~~`os.environ` mutasyonu~~ — çözüldü.** Gözden geçirilince ortaya çıkan şey bir
 ölçekleme riski değil, **ölü bir ayardı**: `KMP_DUPLICATE_LIB_OK`, `src/__init__.py`
