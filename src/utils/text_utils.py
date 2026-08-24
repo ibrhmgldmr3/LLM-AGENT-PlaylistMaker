@@ -4,6 +4,11 @@ import unicodedata
 from typing import Iterable
 
 
+# A transcript shorter than this is not useful to ranking or RAG.  Keep this
+# policy in one place: every transcript backend must make the same decision.
+MIN_TRANSCRIPT_CHARS = 50
+
+
 # NFKD ile cozulmeyen, ancak birebir Latin karsiligi olan karakterler.
 # Turkce 'i' ve 'g' bunlarin basinda gelir: unicodedata bunlari ayristiramaz.
 _TRANSLITERATION_MAP = str.maketrans(
@@ -92,6 +97,25 @@ def slugify_text(text: str) -> str:
     return normalized.strip("-")
 
 
+def search_key(text: str) -> str:
+    """FTS indeksinin ve SORGUNUN ortak normalizasyonu.
+
+    Neden gerekli: SQLite FTS5'in `unicode61` tokenizer'i Turkce `i`, `g`, `s`
+    harflerini Latin karsiligina indirgemiyor. "olcum" yazan bir sorgu, metinde
+    "olcum" gectigi halde eslesmiyordu.
+
+    Cozum indeks tarafina da AYNI donusumu uygulamak: depoya bu fonksiyonun
+    ciktisi yaziliyor, sorgu da buradan geciyor. Iki taraf ayni normalizasyondan
+    gectigi surece eslesiyorlar -- kritik olan donusumun kendisi degil, TEK
+    OLMASI.
+
+    `slugify_text`ten farki: noktalama SILINMIYOR, yalnizca harfler
+    sadelestiriliyor. FTS5 kelime sinirlarini kendisi buluyor ve metni tireye
+    cevirmek onun tokenizer'ini bozardi.
+    """
+    return transliterate(normalize_text(text)).lower()
+
+
 def tokenize(text: str) -> set[str]:
     return {token for token in slugify_text(text).split("-") if token}
 
@@ -148,6 +172,36 @@ def tokens_match(left: str, right: str) -> bool:
     # konularda belirleyicidir: "python2"/"python3", "gpt4"/"gpt5", "http2"
     # birbirinin cekimli hali degildir.
     return not any(char.isdigit() for char in left[common:] + right[common:])
+
+
+def build_fts_query(text: str) -> str:
+    """Serbest metni SQLite FTS5 sorgusuna cevirir.
+
+    Tokenlar `query_tokens` ile uretiliyor: stopword'ler ayiklanmis, harfler
+    `slugify_text` uzerinden `[a-z0-9]`e indirgenmis. Bu, FTS5'in sorgu
+    dilindeki ozel karakterlerin (tirnak, `*`, `(`, `:`, `-`, `^`) hicbirinin
+    ciktiya SIZAMAYACAGI anlamina geliyor -- ayri bir kacis (escaping) adimina
+    gerek birakmayan sey bu.
+
+    ONEK ESLESTIRMESI (`*`) Turkce icin sart: FTS5 tokenlari TAM esler ve
+    "guncelleme" arayan bir sorgu, metinde "guncellemesi" gectigi halde hicbir
+    sey bulmuyordu. Olculdu -- ekli bicimler leksik yolun tamamini sessizce
+    devre disi birakiyordu.
+
+    Esik `_MIN_STEM_LENGTH`: kisa tokenlarda onek cok genis eslesir
+    ("dil*" -> "dilim", "dilekce"). Ayni sabit `tokens_match` govdeleyicisinde
+    de kok icin asgari uzunluk; iki yol ayni kurali paylasiyor.
+
+    Tokenlar `OR` ile birlesiyor: `AND` olsaydi soruda gecen TEK bir yabanci
+    kelime tum sonuclari sifirlardi. Alaka, birlestirme ve esik kapilarinda
+    olculuyor -- burada isteneni GENIS tutmak dogru.
+    """
+    tokens = sorted(query_tokens(text))
+    if not tokens:
+        return ""
+    return " OR ".join(
+        f"{token}*" if len(token) >= _MIN_STEM_LENGTH else token for token in tokens
+    )
 
 
 # Arka plan (konu) tokenlari, alt konuyu ayirt etmedigi icin dusuk agirlik alir.

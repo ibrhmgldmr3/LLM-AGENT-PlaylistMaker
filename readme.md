@@ -372,6 +372,57 @@ can override the server default per run.
 | `ENABLE_STUDY_NOTES` | `false` | one additional LLM call per selected video |
 | `STUDY_NOTE_TRANSCRIPT_CHAR_LIMIT` | `24000` | transcript is truncated to this before prompting |
 
+### Learning spaces (RAG)
+
+Off by default. A **learning space** is a persistent pool: the videos from one or more
+completed runs plus documents you upload (PDF, DOCX, TXT, MD). You ask it questions and
+get an answer built **only** from those sources, with citations that link to the exact
+second of a video or the page of a document.
+
+The point of the feature is not the answering — it is the **refusing**. If the pool does
+not cover the question, it says so instead of inventing something. Three independent
+gates enforce that:
+
+1. **Retrieval threshold** — if the best candidate has no lexical match *and* scores
+   below `RAG_MIN_SIMILARITY`, the model is **never called**. Free and deterministic.
+2. **Output schema** — the model must return `answered` plus the excerpt numbers it used.
+3. **Citation check** — numbers it did not receive are stripped; if none survive, the
+   answer is downgraded to "not found".
+
+Retrieval is hybrid: SQLite FTS5 (lexical) and embeddings (semantic), merged with
+reciprocal rank fusion. There is no vector database — a space holds a few thousand
+chunks and cosine over a float32 BLOB is measured in milliseconds. If the embedding
+provider is down, the lexical half keeps working; search gets weaker, not absent.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ENABLE_RAG` | `false` | one embedding + one generation call per question |
+| `EMBEDDING_PROVIDER` | follows `LLM_PROVIDER` | can differ from the generation provider |
+| `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | `text-embedding-004` is **gone** (404) |
+| `TOGETHER_EMBEDDING_MODEL` | `BAAI/bge-m3` | multilingual — decisive for Turkish |
+| `EMBEDDING_BATCH_SIZE` | `64` | chunks per embedding request |
+| `RAG_CHUNK_CHARS` / `RAG_CHUNK_OVERLAP_CHARS` | `1200` / `200` | overlap keeps a boundary-straddling answer whole |
+| `RAG_TOP_K` | `8` | chunks placed in the prompt |
+| `RAG_MAX_CHUNKS_PER_SOURCE` | `3` | stops one long video from filling the context |
+| `RAG_MIN_SIMILARITY` | `0.70` | **model-specific**, see below |
+| `RAG_CONTEXT_CHAR_LIMIT` | `12000` | |
+| `MAX_SPACES_PER_USER` | `10` | storage and embedding cost sits with the server owner |
+| `MAX_DOCUMENTS_PER_SPACE` | `25` | |
+| `MAX_UPLOAD_BYTES` | `20971520` | 20 MB, enforced while reading, not from `Content-Length` |
+
+**`RAG_MIN_SIMILARITY` is measured, not guessed.** With `gemini-embedding-001`, relevant
+questions scored 0.804–0.852 against their chunk and irrelevant ones 0.496–0.542. The
+value was originally planned at `0.55`, which sat 0.008 above the irrelevant ceiling —
+the gate would effectively never have closed. Gemini embeddings keep even unrelated text
+around ~0.5, so **re-measure if you change the embedding model**. Rejected queries log
+their best score for exactly this purpose. Details in
+[`docs/rag-plan.md`](docs/rag-plan.md).
+
+A source that yields no searchable text — a video with no transcript, a scanned PDF — is
+recorded as `no_text`, not `failed`, and shown as "kapsam dışı" in the UI. That
+distinction matters: you need to know what *cannot* be searched, otherwise a later "not
+found" reads like a bug. There is no OCR; the UI says so plainly.
+
 ### yt-dlp
 
 | Variable | Default | Notes |
@@ -487,12 +538,14 @@ api/                        FastAPI layer — the application entry point
   deps.py                   current user (session or single-user), admin guard, config composition
   schemas.py                request/response contracts
   sse.py                    Server-Sent Events for live progress
-  routers/                  runs, config, auth, admin
+  routers/                  runs, config, auth, admin, spaces
 web/                        React + Vite + TypeScript frontend
   src/api/                  typed client
   src/hooks/useRunStream.ts EventSource wrapper for live progress
+  src/hooks/useJobStream.ts  generic job progress (learning-space ingest)
   src/features/run/         form, progress, results
   src/features/history/     past runs
+  src/features/space/       learning spaces: sources, ingest, grounded Q&A
   src/styles.css            palette carried over from src/ui/theme.py
 src/
   config/settings.py        env → validated AppConfig
@@ -510,12 +563,17 @@ src/
     metadata_ranker.py      scoring
     recommendation_service.py  global assignment
     topic_service.py / transcript_service.py / playlist_publish_service.py
+    rag_service.py          ingest + retrieval + the three abstention gates
+    chunking.py             transcript/document → overlapping, timestamped chunks
+    embedding_service.py    float32 BLOB vectors, cosine search (no vector DB)
+    document_parser.py      PDF / DOCX / TXT / MD → (page, text)
     run_retention.py        deleting a run from the database AND from disk
+    space_retention.py      deleting a learning space from the database AND from disk
   storage/sqlite_store.py   cache, provider cooldowns, run history, OAuth tokens, quota counters
   storage/crypto.py         at-rest encryption for stored OAuth tokens
   jobs/                     JobRunner abstraction (in-process today)
   utils/                    text, retry, logging, yt-dlp options
-tests/                      359 tests
+tests/                      471 tests
 ```
 
 ## Tests

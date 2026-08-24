@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ArrowLeft, Plus } from "lucide-react";
 import { api, ApiError, setUnauthorizedHandler } from "./api/client";
 import type { Capabilities, CreateRunRequest, PlaylistResult } from "./api/types";
 import { useRunStream } from "./hooks/useRunStream";
@@ -7,27 +8,45 @@ import { RunProgress } from "./features/run/RunProgress";
 import { RunResult } from "./features/run/RunResult";
 import { HistoryList } from "./features/history/HistoryList";
 import { SignIn } from "./features/auth/SignIn";
+import { SpaceWorkspace } from "./features/learn/SpaceWorkspace";
+import { AppShell, type Section } from "./components/AppShell";
+import { Note } from "./components/ui";
 import type { Session } from "./api/client";
 
-type Tab = "run" | "history";
+const THEME_KEY = "derslik:theme";
+
+function initialDark(): boolean {
+  try {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved) return saved === "dark";
+  } catch {
+    /* gizli sekme: tercih okunamaz, sistem ayarina duselim */
+  }
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("run");
-  const [dark, setDark] = useState(false);
+  const [section, setSection] = useState<Section>("start");
+  const [dark, setDark] = useState(initialDark);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [openedResult, setOpenedResult] = useState<PlaylistResult | null>(null);
+  const [openedCourse, setOpenedCourse] = useState<PlaylistResult | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   // `createRun` yaniti donene KADAR true. `run.state` tek basina yetmiyordu:
   // istek ucusta iken hicbir sey "calisiyor" gorunmuyor, hizli cift tiklama
   // ya da yavas ag iki AYRI sunucu calistirmasi baslatiyor ve ikincisi
   // izlenmedigi icin sahipsiz kaliyordu.
   const [submitting, setSubmitting] = useState(false);
-
   const run = useRunStream();
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
+    document.documentElement.classList.toggle("dark", dark);
+    try {
+      window.localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+    } catch {
+      /* yazilamadi: tema yalnizca bu oturum icin gecerli olur */
+    }
   }, [dark]);
 
   // Herhangi bir uctan 401 gelirse oturum durumunu YENIDEN ogren. `me()` 401
@@ -49,7 +68,6 @@ export default function App() {
   const start = useCallback(
     (payload: CreateRunRequest) => {
       setSubmitError(null);
-      setOpenedResult(null);
       setSubmitting(true);
       api
         .createRun(payload)
@@ -63,73 +81,90 @@ export default function App() {
     [run],
   );
 
-  const openFromHistory = useCallback((runId: string) => {
+  const openCourse = useCallback((runId: string) => {
     api.getRun(runId).then((body) => {
-      setOpenedResult(body.result);
-      setTab("run");
+      setOpenedCourse(body.result);
+      setSection("courses");
     });
+  }, []);
+
+  const navigate = useCallback((next: Section) => {
+    // Bolum degistirirken acik ders KAPANIYOR: "Derslerim"e donunce eski
+    // dersin acik kalmasi, listeye ulasmak icin iki tiklama demekti.
+    if (next !== "courses") setOpenedCourse(null);
+    setSection(next);
   }, []);
 
   // Form kilidi istegin GONDERILDIGI anda basliyor (cift gonderim korumasi);
   // ilerleme paneli ise ancak gercek bir calistirma varken anlamli.
   const busy = submitting || run.state === "running";
   const running = run.state === "running";
-  const shownResult = openedResult ?? run.result;
+  const ragOn = capabilities?.rag_available !== false;
+  const sections: Section[] = ragOn ? ["start", "courses", "room"] : ["start", "courses"];
+
+  if (session?.auth_required && !session.signed_in) {
+    return <SignIn dark={dark} onToggleTheme={() => setDark((value) => !value)} />;
+  }
+
+  const title =
+    section === "start"
+      ? "Öğrenmeye başla"
+      : section === "room"
+        ? "Çalışma odası"
+        : (openedCourse?.topic ?? "Derslerim");
+
+  const actions =
+    section === "courses" ? (
+      openedCourse ? (
+        <button type="button" className="btn btn--quiet" onClick={() => setOpenedCourse(null)}>
+          <ArrowLeft className="h-4 w-4" aria-hidden />
+          Derslerim
+        </button>
+      ) : (
+        <button type="button" className="btn" onClick={() => navigate("start")}>
+          <Plus className="h-4 w-4" aria-hidden />
+          Yeni ders planı
+        </button>
+      )
+    ) : null;
 
   return (
-    <div className="page">
-      <header className="hero">
-        <div className="hero__content">
-          <p className="eyebrow">Learning Playlist Generator</p>
-          <h1>Make A Playlist</h1>
-          <p className="subtle">
-            Metadata öncelikli sıralama, havuzlanmış aday keşfi ve isteğe bağlı transkript
-            zenginleştirmesi.
-          </p>
-        </div>
-      </header>
-
-      {session?.auth_required && !session.signed_in ? (
-        <SignIn />
-      ) : (
-      <>
-      <div className="row" style={{ justifyContent: "space-between", marginBottom: "1rem" }}>
-        <div className="tabs">
-          <button aria-selected={tab === "run"} onClick={() => setTab("run")}>
-            Oluştur
-          </button>
-          <button aria-selected={tab === "history"} onClick={() => setTab("history")}>
-            Geçmiş
-          </button>
-        </div>
-        <div className="row" style={{ gap: "0.5rem" }}>
-          {session?.auth_required && session.signed_in && (
-            <button
-              className="ghost"
-              onClick={() => api.logout().then(() => window.location.reload())}
-              title={session.email ?? undefined}
-            >
-              Çıkış
-            </button>
-          )}
-          <button className="ghost" onClick={() => setDark((value) => !value)}>
-            {dark ? "☀ Aydınlık" : "🌙 Karanlık"}
-          </button>
-        </div>
-      </div>
-
-      {tab === "run" ? (
-        <>
+    <AppShell
+      section={section}
+      sections={sections}
+      onNavigate={navigate}
+      title={title}
+      actions={actions}
+      dark={dark}
+      onToggleTheme={() => setDark((value) => !value)}
+      email={session?.auth_required && session.signed_in ? session.email : null}
+      onSignOut={
+        session?.auth_required && session.signed_in
+          ? () => api.logout().then(() => window.location.reload())
+          : undefined
+      }
+      wide={section === "room"}
+    >
+      {section === "start" && (
+        <div className="stack stack--loose">
           <RunForm capabilities={capabilities} busy={busy} onSubmit={start} />
 
-          {submitError && <p className="alert alert--error">{submitError}</p>}
+          {submitError && (
+            <Note tone="danger" role="alert" title="Ders planı başlatılamadı">
+              {submitError}
+            </Note>
+          )}
+
           {/* Iptal kirmizi kutuda gosterilmiyor: kullanicinin kendi karari,
               bozulan bir sey degil. */}
-          {run.error && (
-            <p className={run.state === "cancelled" ? "alert" : "alert alert--error"}>
-              {run.error}
-            </p>
-          )}
+          {run.error &&
+            (run.state === "cancelled" ? (
+              <Note role="status">{run.error}</Note>
+            ) : (
+              <Note tone="danger" role="alert" title="Hazırlık yarıda kaldı">
+                {run.error}
+              </Note>
+            ))}
 
           {running && (
             <RunProgress
@@ -140,13 +175,25 @@ export default function App() {
             />
           )}
 
-          {shownResult && <RunResult result={shownResult} />}
-        </>
-      ) : (
-        <HistoryList onOpen={openFromHistory} />
+          {run.result && (
+            <div className="stack">
+              <Note tone="ok" role="status" title="Ders planın hazır">
+                Bu plan “Derslerim” bölümüne kaydedildi; istediğin zaman geri dönebilirsin.
+              </Note>
+              <RunResult result={run.result} />
+            </div>
+          )}
+        </div>
       )}
-      </>
-      )}
-    </div>
+
+      {section === "courses" &&
+        (openedCourse ? (
+          <RunResult result={openedCourse} />
+        ) : (
+          <HistoryList onOpen={openCourse} onCreate={() => navigate("start")} />
+        ))}
+
+      {section === "room" && <SpaceWorkspace />}
+    </AppShell>
   );
 }

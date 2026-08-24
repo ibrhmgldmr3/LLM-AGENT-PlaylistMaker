@@ -15,6 +15,8 @@ ENV_TO_FIELD: dict[str, str] = {
     "GEMINI_API_KEY": "gemini_api_key",
     "TOGETHER_API_KEY": "together_api_key",
     "TOGETHER_MODEL": "together_model",
+    "OPENROUTER_API_KEY": "openrouter_api_key",
+    "OPENROUTER_MODEL": "openrouter_model",
     "GEMINI_MODEL": "gemini_model",
     "GEMINI_THINKING_BUDGET": "gemini_thinking_budget",
     "YOUTUBE_DATA_API_KEY": "youtube_data_api_key",
@@ -29,9 +31,12 @@ ENV_TO_FIELD: dict[str, str] = {
     "FASTER_WHISPER_DEVICE": "faster_whisper_device",
     "FASTER_WHISPER_COMPUTE_TYPE": "faster_whisper_compute_type",
     "FASTER_WHISPER_BEAM_SIZE": "faster_whisper_beam_size",
+    "FASTER_WHISPER_CPU_THREADS": "faster_whisper_cpu_threads",
+    "FASTER_WHISPER_NUM_WORKERS": "faster_whisper_num_workers",
     "WHISPER_CPP_CLI_PATH": "whisper_cpp_cli_path",
     "WHISPER_CPP_MODEL_PATH": "whisper_cpp_model_path",
     "WHISPER_CPP_TIMEOUT_SEC": "whisper_cpp_timeout_sec",
+    "FASTER_WHISPER_TIMEOUT_SEC": "faster_whisper_timeout_sec",
     "FFMPEG_PATH": "ffmpeg_path",
     "YTDLP_PROXY": "ytdlp_proxy",
     "YTDLP_COOKIES_FROM_BROWSER": "ytdlp_cookies_from_browser",
@@ -54,11 +59,14 @@ ENV_TO_FIELD: dict[str, str] = {
     "TRANSCRIPT_ENRICHMENT_TOP_K": "transcript_enrichment_top_k",
     "ENABLE_ASR_FALLBACK": "enable_asr_fallback",
     "MAX_ASR_VIDEOS_PER_RUN": "max_asr_videos_per_run",
+    "MAX_ASR_VIDEO_DURATION_SEC": "max_asr_video_duration_sec",
+    "MAX_ASR_SECONDS_PER_RUN": "max_asr_seconds_per_run",
     "ENABLE_STUDY_NOTES": "enable_study_notes",
     "STUDY_NOTE_TRANSCRIPT_CHAR_LIMIT": "study_note_transcript_char_limit",
     "CHANNEL_REPEAT_PENALTY": "channel_repeat_penalty",
     "MAX_SEARCH_WORKERS": "max_search_workers",
     "MAX_TRANSCRIPT_WORKERS": "max_transcript_workers",
+    "MAX_ASR_WORKERS": "max_asr_workers",
     "REQUEST_TIMEOUT_SEC": "request_timeout_sec",
     "RETRY_MAX_ATTEMPTS": "retry_max_attempts",
     "RETRY_BASE_DELAY_SEC": "retry_base_delay_sec",
@@ -68,6 +76,21 @@ ENV_TO_FIELD: dict[str, str] = {
     "PROVIDER_COOLDOWN_SEC": "provider_cooldown_sec",
     "RATE_LIMIT_COOLDOWN_SEC": "rate_limit_cooldown_sec",
     "PROVIDER_FAILURE_THRESHOLD": "provider_failure_threshold",
+    # RAG / ogrenme alani
+    "ENABLE_RAG": "enable_rag",
+    "EMBEDDING_PROVIDER": "embedding_provider",
+    "GEMINI_EMBEDDING_MODEL": "gemini_embedding_model",
+    "TOGETHER_EMBEDDING_MODEL": "together_embedding_model",
+    "EMBEDDING_BATCH_SIZE": "embedding_batch_size",
+    "RAG_CHUNK_CHARS": "rag_chunk_chars",
+    "RAG_CHUNK_OVERLAP_CHARS": "rag_chunk_overlap_chars",
+    "RAG_TOP_K": "rag_top_k",
+    "RAG_MAX_CHUNKS_PER_SOURCE": "rag_max_chunks_per_source",
+    "RAG_MIN_SIMILARITY": "rag_min_similarity",
+    "RAG_CONTEXT_CHAR_LIMIT": "rag_context_char_limit",
+    "MAX_SPACES_PER_USER": "max_spaces_per_user",
+    "MAX_DOCUMENTS_PER_SPACE": "max_documents_per_space",
+    "MAX_UPLOAD_BYTES": "max_upload_bytes",
 }
 
 
@@ -107,6 +130,10 @@ class RunOptions(BaseModel):
     # Together model kimligi. Hesaba gore degisebildigi icin yapilandirilabilir;
     # varsayilanin sizin hesabinizda kullanilabilir oldugunu dogrulayin.
     together_model: str = Field(default="meta-llama/Llama-3.3-70B-Instruct-Turbo")
+    # OpenRouter model kimligi "<saglayici>/<model>" biciminde (ornegin
+    # "openai/gpt-4o-mini"). Hesapta hangi modellerin acik oldugu OpenRouter
+    # panelinden dogrulanmali.
+    openrouter_model: str = Field(default="openai/gpt-4o-mini")
     youtube_playlist_privacy_status: str = Field(default="private")
     # Ana dil disinda Ingilizce arama da yapilsin mi (arayuzdeki anahtarin
     # varsayilani). Alt konu basina bir ek `search.list` cagrisi = +100 kota birimi.
@@ -121,6 +148,14 @@ class RunOptions(BaseModel):
     # siralamaya katkisi en fazla +1.0 puan. Arayuzden acilabilir.
     enable_asr_fallback: bool = Field(default=False)
     max_asr_videos_per_run: int = Field(default=2)
+    # ADET tavani maliyeti sinirlamak icin TEK BASINA yetmiyor: ASR'in bedeli
+    # video SURESIYLE orantili. "En fazla 2 video" kurali, 3 saatlik iki dersi
+    # de kabul ediyordu. Asagidaki iki tavan ayni sorunun iki yuzu:
+    #   - video basina: tek bir uzun videonun butun kotayi yemesini engeller
+    #   - calistirma basina: toplam hesaplama butcesini bagler
+    # 0 = sinirsiz (ikisi de).
+    max_asr_video_duration_sec: int = Field(default=3600)
+    max_asr_seconds_per_run: int = Field(default=7200)
     # VARSAYILAN KAPALI. Transkripti olan her secilen video icin BIR EK LLM
     # cagrisi demek -- olculdu: transkript ortancasi ~16.000 karakter (~4.000
     # token), 6 alt basliklik bir playlist icin toplam girdi ~24.000 token.
@@ -173,11 +208,16 @@ class RunOptions(BaseModel):
             raise ValueError("TRANSCRIPT_ENRICHMENT_TOP_K must be greater than 0")
         return value
 
-    @field_validator("max_asr_videos_per_run")
+    @field_validator(
+        "max_asr_videos_per_run",
+        "max_asr_video_duration_sec",
+        "max_asr_seconds_per_run",
+    )
     @classmethod
     def validate_max_asr_videos(cls, value: int) -> int:
+        # 0 ANLAMLI bir deger: "sinirsiz". Negatif degil.
         if value < 0:
-            raise ValueError("MAX_ASR_VIDEOS_PER_RUN must be zero or greater")
+            raise ValueError("ASR limitleri sıfır veya daha büyük olmalı")
         return value
 
 
@@ -193,9 +233,10 @@ class ServerConfig(BaseModel):
     # PAYLASIMLI LLM anahtari: tum kullanicilarin sorgulari BU anahtarla
     # gidiyor, kullanici kendi anahtarini girmiyor. Hangi saglayicinin
     # kullanilacagini da bu belirliyor (kullaniciya ozgu degil).
-    llm_provider: Literal["gemini", "together"] = Field(default="gemini")
+    llm_provider: Literal["gemini", "together", "openrouter"] = Field(default="gemini")
     gemini_api_key: str | None = Field(default=None, description="Gemini API key")
     together_api_key: str | None = Field(default=None, description="Together.ai API key")
+    openrouter_api_key: str | None = Field(default=None, description="OpenRouter API key")
     # PAYLASIMLI YouTube Data API anahtari (arama icin). Kota PROJE basina
     # gunde 10.000 birim ve bir calistirma ~1.200 birim tuketiyor -- yani
     # paylasimli anahtarla TUM kullanicilar icin toplam ~8 calistirma/gun.
@@ -214,9 +255,19 @@ class ServerConfig(BaseModel):
     faster_whisper_device: str = Field(default="cpu")
     faster_whisper_compute_type: str = Field(default="int8")
     faster_whisper_beam_size: int = Field(default=1)
+    # A single ASR task may use all CPU cores. It is deliberately independent
+    # from transcript HTTP concurrency, which can safely be higher.
+    faster_whisper_cpu_threads: int = Field(default=0)
+    faster_whisper_num_workers: int = Field(default=1)
     whisper_cpp_cli_path: str | None = Field(default=None)
     whisper_cpp_model_path: str | None = Field(default=None)
     whisper_cpp_timeout_sec: int = Field(default=1800)
+    # faster-whisper'in KENDI zaman asimi. whisper.cpp ayri bir surec oldugu
+    # icin `subprocess timeout` ile sinirlanabiliyordu; faster-whisper surec
+    # icinde calisiyor ve hicbir tavani yoktu -- yani `auto` modun VARSAYILAN
+    # arka ucu sinirsizdi. Asili kalan tek bir is transkript worker'ini
+    # suresiz blokluyor, calistirma hic ilerlemiyordu.
+    faster_whisper_timeout_sec: int = Field(default=1800)
     ffmpeg_path: str | None = Field(default=None)
     ytdlp_js_runtime: str | None = Field(default=None)
     allow_unsafe_openmp_workaround: bool = Field(default=True)
@@ -301,8 +352,91 @@ class ServerConfig(BaseModel):
             return set()
         return {part.strip() for part in self.admin_user_ids.split(",") if part.strip()}
 
+    # ----------------------------------------------------------------- RAG
+    #
+    # VARSAYILAN KAPALI -- `enable_study_notes` ile ayni gerekce: her soru bir
+    # embedding + bir uretim cagrisi demek ve anahtarlar PAYLASIMLI, yani
+    # fatura sunucu sahibinde (bkz. docs/react-migration-plan.md §2).
+
+    enable_rag: bool = Field(default=False)
+
+    # Bos = `llm_provider`i izle. Ayri tutulabilmesinin sebebi: bir saglayicinin
+    # uretim modeli tercih edilirken embedding modeli digerininki olabilir
+    # (fiyat, boyut, dil destegi ayri ayri degerlendiriliyor).
+    embedding_provider: Literal["gemini", "together"] | None = Field(default=None)
+    # OLCULDU: `text-embedding-004` bu API surumunde ARTIK YOK (404
+    # NOT_FOUND). `gemini-embedding-001` bugunun kararli modeli.
+    #
+    # Uretim tarafindaki gibi bir YEDEK MODEL LISTESI bilerek YOK: bir alanin
+    # yarisi bir modelle yarisi digeriyle gomulurse aralarindaki kosinus
+    # benzerligi anlamsizlasir ve arama SESSIZCE bozulur. Model bulunamazsa
+    # hata yukseliyor, sessizce baskasina dusulmuyor.
+    gemini_embedding_model: str = Field(default="gemini-embedding-001")
+    # Cok dilli olmasi Turkce icin BELIRLEYICI: yalnizca Ingilizce egitilmis bir
+    # embedding modelinde Turkce soru ile Turkce transkript arasindaki benzerlik
+    # gurultuye gomuluyor.
+    together_embedding_model: str = Field(default="BAAI/bge-m3")
+    embedding_batch_size: int = Field(default=64, ge=1, le=512)
+
+    rag_chunk_chars: int = Field(default=1200, ge=200)
+    rag_chunk_overlap_chars: int = Field(default=200, ge=0)
+    # Baglama giren parca sayisi ve kaynak cesitliligi tavani. Ikincisi tek bir
+    # uzun videonun baglami tamamen doldurmasini engelliyor -- ayni gerekce
+    # `channel_repeat_penalty`de.
+    rag_top_k: int = Field(default=8, ge=1, le=50)
+    rag_max_chunks_per_source: int = Field(default=3, ge=1, le=20)
+    # KACINMA ESIGI (bkz. `rag_service` 1. kapi). En iyi aday bunun altindaysa
+    # ve leksik eslesme de yoksa LLM HIC CAGRILMIYOR, "bulamadim" donuyor.
+    #
+    # OLCULDU (`gemini-embedding-001`, 3 parca x 7 soru):
+    #   ilgili sorular   : 0.804 - 0.852
+    #   alakasiz sorular : 0.496 - 0.542
+    # Ilk deger 0.55 idi ve alakasiz tavanina yalnizca 0.008 kaliyordu -- yani
+    # kapi pratikte hic kapanmiyordu. 0.70, iki kumenin arasindaki 0.26'lik
+    # bosluga her iki yandan paylı oturuyor.
+    #
+    # DIKKAT, deger MODELE OZGU: Gemini embedding modellerinde iki alakasiz
+    # metnin kosinusu bile ~0.5 tabaninda kaliyor (vektorler dar bir koni
+    # icinde). Bastan tahmin edilen "0.55 makul gorunuyor" degeri tam da bu
+    # yuzden yanlisti. Baska bir modele gecilirse (ornegin `BAAI/bge-m3`) bu
+    # sayi YENIDEN olculmeli; `rag_service` esigin altinda kalip reddedilen
+    # sorgularin en iyi skorunu tam da bunun icin logluyor.
+    rag_min_similarity: float = Field(default=0.70, ge=0.0, le=1.0)
+    rag_context_char_limit: int = Field(default=12_000, ge=1_000)
+
+    # Depolama ve embedding maliyeti sunucu sahibinde; tavanlar bu yuzden var.
+    max_spaces_per_user: int = Field(default=10, ge=1)
+    max_documents_per_space: int = Field(default=25, ge=1)
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1024)
+
+    def effective_embedding_provider(self) -> str:
+        """Embedding hangi saglayicidan alinacak.
+
+        OpenRouter'in embedding destegi modele gore degisiyor ve cogu modelde
+        YOK; bu yuzden `llm_provider=openrouter` iken embedding otomatik olarak
+        Gemini'ye (anahtari yoksa Together'a) dusuyor. Acik secim icin
+        `EMBEDDING_PROVIDER` hala baskin.
+        """
+        if self.embedding_provider:
+            return self.embedding_provider
+        if self.llm_provider in ("gemini", "together"):
+            return self.llm_provider
+        return "gemini" if self.gemini_api_key else "together"
+
+    def embedding_model(self) -> str:
+        """SECILEN embedding saglayicisinin model kimligi.
+
+        Model adi vektorlerle birlikte saklaniyor (`chunk_embedding.model`):
+        farkli modellerin vektorleri arasinda kosinus benzerligi anlamsizdir ve
+        model degistiginde eski satirlar yeniden uretilmeli.
+        """
+        if self.effective_embedding_provider() == "together":
+            return self.together_embedding_model
+        return self.gemini_embedding_model
+
     max_search_workers: int = Field(default=4)
     max_transcript_workers: int = Field(default=4)
+    max_asr_workers: int = Field(default=1)
     request_timeout_sec: int = Field(default=30)
     retry_max_attempts: int = Field(default=3)
     retry_base_delay_sec: float = Field(default=1.0)
@@ -328,15 +462,26 @@ class ServerConfig(BaseModel):
         "request_timeout_sec",
         "retry_max_attempts",
         "whisper_cpp_timeout_sec",
+        "faster_whisper_timeout_sec",
         "provider_failure_threshold",
         "max_search_workers",
         "max_transcript_workers",
+        "max_asr_workers",
         "faster_whisper_beam_size",
+        "faster_whisper_num_workers",
     )
     @classmethod
     def validate_positive_ints_server(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("Value must be greater than 0")
+        return value
+
+    @field_validator("faster_whisper_cpu_threads")
+    @classmethod
+    def validate_faster_whisper_cpu_threads(cls, value: int) -> int:
+        # faster-whisper uses 0 to mean its own default (all available cores).
+        if value < 0:
+            raise ValueError("FASTER_WHISPER_CPU_THREADS must be zero or greater")
         return value
 
     @field_validator(
@@ -410,7 +555,11 @@ class AppConfig(ServerConfig, UserCredentials, RunOptions):
         Anahtar secimini tek bir yerde topluyor; cagiran taraflarin hangi
         saglayicinin hangi alani kullandigini bilmesi gerekmiyor.
         """
-        return self.together_api_key if self.llm_provider == "together" else self.gemini_api_key
+        if self.llm_provider == "together":
+            return self.together_api_key
+        if self.llm_provider == "openrouter":
+            return self.openrouter_api_key
+        return self.gemini_api_key
 
     def public_capabilities(self) -> dict[str, bool]:
         """Arayuzun hangi kontrolleri acabilecegini anlatir. SIR ICERMEZ.
@@ -430,6 +579,12 @@ class AppConfig(ServerConfig, UserCredentials, RunOptions):
             ),
             "asr_available": self.asr_backend_available(),
             "cookies_configured": bool(self.ytdlp_cookies_from_browser or self.ytdlp_cookies_file),
+            # RAG hem ACIK hem de bir LLM anahtari kurulu olmali: gomme ve
+            # yanit uretimi ayni saglayicidan geliyor. Ikisinden biri eksikse
+            # arayuz "Ogren" sekmesini hic acmamali -- acip her soruda hata
+            # gostermek kullaniciya ozelligin BOZUK oldugunu dusundururdu,
+            # oysa yalnizca yapilandirilmamis.
+            "rag_available": bool(self.enable_rag and self.llm_api_key()),
         }
 
     def asr_backend_available(self) -> bool:

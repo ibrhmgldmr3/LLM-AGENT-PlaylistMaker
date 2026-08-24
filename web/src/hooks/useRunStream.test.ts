@@ -157,7 +157,7 @@ describe("useRunStream", () => {
     act(() => FakeEventSource.last.emit("done", snapshot({ state: "cancelled", error: null })));
 
     expect(result.current.state).toBe("cancelled");
-    expect(result.current.error).toBe("Çalıştırma iptal edildi.");
+    expect(result.current.error).toBe("Hazırlığı sen iptal ettin.");
   });
 
   it("iptal disinda hata metni yoksa genel mesaji korur", () => {
@@ -166,7 +166,7 @@ describe("useRunStream", () => {
 
     act(() => FakeEventSource.last.emit("done", snapshot({ state: "failed", error: null })));
 
-    expect(result.current.error).toBe("Çalıştırma tamamlanamadı");
+    expect(result.current.error).toBe("Ders planı tamamlanamadı.");
   });
 
   it("sonuc cekilemezse durumu 'failed' yapar", async () => {
@@ -317,7 +317,7 @@ describe("useRunStream", () => {
     act(() => FakeEventSource.last.failPermanently());
 
     expect(result.current.state).toBe("failed");
-    expect(result.current.error).toMatch(/bağlantı kesildi/i);
+    expect(result.current.error).toMatch(/bağlantı koptu/i);
   });
 
   it("GECICI kopmayi hata saymaz -- tarayici kendisi yeniden dener", () => {

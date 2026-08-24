@@ -98,10 +98,10 @@ export function useRunStream() {
             error:
               snapshot.error ??
               (snapshot.state === "cancelled"
-                ? "Çalıştırma iptal edildi."
+                ? "Hazırlığı sen iptal ettin."
                 : snapshot.state === "interrupted"
-                  ? "Sunucu yeniden başlatıldığı için çalıştırma yarıda kaldı."
-                  : "Çalıştırma tamamlanamadı"),
+                  ? "Sunucu yeniden başlatıldığı için hazırlık yarıda kaldı."
+                  : "Ders planı tamamlanamadı."),
           }));
         }
       });
@@ -132,8 +132,8 @@ export function useRunStream() {
             ...previous,
             state: "failed",
             error:
-              "Çalıştırma akışıyla bağlantı kesildi. Oturumunuz düşmüş olabilir; " +
-              "sayfayı yenileyip geçmişten kontrol edin.",
+              "Sunucuyla bağlantı koptu. Oturumun düşmüş olabilir; sayfayı " +
+              "yenileyip Derslerim bölümünden kontrol et.",
           }));
         }
       });

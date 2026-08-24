@@ -35,7 +35,7 @@ describe("HistoryList", () => {
     render(<HistoryList onOpen={vi.fn()} />);
     await screen.findByText("k konu 0");
 
-    fireEvent.click(screen.getByRole("button", { name: "Sonraki →" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sonraki" }));
     await screen.findByText("ikinci konu 0");
 
     // Sayfadaki TEK ogeyi sil -> 2. sayfa bosaliyor.
@@ -47,7 +47,7 @@ describe("HistoryList", () => {
 
     // Bos ekran DEGIL, 1. sayfa gelmeli.
     await screen.findByText("k konu 0");
-    expect(screen.queryByText("Henüz çalıştırma yok.")).toBeNull();
+    expect(screen.queryByText("Henüz bir dersin yok.")).toBeNull();
   });
 
   it("gercekten bos gecmiste bos mesajini gosterir", async () => {
@@ -60,6 +60,6 @@ describe("HistoryList", () => {
 
     render(<HistoryList onOpen={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText("Henüz çalıştırma yok.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Henüz bir dersin yok.")).toBeTruthy());
   });
 });

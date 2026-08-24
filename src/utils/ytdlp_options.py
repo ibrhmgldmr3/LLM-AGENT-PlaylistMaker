@@ -1,9 +1,22 @@
 import functools
 import inspect
 import shutil
-from typing import Optional, Tuple
+from typing import Optional
 
 from src.config import AppConfig
+# `parse_cookies_from_browser` burada TANIMLI DEGIL, yeniden ihrac ediliyor:
+# tanimi `http_identity` icinde cunku artik yt-dlp disinda `requests` tarafinda
+# da kullaniliyor. Bu modulden import eden mevcut cagri yerleri bozulmasin diye
+# ad burada goruntude tutuluyor.
+from src.utils.http_identity import DEFAULT_USER_AGENT, parse_cookies_from_browser
+
+__all__ = [
+    "build_ydl_common_options",
+    "build_js_runtime_options",
+    "js_runtime_warning",
+    "parse_cookies_from_browser",
+    "supports_js_runtimes",
+]
 
 
 @functools.lru_cache(maxsize=1)
@@ -24,18 +37,6 @@ def supports_js_runtimes() -> bool:
         return True
 
 
-def parse_cookies_from_browser(spec: Optional[str]) -> Optional[Tuple[str, ...]]:
-    if not spec:
-        return None
-    value = spec.strip()
-    if not value:
-        return None
-    parts = tuple(part for part in value.split(":") if part)
-    if not parts:
-        return None
-    return parts
-
-
 def build_ydl_common_options(config: AppConfig, *, need_media_formats: bool = False) -> dict:
     """Ortak yt-dlp secenekleri.
 
@@ -49,10 +50,9 @@ def build_ydl_common_options(config: AppConfig, *, need_media_formats: bool = Fa
         "no_warnings": True,
         # Indirme ilerleme cubugu stdout'u kirletiyor ve Streamlit loglarinda gurultu yaratiyor.
         "noprogress": True,
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-        ),
+        # yt-dlp ile `requests` tarafi AYNI User-Agent'i tasimali: ayni kosuda
+        # iki farkli istemci kimligi gormek dikkat cekicidir.
+        "user_agent": DEFAULT_USER_AGENT,
     }
     if not need_media_formats:
         options["extractor_args"] = {"youtube": {"skip": ["dash", "hls"]}}

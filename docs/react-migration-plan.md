@@ -376,8 +376,54 @@ ayrı bir worker havuzu ve sıkı kota gerekir; muhtemelen ücretli katman özel
 
 ---
 
-## 7. Sonraki adım
+## 7. Bugünkü durum ve sonraki adım
 
-Faz 0 ile başlanır — davranış değişmez, testler geçmeye devam eder, Streamlit çalışır.
-İçindeki en değerli iki iş: **config ayrımı** ve **`user_id` kolonu**. İkisi de bugün
-ucuz, sonra pahalı.
+**Faz 0–4 tamamlandı, Faz 5 kısmen tamamlandı.** Yeni bir faz beklenmiyor; proje şu an
+**Faz 5 sonrası bakım ve sertleştirme** evresinde. Kalan iş mimari eklemek değil,
+üretimde biriken gerçek kullanım verisine göre ayar kalibre etmek (aşağıya bakın).
+
+### Faz 5'te fiilen tamamlananlar
+
+- [x] Google OAuth girişi + `AUTH_MODE=multi_user` + oturum çerezi (`api/routers/auth.py`)
+      — `get_current_user`'ın imzası baştan buna hazırdı, hiçbir rota elden geçmedi
+- [x] OAuth jetonları diskte şifreli (`SecretBox`, `SECRET_ENCRYPTION_KEY` ayarlıysa)
+- [x] Kullanıcı başına günlük kota (`MAX_RUNS_PER_USER_PER_DAY`) ve servis geneli kota
+      tavanı (`MAX_UNITS_PER_DAY`) — kabul kontrolü ve yazım aynı transaction'da,
+      kota admission anında rezerve ediliyor
+- [x] `GET /api/admin/usage` — günlük tüketim, uç nokta kırılımı, kullanıcı bazlı
+      toplamlar, aktif soğumalar, rate-limit/hata/cooldown sayaçları (`api/routers/admin.py`)
+- [x] Sağlayıcı soğuması sunucu geneline çekildi (`SERVER_SCOPE`); başarılı bir çağrı artık
+      süresi dolmamış bir rate-limit soğumasını silmiyor
+- [x] Bekleyen OAuth `state` sözlüğüne tavan — sızıntı önleme (`09d19e4`)
+- [x] OpenMP bayrağının kullanıcı tercihini Windows'ta sessizce ezmesi düzeltildi (`b34cf68`)
+- [x] Günlük olay sayaçları (`provider_event`) gerçekten yazdığını doğrulayan test kilidi
+      (`b2d3cef`, `tests/test_provider_events.py`)
+
+### Belirleyici tersine dönüş: BYOK → paylaşımlı sunucu anahtarı
+
+Plan BYOK (her kullanıcı kendi Gemini/YouTube anahtarını girer) varsayımıyla yazıldı ve
+Faz 0–4 o varsayımla uygulandı. `33ff038` bunu tersine çevirdi: kullanıcıdan Google Cloud
+projesi açıp iki ayrı API anahtarı üretmesini istemek, hedeflenen kullanım için giriş
+engeli olarak fazla yüksek bulundu. Bugün kullanıcı hiçbir anahtar girmiyor — LLM ve
+YouTube anahtarları `.env`'den, sunucu geneli ve tüm kullanıcılar için ortak. Bu değişimle
+birlikte `/api/credentials` ucu, `CredentialsPanel` ekranı ve `user_credential` tablosu
+kaldırıldı. Kota matematiği (§2) değişmedi; değişen tek şey faturayı kimin ödediği —
+şimdi sunucu sahibi, o yüzden yukarıdaki günlük kota tavanları zorunlu hale geldi.
+
+### Bilinçli olarak ertelenenler (bugün yapmak yanlış olurdu)
+
+| Erteleniyor | Neden |
+|---|---|
+| `CeleryJobRunner` + Redis | `JobRunner` arayüzü hazır ve bekliyor; kullanıcı trafiği yokken dağıtık kuyruk kurmak erken optimizasyon olurdu |
+| Rate-limit middleware | Günlük kota (`MAX_RUNS_PER_USER_PER_DAY`) şimdilik yerini tutuyor; gerçek bir eşzamanlılık middleware'i, aşağıdaki kalibrasyon verisi toplanmadan yazılırsa tahminle ayarlanmış olur — tam da §6'nın yasakladığı şey |
+| SQLite → Postgres | Yatay ölçekleme ayrı bir iş; tek instance için SQLite yeterli, dosya sistemi bağımlılığı (`data/runs/`) zaten aynı sınırı taşıyor ve birlikte ele alınmalı |
+
+### Sıradaki somut adım: veri toplamak, kod yazmak değil
+
+Açık kalan tek mühendislik sorusu — eşzamanlılık ayarı (`MAX_SEARCH_WORKERS`,
+`MAX_TRANSCRIPT_WORKERS`, ikisi de bugün `4`) — bir kod değişikliğiyle değil, **ölçüm
+eksikliğiyle** bekliyor (§6). `provider_event` tablosu neredeyse boş; sayaç
+eklendiğinden beri tek çalıştırma yapıldı ve hiçbir sınıra takılmadı. Ayarı şimdi
+değiştirmek bu maddenin kendi yasakladığı tahmin olurdu. İzleme mekanizması hazır
+(`GET /api/admin/usage`, README → "Watching it"); yapılacak olan sunucuyu gerçek trafikle
+çalıştırıp o uca zaman içinde bakmak.

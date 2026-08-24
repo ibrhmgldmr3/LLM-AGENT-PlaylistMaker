@@ -1,5 +1,20 @@
+import {
+  ArrowUpRight,
+  Check,
+  Download,
+  FileJson,
+  ListChecks,
+  NotebookPen,
+  ScrollText,
+  Trophy,
+  Video,
+} from "lucide-react";
 import { api } from "../../api/client";
 import { PublishPanel } from "../publish/PublishPanel";
+import { Fold, Meter, Note } from "../../components/ui";
+import { cn } from "../../lib/cn";
+import { formatCount, formatDuration, formatTotalDuration } from "../../lib/format";
+import { useProgress } from "../../hooks/useProgress";
 import type { PlaylistResult, Recommendation, StudyNote, SubtopicResult } from "../../api/types";
 
 /**
@@ -22,20 +37,6 @@ import type { PlaylistResult, Recommendation, StudyNote, SubtopicResult } from "
 const WEAK_CONFIDENCE = 7;
 const WEAK_TITLE_RELEVANCE = 0.5;
 
-function formatDuration(seconds: number | null): string {
-  if (!seconds) return "?";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.round((seconds % 3600) / 60);
-  return hours ? `${hours}s ${minutes}dk` : `${minutes}dk`;
-}
-
-function compact(value: number | null): string {
-  if (!value) return "?";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
-  return String(value);
-}
-
 export function isWeakMatch(item: Recommendation): boolean {
   return (
     item.confidence_score < WEAK_CONFIDENCE ||
@@ -43,170 +44,345 @@ export function isWeakMatch(item: Recommendation): boolean {
   );
 }
 
-function RecommendationCard({ item, note }: { item: Recommendation; note?: StudyNote }) {
-  const weak = isWeakMatch(item);
+/**
+ * Transkript durumu kullanicinin ise yarayacak sekilde: "var mi, yok mu ve
+ * bu benim icin ne anlama geliyor". Ham degerler (`failed_temporary`) bir
+ * gelistirici terimi; ekranda karsiligi yoksa gizlemek, yanlis bir sey
+ * gostermekten iyidir.
+ */
+const TRANSCRIPT_LABEL: Record<string, string> = {
+  available: "Transkript var",
+  unavailable: "Transkript yok",
+  cooldown: "Transkript şimdilik alınamadı",
+  failed_temporary: "Transkript şimdilik alınamadı",
+  failed_permanent: "Transkript alınamıyor",
+};
+
+const SCORE_LABEL: Record<string, string> = {
+  total: "Toplam",
+  title_relevance: "Başlık uyumu",
+  description_relevance: "Açıklama uyumu",
+  channel_quality: "Kanal güvenilirliği",
+  duration_fit: "Süre uygunluğu",
+  difficulty_fit: "Seviye uygunluğu",
+  language_match: "Dil uyumu",
+  freshness: "Güncellik",
+  engagement: "İzlenme ve etkileşim",
+};
+
+function ScoreBreakdown({ item }: { item: Recommendation }) {
+  const rows = Object.entries(item.metadata_score)
+    .filter(([key, value]) => key !== "rationale" && key !== "total" && typeof value === "number")
+    .map(([key, value]) => [key, value as number] as const)
+    .sort((a, b) => b[1] - a[1]);
+  const peak = rows.reduce((max, [, value]) => Math.max(max, value), 0);
+  const rationale = item.metadata_score.rationale ?? [];
+
   return (
-    <article className="card">
-      <div className="card__head">
-        <div>
-          <h3>
-            {item.position}. {item.video.title}
-          </h3>
-          <p className="muted" style={{ margin: 0 }}>
-            {item.subtopic}
-            {item.video.channel && ` · ${item.video.channel}`}
-            {item.video.subscriber_count && ` · ${compact(item.video.subscriber_count)} abone`}
-            {` · ${formatDuration(item.video.duration_sec)}`}
-          </p>
+    <>
+      <p className="hint" style={{ marginTop: 0, marginBottom: "0.85rem" }}>
+        Bu video {item.confidence_score.toFixed(1)}/10 güven puanıyla seçildi. Çubuklar, tek
+        tek ölçütlerin bu seçim içindeki göreli ağırlığını gösterir.
+      </p>
+      <div className="scores">
+        {rows.map(([key, value]) => (
+          <div className="score" key={key}>
+            <span className="score__name">{SCORE_LABEL[key] ?? key}</span>
+            <span className="score__val">{value.toFixed(2)}</span>
+            <span className="score__bar">
+              <span style={{ width: peak > 0 ? `${(value / peak) * 100}%` : "0%" }} />
+            </span>
+          </div>
+        ))}
+      </div>
+      {rationale.length > 0 && (
+        <ul className="prose" style={{ marginTop: "1rem", fontSize: "0.9rem" }}>
+          {rationale.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+function StudyNoteBody({ note }: { note: StudyNote }) {
+  if (note.status === "no_transcript") {
+    return (
+      <p className="hint" style={{ margin: 0 }}>
+        Bu videonun transkripti bulunamadı, o yüzden çalışma notu üretilmedi. Uydurulmuş bir
+        özet göstermektense boş bırakıyoruz.
+      </p>
+    );
+  }
+  if (note.status === "failed") {
+    return (
+      <Note tone="danger" title="Çalışma notu üretilemedi">
+        {note.error ?? "Bilinmeyen bir hata oluştu."}
+      </Note>
+    );
+  }
+  return (
+    <>
+      <p className="hint" style={{ marginTop: 0 }}>
+        Videonun transkriptinden üretildi — özet niteliğindedir, videonun kendisiyle doğrula.
+      </p>
+      <div className="prose" style={{ whiteSpace: "pre-wrap" }}>
+        {note.content}
+      </div>
+    </>
+  );
+}
+
+function Unit({
+  item,
+  index,
+  note,
+  done,
+  onToggle,
+}: {
+  item: Recommendation;
+  index: number;
+  note?: StudyNote;
+  done: boolean;
+  onToggle: () => void;
+}) {
+  const weak = isWeakMatch(item);
+  const duration = formatDuration(item.video.duration_sec);
+  const subscribers = formatCount(item.video.subscriber_count);
+  const transcript = TRANSCRIPT_LABEL[item.transcript_status];
+
+  return (
+    <article
+      className={cn("unit", done && "unit--done")}
+      // Uniteler siralı bir guzergah: hepsi ayni anda degil, sırayla beliriyor.
+      // Gecikme 8. uniteden sonra sabitleniyor; uzun planlarda son unitelerin
+      // bir saniye sonra gelmesi beklemeye donusurdu.
+      style={{ animationDelay: `${Math.min(index, 7) * 45}ms` }}
+    >
+      <button
+        type="button"
+        className="unit__num"
+        onClick={onToggle}
+        aria-pressed={done}
+        aria-label={
+          done ? `${index + 1}. dersin işaretini kaldır` : `${index + 1}. dersi izledim olarak işaretle`
+        }
+        title={done ? "İşareti kaldır" : "İzledim olarak işaretle"}
+      >
+        {done ? <Check className="h-4 w-4" aria-hidden /> : index + 1}
+      </button>
+
+      <div className="min-w-0">
+        <div className="unit__head">
+          <div className="min-w-0">
+            {/* Basligin kendisi ALT KONU: ders planinda ogrenilecek sey odur,
+                video yalnizca o dersin malzemesi. Eskiden video basligi one
+                cikiyor, plan bir arama sonucu listesi gibi okunuyordu. */}
+            <h3 className="unit__title">{item.subtopic}</h3>
+            <p className="unit__meta">
+              <Video className="h-3.5 w-3.5" aria-hidden />
+              <span className="truncate">{item.video.title}</span>
+            </p>
+            <p className="unit__meta">
+              {item.video.channel && <span>{item.video.channel}</span>}
+              {item.video.channel && subscribers && <span className="dot" aria-hidden />}
+              {subscribers && <span>{subscribers} abone</span>}
+              {duration && <span className="dot" aria-hidden />}
+              {duration && <span>{duration}</span>}
+              {transcript && <span className="dot" aria-hidden />}
+              {transcript && <span>{transcript}</span>}
+            </p>
+          </div>
+          {weak && <span className="tag tag--warn">Zayıf eşleşme</span>}
         </div>
-        <span className={weak ? "badge badge--weak" : "badge"}>
-          {item.confidence_score.toFixed(2)}/10
-        </span>
+
+        {item.why_selected && <p className="unit__why">{item.why_selected}</p>}
+
+        <div className="unit__actions">
+          <a
+            className="btn btn--primary"
+            href={item.video.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Dersi izle
+            <ArrowUpRight className="h-4 w-4" aria-hidden />
+          </a>
+          <button type="button" className="btn btn--quiet" onClick={onToggle}>
+            {done ? "İşareti kaldır" : "İzledim"}
+          </button>
+        </div>
       </div>
 
-      {weak && (
-        <p className="alert" style={{ marginTop: "0.7rem" }}>
-          ⚠️ Zayıf eşleşme — bu alt konu için havuzda iyi bir aday bulunamadı. Konuyu
-          daraltmayı veya İngilizce içeriği açmayı deneyin.
-        </p>
-      )}
-
-      <p style={{ marginBottom: "0.6rem" }}>{item.why_selected}</p>
-
-      <div className="row">
-        <a href={item.video.url} target="_blank" rel="noreferrer">
-          Videoyu aç ↗
-        </a>
-        <span className="muted">Transkript: {item.transcript_status}</span>
+      <div className="unit__extra">
+        {weak && (
+          <Note tone="warn" title="Bu başlık için iyi bir aday bulunamadı">
+            Konuyu biraz daraltmayı ya da tercihlerden İngilizce içeriği açmayı deneyebilirsin.
+          </Note>
+        )}
+        {note && (
+          <Fold
+            summary="Çalışma notu"
+            icon={NotebookPen}
+            open={note.status === "available"}
+            className={weak ? "mt-2" : undefined}
+          >
+            <StudyNoteBody note={note} />
+          </Fold>
+        )}
+        <Fold summary="Neden bu video seçildi?" icon={ListChecks}>
+          <ScoreBreakdown item={item} />
+        </Fold>
       </div>
-
-      {note && (
-        <details style={{ marginTop: "0.7rem" }} open={note.status === "available"}>
-          <summary>Çalışma notu</summary>
-          {note.status === "available" && (
-            <>
-              <p className="muted" style={{ marginTop: "0.5rem", marginBottom: "0.4rem" }}>
-                Video transkriptinden üretildi — özet niteliğindedir, videonun kendisiyle
-                doğrulayın.
-              </p>
-              <div style={{ whiteSpace: "pre-wrap" }}>{note.content}</div>
-            </>
-          )}
-          {note.status === "no_transcript" && (
-            <p className="muted" style={{ marginTop: "0.5rem" }}>
-              Bu video için transkript bulunamadığından çalışma notu üretilmedi.
-            </p>
-          )}
-          {note.status === "failed" && (
-            <p className="alert alert--error" style={{ marginTop: "0.5rem" }}>
-              Çalışma notu üretilemedi: {note.error}
-            </p>
-          )}
-        </details>
-      )}
-
-      <details style={{ marginTop: "0.7rem" }}>
-        <summary>Puan dökümü</summary>
-        <table>
-          <tbody>
-            {Object.entries(item.metadata_score)
-              .filter(([key]) => key !== "rationale")
-              .map(([key, value]) => (
-                <tr key={key}>
-                  <th>{key}</th>
-                  <td>{typeof value === "number" ? value.toFixed(3) : String(value)}</td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </details>
     </article>
   );
 }
 
-function SubtopicRow({ item }: { item: SubtopicResult }) {
+function SubtopicDiagnostics({ item }: { item: SubtopicResult }) {
   return (
-    <details className="card">
-      <summary>
-        <strong>{item.subtopic.title}</strong>{" "}
-        <span className="muted">
-          · {item.candidates_considered} aday · {item.selected_video_id ? "seçildi" : "boş"}
-        </span>
-      </summary>
-      <p className="muted" style={{ marginTop: "0.6rem" }}>
-        Sorgu: <code>{item.query}</code>
+    <div style={{ marginBottom: "1.25rem" }}>
+      <h4 style={{ fontSize: "0.92rem" }}>{item.subtopic.title}</h4>
+      <p className="meta" style={{ marginTop: "0.2rem" }}>
+        {item.candidates_considered} aday değerlendirildi ·{" "}
+        {item.selected_video_id ? "bir video seçildi" : "uygun video bulunamadı"}
+      </p>
+      <p className="hint">
+        Arama sorgusu: <code>{item.query}</code>
       </p>
       {item.shortlisted_candidates.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Başlık</th>
-              <th>Kanal</th>
-              <th>Puan</th>
-            </tr>
-          </thead>
-          <tbody>
-            {item.shortlisted_candidates.map((candidate) => (
-              <tr key={candidate.video_id}>
-                <td>{candidate.title}</td>
-                <td>{candidate.channel ?? "—"}</td>
-                <td>{candidate.metadata_score.toFixed(2)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ol className="stack stack--tight" style={{ marginTop: "0.6rem" }}>
+          {item.shortlisted_candidates.map((candidate) => (
+            <li key={candidate.video_id} className="row row--between" style={{ gap: "1rem" }}>
+              <span style={{ fontSize: "0.86rem" }}>
+                {candidate.title}
+                {candidate.channel && <span className="muted"> · {candidate.channel}</span>}
+              </span>
+              <span className="score__val">{candidate.metadata_score.toFixed(2)}</span>
+            </li>
+          ))}
+        </ol>
       )}
-    </details>
+    </div>
   );
 }
 
 export function RunResult({ result }: { result: PlaylistResult }) {
+  const total = result.recommendations.length;
+  const { completed, toggle } = useProgress(result.run_id, total);
+  const doneCount = result.recommendations.filter((item) =>
+    completed.includes(item.video.video_id),
+  ).length;
+  const totalTime = formatTotalDuration(result.recommendations.map((item) => item.video.duration_sec));
+  const remaining = total - doneCount;
+  // Yalnizca GERCEKTEN uretilmis notlar sayiliyor: transkripti olmadigi icin
+  // uretilmeyen ya da hata alan notlari saymak, olmayan bir seyi vaat ederdi.
+  const noteCount = result.study_notes.filter((note) => note.status === "available").length;
+
   return (
-    <section>
+    <section className="stack stack--loose">
       {result.warnings.map((warning) => (
-        <p className="alert" key={warning}>
+        <Note tone="warn" key={warning}>
           {warning}
-        </p>
+        </Note>
       ))}
 
-      {result.recommendations.length > 0 && (
-        // `key` calistirma kimligi: `PublishPanel` kendi hata/bildirim state'ini
-        // tutuyor ve React ayni konumdaki bileseni YENIDEN KULLANDIGI icin
-        // gecmisten acilan A calistirmasinin yayinlama hatasi, ardindan gecilen
-        // B calistirmasinin ekraninda asili kaliyordu. Farkli `key` = yeni
-        // bilesen ornegi = sifirlanmis state.
-        <PublishPanel
-          key={result.run_id}
-          runId={result.run_id}
-          publishedUrl={result.published_playlist_url}
-        />
-      )}
+      <header className="course__head">
+        <div className="min-w-0">
+          <h2 className="course__title">{result.topic}</h2>
+          <div className="course__facts">
+            <span className="tag tag--chalk">{total} ders</span>
+            {totalTime && <span className="tag tag--chalk">{totalTime}</span>}
+            {noteCount > 0 && <span className="tag tag--chalk">{noteCount} çalışma notu</span>}
+          </div>
+        </div>
 
-      <div className="row" style={{ marginBottom: "1rem" }}>
-        <a className="badge" href={api.exportUrl(result.run_id, "markdown")}>
-          Markdown indir
-        </a>
-        <a className="badge" href={api.exportUrl(result.run_id, "json")}>
-          JSON indir
-        </a>
-      </div>
+        {total > 0 && (
+          <div className="course__progress">
+            <div className="course__progress-top">
+              <span className="course__progress-label">İlerlemen</span>
+              <span className="course__progress-count">
+                {doneCount} / {total}
+              </span>
+            </div>
+            <Meter
+              value={doneCount}
+              max={total}
+              variant="chalk"
+              label={`${total} dersin ${doneCount} tanesi tamamlandı`}
+            />
+            <p className="course__progress-label" style={{ marginTop: "0.5rem" }}>
+              {remaining === 0 ? (
+                <>
+                  <Trophy className="mr-1 inline h-3.5 w-3.5" aria-hidden />
+                  Hepsini bitirdin.
+                </>
+              ) : (
+                `${remaining} ders kaldı.`
+              )}
+            </p>
+          </div>
+        )}
+      </header>
 
-      {result.recommendations.length === 0 ? (
-        <p className="alert">Bu filtrelerle öneri üretilemedi.</p>
+      {total === 0 ? (
+        <Note tone="warn" title="Bu tercihlerle ders planı çıkmadı">
+          Konuyu biraz genişletmeyi, süre sınırını yükseltmeyi ya da İngilizce içeriği açmayı
+          deneyebilirsin.
+        </Note>
       ) : (
-        result.recommendations.map((item) => (
-          <RecommendationCard
-            key={item.video.video_id}
-            item={item}
-            note={result.study_notes.find((candidate) => candidate.video_id === item.video.video_id)}
+        <>
+          {/* `key` calistirma kimligi: `PublishPanel` kendi hata/bildirim state'ini
+              tutuyor ve React ayni konumdaki bileseni YENIDEN KULLANDIGI icin
+              gecmisten acilan A calistirmasinin yayinlama hatasi, ardindan gecilen
+              B calistirmasinin ekraninda asili kaliyordu. Farkli `key` = yeni
+              bilesen ornegi = sifirlanmis state. */}
+          <PublishPanel
+            key={result.run_id}
+            runId={result.run_id}
+            publishedUrl={result.published_playlist_url}
           />
-        ))
+
+          <div className="units">
+            {result.recommendations.map((item, index) => (
+              <Unit
+                key={item.video.video_id}
+                item={item}
+                index={index}
+                done={completed.includes(item.video.video_id)}
+                onToggle={() => toggle(item.video.video_id)}
+                note={result.study_notes.find(
+                  (candidate) => candidate.video_id === item.video.video_id,
+                )}
+              />
+            ))}
+          </div>
+        </>
       )}
 
-      <h2 style={{ fontSize: "1.1rem", marginTop: "2rem" }}>Alt konu tanılaması</h2>
-      {result.subtopics.map((item) => (
-        <SubtopicRow key={item.subtopic.normalized_title} item={item} />
-      ))}
+      <div className="stack stack--tight">
+        <div className="row">
+          <a className="btn" href={api.exportUrl(result.run_id, "markdown")}>
+            <Download className="h-4 w-4" aria-hidden />
+            Markdown indir
+          </a>
+          <a className="btn" href={api.exportUrl(result.run_id, "json")}>
+            <FileJson className="h-4 w-4" aria-hidden />
+            JSON indir
+          </a>
+        </div>
+
+        {result.subtopics.length > 0 && (
+          <Fold summary="Bu plan nasıl kuruldu?" icon={ScrollText}>
+            <p className="hint" style={{ marginTop: 0, marginBottom: "1rem" }}>
+              Her alt başlık için ayrı bir arama yapıldı ve adaylar puanlanarak sıralandı.
+            </p>
+            {result.subtopics.map((item) => (
+              <SubtopicDiagnostics key={item.subtopic.normalized_title} item={item} />
+            ))}
+          </Fold>
+        )}
+      </div>
     </section>
   );
 }

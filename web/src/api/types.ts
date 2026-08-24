@@ -211,5 +211,90 @@ export interface Capabilities {
    * calistirma baslatilamayabilir.
    */
   service_capacity_reached: boolean;
+  /** Ogrenme alani (RAG) acik ve LLM anahtari kurulu mu. */
+  rag_available: boolean;
   defaults: Record<string, unknown>;
+}
+
+
+// --------------------------------------------------------- ogrenme alani (RAG)
+
+export type SourceKind = "video" | "document";
+
+/**
+ * `no_text` AYRI bir durum ve bir HATA DEGIL: transkripti olmayan bir video ya
+ * da taranmis (goruntu) bir PDF, kaynak olarak eklenmis ama aranabilir metin
+ * vermemis demektir. Arayuz bunu ayirt etmek ZORUNDA -- ikisini "basarisiz"
+ * diye gostermek, kullaniciya dosyasinin bozuk oldugunu dusundururdu.
+ */
+export type SourceStatus = "pending" | "indexed" | "no_text" | "failed";
+
+export interface SpaceSource {
+  source_id: string;
+  kind: SourceKind;
+  ref_id: string;
+  title: string;
+  url: string | null;
+  language: string | null;
+  status: SourceStatus;
+  chunk_count: number;
+  error: string | null;
+}
+
+export interface SpaceSummary {
+  space_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  source_count: number;
+  chunk_count: number;
+}
+
+export interface SpaceDetail extends SpaceSummary {
+  sources: SpaceSource[];
+}
+
+export interface SpaceListResponse {
+  items: SpaceSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AskRequest {
+  question: string;
+  /** Yanitin dili. Verilmezse sunucu Turkce uretir. */
+  language?: string;
+}
+
+export interface IngestAccepted {
+  job_id: string;
+  space_id: string;
+  events_url: string;
+}
+
+export interface Citation {
+  source_id: string;
+  title: string;
+  /** Video icin zaman damgasi GOMULU gelir (`...&t=123s`). */
+  url: string | null;
+  start_sec: number | null;
+  page: number | null;
+  quote: string;
+}
+
+/**
+ * Bir soruya verilen yanit -- ya da verilemedigi bilgisi.
+ *
+ * `answered: false` BIRINCI SINIF bir sonuc, hata degil. Ozelligin asil vaadi
+ * bu ve arayuz onu kirmizi bir hata kutusunda gostermemeli: kullanici sistemi
+ * bozuk sanardi. `searched_sources` eksik olanin kendi sorusu degil HAVUZU
+ * oldugunu gorunur kiliyor.
+ */
+export interface RagAnswer {
+  answered: boolean;
+  answer: string | null;
+  citations: Citation[];
+  searched_sources: number;
+  reason: string | null;
 }

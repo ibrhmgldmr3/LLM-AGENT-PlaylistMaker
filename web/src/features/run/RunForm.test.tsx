@@ -8,11 +8,11 @@ import { RunForm } from "./RunForm";
 afterEach(cleanup);
 
 function submitButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /Playlist Oluştur|Oluşturuluyor/ }) as HTMLButtonElement;
+  return screen.getByRole("button", { name: /Ders planımı oluştur|Oluşturuluyor/ }) as HTMLButtonElement;
 }
 
 function fillTopic(text: string) {
-  fireEvent.change(screen.getByLabelText("Konu"), { target: { value: text } });
+  fireEvent.change(screen.getByLabelText("Ne öğrenmek istiyorsun?"), { target: { value: text } });
 }
 
 describe("RunForm", () => {
@@ -40,7 +40,7 @@ describe("RunForm", () => {
     fillTopic("   ");
     expect(submitButton().disabled).toBe(true);
 
-    fireEvent.submit(screen.getByRole("button", { name: /Playlist Oluştur/ }).closest("form")!);
+    fireEvent.submit(screen.getByRole("button", { name: /Ders planımı oluştur/ }).closest("form")!);
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -84,7 +84,7 @@ describe("RunForm", () => {
     render(<RunForm capabilities={null} busy={false} onSubmit={onSubmit} />);
 
     fillTopic("Konu");
-    fireEvent.click(screen.getByLabelText("Sesten transkript çıkar (yavaş)"));
+    fireEvent.click(screen.getByLabelText("Altyazısı olmayan videoların sesini yazıya dök"));
     fireEvent.click(submitButton());
 
     const payload = onSubmit.mock.calls[0][0] as CreateRunRequest;
@@ -99,7 +99,7 @@ describe("RunForm", () => {
     render(<RunForm capabilities={null} busy={false} onSubmit={onSubmit} />);
 
     fillTopic("Konu");
-    fireEvent.click(screen.getByLabelText("Çalışma notu üret (ek LLM çağrısı)"));
+    fireEvent.click(screen.getByLabelText("Her ders için çalışma notu çıkar"));
     fireEvent.click(submitButton());
 
     const payload = onSubmit.mock.calls[0][0] as CreateRunRequest;
@@ -115,10 +115,10 @@ describe("RunForm", () => {
     const onSubmit = vi.fn();
     render(<RunForm capabilities={null} busy={false} onSubmit={onSubmit} />);
 
-    expect(screen.queryByLabelText("İngilizce içeriği de dahil et")).not.toBeNull();
+    expect(screen.queryByLabelText("İngilizce videoları da değerlendir")).not.toBeNull();
 
     fireEvent.change(screen.getByLabelText("Dil"), { target: { value: "en" } });
-    expect(screen.queryByLabelText("İngilizce içeriği de dahil et")).toBeNull();
+    expect(screen.queryByLabelText("İngilizce videoları da değerlendir")).toBeNull();
 
     fillTopic("Konu");
     fireEvent.click(submitButton());
@@ -132,8 +132,8 @@ describe("RunForm", () => {
     const onSubmit = vi.fn();
     render(<RunForm capabilities={null} busy={false} onSubmit={onSubmit} />);
 
-    fireEvent.change(screen.getByLabelText(/En fazla süre/), { target: { value: "90" } });
-    expect(screen.getByText("En fazla süre: 90 dk")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/en fazla süre/i), { target: { value: "90" } });
+    expect(screen.getByText("Ders başına en fazla süre: 90 dk")).toBeTruthy();
 
     fillTopic("Konu");
     fireEvent.click(submitButton());
@@ -160,6 +160,7 @@ describe("RunForm", () => {
       cookies_configured: false,
       runs_remaining_today: null,
       service_capacity_reached: false,
+    rag_available: false,
       defaults: {},
     };
     const { rerender } = render(<RunForm capabilities={configured} busy={false} onSubmit={vi.fn()} />);
@@ -185,6 +186,7 @@ describe("RunForm", () => {
       cookies_configured: false,
       runs_remaining_today: null,
       service_capacity_reached: false,
+    rag_available: false,
       defaults: {},
     };
 
@@ -193,8 +195,8 @@ describe("RunForm", () => {
       // sınırsız kurulumda kullanıcıya "hakkın doldu" denirdi.
       render(<RunForm capabilities={base} busy={false} onSubmit={vi.fn()} />);
 
-      expect(screen.queryByText(/kalan çalıştırma hakkınız/i)).toBeNull();
-      expect(screen.queryByText(/hakkınız doldu/i)).toBeNull();
+      expect(screen.queryByText(/hakkın kaldı/i)).toBeNull();
+      expect(screen.queryByText(/hakkın doldu/i)).toBeNull();
       fillTopic("kuantum");
       expect(submitButton().disabled).toBe(false);
     });
@@ -208,7 +210,7 @@ describe("RunForm", () => {
         />,
       );
 
-      expect(screen.queryByText(/Bugün kalan çalıştırma hakkınız: 2/)).not.toBeNull();
+      expect(screen.queryByText(/Bugün 2 ders planı hakkın kaldı/)).not.toBeNull();
       fillTopic("kuantum");
       expect(submitButton().disabled).toBe(false);
     });
@@ -227,7 +229,7 @@ describe("RunForm", () => {
       fillTopic("kuantum");
       expect(submitButton().disabled).toBe(true);
       // Iki mesaj birden cikmasin: ortak kapasite kisisel haktan onceliklidir.
-      expect(screen.queryByText(/kalan çalıştırma hakkınız/i)).toBeNull();
+      expect(screen.queryByText(/hakkın kaldı/i)).toBeNull();
     });
 
     it("hak bittiğinde uyarır ve göndermeyi engeller", () => {
@@ -241,7 +243,7 @@ describe("RunForm", () => {
         />,
       );
 
-      expect(screen.queryByText(/Bugünlük çalıştırma hakkınız doldu/)).not.toBeNull();
+      expect(screen.queryByText(/Bugünlük hakkın doldu/)).not.toBeNull();
       fillTopic("kuantum");
       expect(submitButton().disabled).toBe(true);
     });
