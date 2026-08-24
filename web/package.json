@@ -13,16 +13,28 @@
     "gen:types": "npm run gen:openapi && openapi-typescript openapi.json -o src/api/schema.d.ts --default-non-nullable false"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-progress": "^1.1.16",
+    "@radix-ui/react-scroll-area": "^1.2.18",
+    "@radix-ui/react-tabs": "^1.1.21",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "clsx": "^2.1.1",
+    "framer-motion": "^13.1.1",
+    "lucide-react": "^1.33.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.5.4",
     "jsdom": "^29.1.1",
     "openapi-typescript": "^7.4.4",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.19",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "vitest": "^3.2.7"

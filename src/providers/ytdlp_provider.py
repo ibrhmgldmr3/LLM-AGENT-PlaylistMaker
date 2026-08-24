@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import glob
 import html
+import json
 import os
 import re
+from xml.etree import ElementTree
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,7 +13,7 @@ import requests
 import yt_dlp
 
 from src.config import AppConfig
-from src.models import FilterOptions, TranscriptResult, VideoCandidate
+from src.models import FilterOptions, TranscriptResult, TranscriptSegment, VideoCandidate
 from src.providers.errors import (
     ProviderPermanentError,
     ProviderRateLimitedError,
@@ -29,17 +31,23 @@ def _parse_retry_after(value: str | None) -> int | None:
     except (TypeError, ValueError):
         return None
     return seconds if seconds > 0 else None
-from src.utils.text_utils import normalize_text
+from src.utils.http_identity import build_session
+from src.utils.text_utils import MIN_TRANSCRIPT_CHARS, normalize_text
 from src.utils.ytdlp_options import build_ydl_common_options
 
-
-MIN_TRANSCRIPT_CHARS = 50
 
 # Altyazi olarak islenmemesi gereken sozde diller.
 _NON_SUBTITLE_KEYS = {"live_chat", "rechat"}
 
 # VTT satir ici etiketleri: <00:00:01.000>, <c.colorE5E5E5>, </c>, <v Speaker>
 _VTT_TAG_RE = re.compile(r"<[^>]*>")
+
+# WEBVTT cue basligi: "00:01:02.500 --> 00:01:05.000 align:start position:0%"
+_VTT_CUE_RE = re.compile(
+    r"^\s*(?P<start>(?:\d+:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)"
+    r"\s*-->\s*"
+    r"(?P<end>(?:\d+:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)"
+)
 
 # Yapilandirma kaynakli, tekrar denemekle DUZELMEYECEK hatalar.
 # En sik gorulen: Chrome 127+ cerezleri App-Bound Encryption ile sakliyor ve
@@ -140,36 +148,44 @@ class YtDlpProvider:
         manual = {k: v for k, v in (info.get("subtitles") or {}).items() if k not in _NON_SUBTITLE_KEYS}
         automatic = {k: v for k, v in (info.get("automatic_captions") or {}).items() if k not in _NON_SUBTITLE_KEYS}
 
-        for captions, is_auto in ((manual, False), (automatic, True)):
-            selection = _select_caption_track(captions, language_hint)
-            if not selection:
-                continue
-            language, subtitle_url = selection
-            try:
-                response = requests.get(subtitle_url, timeout=self.config.request_timeout_sec)
-            except requests.RequestException as exc:
-                raise ProviderTemporaryError(f"Subtitle download failed: {exc}") from exc
-            if response.status_code == 429:
-                # Hiz sinirinda tekrar denemek IP blogunu uzatir; hemen dinlendir.
-                raise ProviderRateLimitedError(
-                    "YouTube altyazı indirmede hız sınırı (429)",
-                    retry_after=_parse_retry_after(response.headers.get("Retry-After")),
+        # Altyazi DOSYASI da yt-dlp'nin kullandigi kimlikle cekilmeli. Eskiden
+        # burada ciplak bir `requests.get` vardi: metadata proxy/cerez/UA ile
+        # gidiyor, asil icerik ise sunucunun kendi IP'sinden ve istemci kimligi
+        # olmadan isteniyordu. Imzali altyazi URL'leri istegi yapan istemciye
+        # bagli olabildigi icin bu yalnizca tutarsiz degil, kirilgan.
+        with build_session(self.config) as session:
+            for captions, is_auto in ((manual, False), (automatic, True)):
+                selection = _select_caption_track(captions, language_hint)
+                if not selection:
+                    continue
+                language, subtitle_url, subtitle_ext = selection
+                try:
+                    response = session.get(subtitle_url, timeout=self.config.request_timeout_sec)
+                except requests.RequestException as exc:
+                    raise ProviderTemporaryError(f"Subtitle download failed: {exc}") from exc
+                if response.status_code == 429:
+                    # Hiz sinirinda tekrar denemek IP blogunu uzatir; hemen dinlendir.
+                    raise ProviderRateLimitedError(
+                        "YouTube altyazı indirmede hız sınırı (429)",
+                        retry_after=_parse_retry_after(response.headers.get("Retry-After")),
+                    )
+                try:
+                    response.raise_for_status()
+                except requests.RequestException as exc:
+                    raise ProviderTemporaryError(f"Subtitle download failed: {exc}") from exc
+                segments = _subtitle_to_segments(response.text, subtitle_ext)
+                text = normalize_text(" ".join(segment.text for segment in segments))
+                if len(text) < MIN_TRANSCRIPT_CHARS:
+                    continue
+                return TranscriptResult(
+                    video_id=video_id,
+                    status="available",
+                    source="yt_dlp_subtitles",
+                    language=language,
+                    text=text,
+                    backend="automatic" if is_auto else "manual",
+                    segments=segments,
                 )
-            try:
-                response.raise_for_status()
-            except requests.RequestException as exc:
-                raise ProviderTemporaryError(f"Subtitle download failed: {exc}") from exc
-            text = _vtt_to_text(response.text)
-            if len(text) < MIN_TRANSCRIPT_CHARS:
-                continue
-            return TranscriptResult(
-                video_id=video_id,
-                status="available",
-                source="yt_dlp_subtitles",
-                language=language,
-                text=text,
-                backend="automatic" if is_auto else "manual",
-            )
         return None
 
     def download_audio(self, url: str, target_dir: str, video_id: str) -> str:
@@ -223,7 +239,7 @@ def _safe_duration(value) -> int | None:
 
 def _select_caption_track(
     captions: dict[str, list[dict]], language_hint: str | None
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str] | None:
     if not captions:
         return None
     preferences: list[str] = []
@@ -244,19 +260,165 @@ def _select_caption_track(
 
     for language in ordered_languages:
         formats = captions.get(language) or []
-        subtitle_url = next(
-            (item.get("url") for item in formats if item.get("ext") == "vtt" and item.get("url")),
-            None,
-        )
-        if subtitle_url:
-            return language, subtitle_url
+        # VTT has the most straightforward parser, but YouTube does not
+        # guarantee it for every language.  json3 and srv3 carry the same
+        # captions and are preferable to treating a captioned video as empty.
+        for extension in ("vtt", "json3", "srv3"):
+            subtitle_url = next(
+                (
+                    item.get("url")
+                    for item in formats
+                    if item.get("ext") == extension and item.get("url")
+                ),
+                None,
+            )
+            if subtitle_url:
+                return language, subtitle_url, extension
     return None
 
 
-def _vtt_to_text(vtt_text: str) -> str:
-    lines: list[str] = []
+def _subtitle_to_segments(content: str, extension: str) -> list[TranscriptSegment]:
+    """Parse the caption formats yt-dlp exposes for YouTube.
+
+    Unknown formats intentionally yield no segments.  A malformed subtitle
+    document should not be mistaken for a provider outage and the next track
+    or provider can still be tried.
+    """
+    if extension == "vtt":
+        return _vtt_to_segments(content)
+    if extension == "json3":
+        return _json3_to_segments(content)
+    if extension == "srv3":
+        return _srv3_to_segments(content)
+    return []
+
+
+def _json3_to_segments(content: str) -> list[TranscriptSegment]:
+    try:
+        events = json.loads(content).get("events", [])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(events, list):
+        return []
+
+    segments: list[TranscriptSegment] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        parts = event.get("segs") or []
+        text = "".join(
+            part.get("utf8", "") for part in parts if isinstance(part, dict)
+        ).replace("\n", " ").strip()
+        if not text:
+            continue
+        try:
+            start_sec = max(0.0, float(event.get("tStartMs", 0)) / 1000)
+        except (TypeError, ValueError):
+            start_sec = 0.0
+        try:
+            duration_ms = float(event.get("dDurationMs"))
+            end_sec = start_sec + duration_ms / 1000 if duration_ms > 0 else None
+        except (TypeError, ValueError):
+            end_sec = None
+        segments.append(TranscriptSegment(start_sec=start_sec, end_sec=end_sec, text=text))
+    return _drop_repeated_segments(segments)
+
+
+def _srv3_to_segments(content: str) -> list[TranscriptSegment]:
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError:
+        return []
+
+    segments: list[TranscriptSegment] = []
+    for node in root.findall(".//text"):
+        text = normalize_text("".join(node.itertext()))
+        if not text:
+            continue
+        try:
+            start_sec = max(0.0, float(node.attrib.get("start", 0)))
+        except (TypeError, ValueError):
+            start_sec = 0.0
+        try:
+            duration = float(node.attrib.get("dur"))
+            end_sec = start_sec + duration if duration > 0 else None
+        except (TypeError, ValueError):
+            end_sec = None
+        segments.append(TranscriptSegment(start_sec=start_sec, end_sec=end_sec, text=text))
+    return _drop_repeated_segments(segments)
+
+
+def _parse_vtt_timestamp(value: str) -> float | None:
+    """`HH:MM:SS.mmm` ya da `MM:SS.mmm` -> saniye."""
+    parts = value.replace(",", ".").split(":")
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError:
+        return None
+    seconds = 0.0
+    for number in numbers:
+        seconds = seconds * 60 + number
+    return max(0.0, seconds)
+
+
+def _drop_repeated_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+    """Remove recent rolling-window caption repeats without losing timing.
+
+    YouTube's automatic tracks can repeat a phrase after more than four cues;
+    retaining a modest twelve-segment window handles those streams while still
+    allowing a genuine repeated sentence later in the video.
+    """
+    kept: list[TranscriptSegment] = []
+    recent: list[str] = []
+    for segment in segments:
+        key = normalize_text(segment.text).casefold()
+        if not key or key in recent:
+            continue
+        kept.append(segment)
+        recent.append(key)
+        if len(recent) > 12:
+            recent.pop(0)
+    return kept
+
+
+def _vtt_to_segments(vtt_text: str) -> list[TranscriptSegment]:
+    """VTT'yi zaman damgali segmentlere cevirir.
+
+    Kayan pencere TEKRAR ELEMESI korunuyor: otomatik altyazilar ayni satiri
+    ardisik cue'larda yeniden yaziyor ve elenmezse metin ~3 katina cikiyor.
+    Elenen tekrar, ILK gorundugu cue'nun zamanina yazilir -- dogru olan o,
+    cunku o an ilk soylendigi andir.
+
+    Bir cue'nun birden fazla metin satiri olabilir; hepsi AYNI segmentte
+    birlestiriliyor (ayri segmentlere bolmek ayni zaman damgasini tasiyan
+    yapay parcalar uretirdi).
+    """
+    segments: list[TranscriptSegment] = []
     seen_recent: list[str] = []
+    start_sec: float | None = None
+    end_sec: float | None = None
+    pending: list[str] = []
+
+    def flush() -> None:
+        nonlocal pending
+        if pending and start_sec is not None:
+            segments.append(
+                TranscriptSegment(
+                    start_sec=start_sec,
+                    end_sec=end_sec if end_sec is not None and end_sec >= start_sec else None,
+                    text=" ".join(pending),
+                )
+            )
+        pending = []
+
     for raw_line in vtt_text.splitlines():
+        cue = _VTT_CUE_RE.match(raw_line)
+        if cue:
+            flush()
+            start_sec = _parse_vtt_timestamp(cue.group("start"))
+            end_sec = _parse_vtt_timestamp(cue.group("end"))
+            continue
+
         # Satir ici zaman damgalarini ve <c>/<v> etiketlerini temizle.
         line = _VTT_TAG_RE.sub("", raw_line)
         line = html.unescape(line).strip()
@@ -268,7 +430,21 @@ def _vtt_to_text(vtt_text: str) -> str:
         if line in seen_recent:
             continue
         seen_recent.append(line)
-        if len(seen_recent) > 4:
+        if len(seen_recent) > 12:
             seen_recent.pop(0)
-        lines.append(line)
-    return normalize_text(" ".join(lines))
+        pending.append(line)
+
+    flush()
+    return segments
+
+
+def _vtt_to_text(vtt_text: str) -> str:
+    """VTT'nin duz metin hali. Segmentlerden TURETILIYOR.
+
+    Ayri bir ayristirici DEGIL: iki ayri gecis, birinin degisip digerinin
+    degismedigi bir ayrisma noktasi olurdu. Cue basligi hic olmayan (yalnizca
+    metin satirlari iceren) bozuk bir VTT'de segment uretilemez; o durumda
+    metin de bos doner ve cagiran taraf `MIN_TRANSCRIPT_CHARS` kontroluyle
+    zaten bir sonraki saglayiciya geciyor.
+    """
+    return normalize_text(" ".join(segment.text for segment in _vtt_to_segments(vtt_text)))

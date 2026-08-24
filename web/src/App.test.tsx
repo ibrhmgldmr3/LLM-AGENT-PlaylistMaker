@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function submitButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /Playlist Oluştur|Oluşturuluyor/ }) as HTMLButtonElement;
+  return screen.getByRole("button", { name: /Ders planımı oluştur|Oluşturuluyor/ }) as HTMLButtonElement;
 }
 
 describe("App", () => {
@@ -45,9 +45,9 @@ describe("App", () => {
     const createRun = vi.spyOn(api, "createRun").mockReturnValue(ucusta as never);
 
     render(<App />);
-    await waitFor(() => expect(screen.getByLabelText("Konu")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Ne öğrenmek istiyorsun?")).toBeTruthy());
 
-    fireEvent.change(screen.getByLabelText("Konu"), { target: { value: "kuantum" } });
+    fireEvent.change(screen.getByLabelText("Ne öğrenmek istiyorsun?"), { target: { value: "kuantum" } });
     fireEvent.click(submitButton());
 
     // Yanit HENUZ gelmedi ama dugme kilitlenmis olmali.
@@ -90,15 +90,15 @@ describe("App", () => {
     );
 
     render(<App />);
-    await waitFor(() => expect(screen.getByLabelText("Konu")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Ne öğrenmek istiyorsun?")).toBeTruthy());
 
     // Sunucu oturumu artik tanimiyor.
     me.mockResolvedValue({ auth_required: true, signed_in: false, email: null } as never);
 
-    fireEvent.change(screen.getByLabelText("Konu"), { target: { value: "kuantum" } });
+    fireEvent.change(screen.getByLabelText("Ne öğrenmek istiyorsun?"), { target: { value: "kuantum" } });
     fireEvent.click(submitButton());
 
-    await waitFor(() => expect(screen.getByText("Giriş yapın")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: /Google ile giriş yap/ })).toBeTruthy());
   });
 
   it("createRun hata verirse form tekrar kullanilabilir olur", async () => {
@@ -107,9 +107,9 @@ describe("App", () => {
       .mockRejectedValue(Object.assign(new Error("Günlük hakkınız doldu"), { retryAfter: 0 }));
 
     render(<App />);
-    await waitFor(() => expect(screen.getByLabelText("Konu")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Ne öğrenmek istiyorsun?")).toBeTruthy());
 
-    fireEvent.change(screen.getByLabelText("Konu"), { target: { value: "kuantum" } });
+    fireEvent.change(screen.getByLabelText("Ne öğrenmek istiyorsun?"), { target: { value: "kuantum" } });
     fireEvent.click(submitButton());
 
     await screen.findByText(/Günlük hakkınız doldu/);

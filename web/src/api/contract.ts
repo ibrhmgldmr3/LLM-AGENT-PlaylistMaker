@@ -23,6 +23,7 @@
 
 import type { components } from "./schema";
 import type {
+  AskRequest,
   Capabilities,
   CreateRunRequest,
   FilterOptions,
@@ -36,6 +37,12 @@ import type {
   RunResultResponse,
   RunSnapshot,
   RunSummary,
+  IngestAccepted,
+  RagAnswer,
+  SpaceDetail,
+  SpaceListResponse,
+  SpaceSource,
+  SpaceSummary,
   SubtopicResult,
   VideoCandidate,
 } from "./types";
@@ -100,3 +107,12 @@ export type _SubtopicResult = Check<Receives<SubtopicResult, Wire["SubtopicResul
 // buradaydi: `done` govdesi `job_id` tasiyordu, arayuz `run_id` bekliyordu.
 export type _ProgressEvent = Check<Receives<ProgressEvent, Wire["ProgressEvent"]>>;
 export type _RunSnapshot = Check<Receives<RunSnapshot, Wire["RunSnapshotBody"]>>;
+
+// --- ogrenme alani ----------------------------------------------------------
+export type _AskRequest = Check<Sends<AskRequest, Wire["AskRequest"]>>;
+export type _SpaceSummary = Check<Receives<SpaceSummary, Wire["SpaceSummary"]>>;
+export type _SpaceDetail = Check<Receives<SpaceDetail, Wire["SpaceDetail"]>>;
+export type _SpaceListResponse = Check<Receives<SpaceListResponse, Wire["SpaceListResponse"]>>;
+export type _SpaceSource = Check<Receives<SpaceSource, Wire["SpaceSource"]>>;
+export type _IngestAccepted = Check<Receives<IngestAccepted, Wire["IngestAccepted"]>>;
+export type _RagAnswer = Check<Receives<RagAnswer, Wire["RagAnswer"]>>;

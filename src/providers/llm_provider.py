@@ -134,6 +134,125 @@ def build_study_note_prompt(
     )
 
 
+RAG_SYSTEM_INSTRUCTION = (
+    "You answer a learner's question using ONLY the numbered excerpts you are "
+    "given. The excerpts come from video transcripts and documents the learner "
+    "collected. Never add outside facts, numbers, dates, definitions, or claims "
+    "that are not stated in the excerpts. If the excerpts do not contain the "
+    "answer, say so by returning answered=false -- an honest 'not found' is the "
+    "correct answer, not a failure. Never guess, never fill gaps from general "
+    "knowledge, and never cite an excerpt number you were not given."
+)
+
+
+# Cikti SEMASI. Istem tek basina YETMIYOR -- bu ders bu kod tabaninda zaten
+# alinmisti (bkz. `SUBTOPIC_SCHEMA`): dort alan istenince model sonuncusunu
+# sessizce atliyordu. Burada atlanacak alan `used_chunk_ids` olurdu ve o alan
+# uydurma tespitinin TEK dayanagi.
+RAG_ANSWER_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "answered": {"type": "BOOLEAN"},
+        "answer": {"type": "STRING"},
+        "used_chunk_ids": {"type": "ARRAY", "items": {"type": "INTEGER"}},
+        "missing": {"type": "STRING"},
+    },
+    "required": ["answered", "answer", "used_chunk_ids", "missing"],
+}
+
+# Ayni SOZLESMENIN OpenAI uyumlu lehcesi (bkz. `SUBTOPIC_JSON_SCHEMA`).
+RAG_ANSWER_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "answered": {"type": "boolean"},
+        "answer": {"type": "string"},
+        "used_chunk_ids": {"type": "array", "items": {"type": "integer"}},
+        "missing": {"type": "string"},
+    },
+    "required": ["answered", "answer", "used_chunk_ids", "missing"],
+}
+
+
+def build_rag_answer_prompt(
+    question: str, chunks: list[dict[str, Any]], language: str
+) -> str:
+    """Kaynaga dayali yanit istemi. IKI saglayici da BUNU kullaniyor.
+
+    `build_subtopic_prompt` / `build_study_note_prompt` ile ayni duzen: istem
+    modul duzeyinde TEK yerde duruyor ki iki saglayici sessizce ayrismasin.
+
+    ISTEM ILE SEMA CELISMEMELI. Bu hata bir kez yapildi: istem "exactly three
+    keys" derken sema dort alanli gonderiliyordu (bkz. `build_subtopic_prompt`
+    aciklamasi). Burada istem de sema da AYNI dort alani soyluyor.
+
+    Parcalar `[#id]` etiketiyle numaralandiriliyor ve modelden kullandigi
+    numaralari geri istiyoruz. Numara UYDURULURSA cagiran taraf bunu yakalayip
+    yaniti dusuruyor -- semanin garanti edemedigi sey bu.
+    """
+    lines: list[str] = []
+    for chunk in chunks:
+        where = chunk.get("location") or ""
+        header = f"[#{chunk['chunk_id']}] {chunk.get('title') or 'Kaynak'}"
+        if where:
+            header += f" ({where})"
+        lines.append(f"{header}\n{chunk['text']}")
+    excerpts = "\n\n".join(lines)
+
+    return (
+        "Answer the learner's question using ONLY the excerpts below.\n"
+        f"Write the answer entirely in {language}.\n\n"
+        "Return a JSON object with exactly four keys:\n"
+        '- "answered": true only if the excerpts actually contain the answer. '
+        "If they do not, return false. Partial coverage counts as false unless "
+        "you can give a genuinely useful answer from what is there.\n"
+        '- "answer": the answer in Markdown when answered is true; an empty '
+        "string when it is false.\n"
+        '- "used_chunk_ids": the excerpt numbers you actually used, as integers. '
+        "Only numbers that appear above. Empty when answered is false.\n"
+        '- "missing": when answered is false, one short sentence in '
+        f"{language} naming what the excerpts do not cover. Empty otherwise.\n\n"
+        "Rules:\n"
+        "- Use only what the excerpts state. No outside facts, no filling gaps.\n"
+        "- Do not mention excerpt numbers, 'excerpts', or these instructions in "
+        "the answer text; it should read as a normal explanation.\n"
+        "- No preamble, no closing remarks, no meta-commentary about being an AI.\n\n"
+        f"Question: {question}\n\n"
+        f"Excerpts:\n{excerpts}"
+    )
+
+
+def parse_rag_answer(text: str) -> dict[str, Any]:
+    """Model yanitini normalize eder. Bicim sorunu = "yanit bulunamadi".
+
+    Ayristirilamayan bir yaniti ISTISNAYA cevirmek yanlis olurdu: cagiran taraf
+    zaten her durumda kullaniciya bir sey gostermek zorunda ve "bulamadim"
+    guvenli taraf. Istisna, yukaridaki katmanlarda 500'e donusup kullaniciya
+    bozuk bir ozellik gosterirdi.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {"answered": False, "answer": "", "used_chunk_ids": [], "missing": ""}
+    if not isinstance(payload, dict):
+        return {"answered": False, "answer": "", "used_chunk_ids": [], "missing": ""}
+
+    raw_ids = payload.get("used_chunk_ids") or []
+    if not isinstance(raw_ids, list):
+        raw_ids = []
+    used: list[int] = []
+    for value in raw_ids:
+        try:
+            used.append(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    return {
+        "answered": bool(payload.get("answered")),
+        "answer": str(payload.get("answer") or "").strip(),
+        "used_chunk_ids": used,
+        "missing": str(payload.get("missing") or "").strip(),
+    }
+
 class LLMProvider(Protocol):
     def generate_subtopics(self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT) -> list[str]:
         raise NotImplementedError
@@ -141,6 +260,14 @@ class LLMProvider(Protocol):
     def generate_study_note(
         self, topic: str, subtopic: str, video_title: str, transcript_text: str, language: str
     ) -> str:
+        raise NotImplementedError
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise NotImplementedError
+
+    def answer_from_context(
+        self, question: str, chunks: list[dict[str, Any]], language: str
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
 
@@ -276,6 +403,70 @@ class GeminiLLMProvider:
             config["thinking_config"] = {"thinking_budget": self.config.gemini_thinking_budget}
         return config
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Metinleri vektore cevirir. Sira KORUNUR: cikti girdiyle birebir eslesir.
+
+        Yedek model dongusu YOK (alt konu/calisma notu yollarindaki gibi):
+        embedding modeli degistiginde ureilen vektorler ONCEKILERLE
+        KARSILASTIRILAMAZ hale gelir -- kosinus benzerligi ayni uzayda anlamli.
+        Sessizce baska bir modele dusmek, alanin yarisi bir modelle yarisi
+        digeriyle gomulmus bir indeks birakirdi ve arama sonuclari sessizce
+        bozulurdu. Model kullanilamiyorsa hata YUKSELIYOR.
+        """
+        if not texts:
+            return []
+        model = self.config.gemini_embedding_model.strip()
+        try:
+            response = self.client.models.embed_content(model=model, contents=texts)
+        except Exception as exc:
+            raise _classify_gemini_error(exc) from exc
+
+        vectors = [list(item.values) for item in (response.embeddings or [])]
+        if len(vectors) != len(texts):
+            raise ProviderTemporaryError(
+                f"Gemini embedding sayisi uyusmuyor: {len(vectors)} != {len(texts)}"
+            )
+        return vectors
+
+    def answer_from_context(
+        self, question: str, chunks: list[dict[str, Any]], language: str
+    ) -> dict[str, Any]:
+        prompt = build_rag_answer_prompt(question, chunks, language)
+
+        errors: list[str] = []
+        for model_name in self._candidate_models():
+            try:
+                text = self._generate(model_name, prompt, self._rag_generation_config)
+            except ProviderPermanentError:
+                raise
+            except Exception as exc:
+                errors.append(f"{model_name}: {exc}")
+                if _is_model_unavailable_error(exc):
+                    continue
+                raise _classify_gemini_error(exc) from exc
+            return parse_rag_answer(text)
+        raise ProviderPermanentError(
+            "Kullanılabilir Gemini modeli bulunamadı. " + " | ".join(errors)
+        )
+
+    def _rag_generation_config(self, model_name: str) -> dict[str, Any]:
+        """Kaynaga dayali yanit icin config: SEMA ZORLAMALI JSON.
+
+        `_study_note_generation_config`tan ayri, cunku o serbest Markdown
+        yaziyor. Sicaklik daha da dusuk (0.1): buradaki is yaratmak degil,
+        verilen alintilarda YAZANI aktarmak.
+        """
+        config: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "response_schema": RAG_ANSWER_SCHEMA,
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "system_instruction": RAG_SYSTEM_INSTRUCTION,
+            "temperature": 0.1,
+        }
+        if self.config.gemini_thinking_budget >= 0 and model_name not in self._thinking_unsupported:
+            config["thinking_config"] = {"thinking_budget": self.config.gemini_thinking_budget}
+        return config
+
     def _candidate_models(self) -> list[str]:
         models = [self.config.gemini_model.strip()]
         for fallback in FALLBACK_MODELS:
@@ -386,6 +577,7 @@ def _is_invalid_argument_error(exc: Exception) -> bool:
 # --------------------------------------------------------------------- #
 
 TOGETHER_URL = "https://api.together.xyz/v1/chat/completions"
+TOGETHER_EMBEDDING_URL = "https://api.together.xyz/v1/embeddings"
 
 # Gemini'nin sema bicimi kendine ozgu (BUYUK harf tipler). OpenAI uyumlu uclar
 # STANDART JSON Schema bekliyor. Ayni sey iki kez degil: ayni SOZLESMENIN iki
@@ -452,6 +644,57 @@ class TogetherLLMProvider:
         # `response_format` verilmiyor: calisma notu SERBEST METIN, JSON degil.
         return self._generate(prompt, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION)
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """OpenAI uyumlu `/v1/embeddings`. Sira KORUNUR.
+
+        Yanittaki `index` alanina gore siralaniyor: OpenAI uyumlu uclarin cogu
+        girdi sirasini koruyor ama bu SOZLESMENIN parcasi degil. Sira kayarsa
+        her vektor yanlis parcaya yazilir ve arama sessizce sacmalar --
+        patlamayan, fark edilmesi zor bir bozulma.
+        """
+        if not texts:
+            return []
+        import requests
+
+        try:
+            response = requests.post(
+                TOGETHER_EMBEDDING_URL,
+                json={"model": self.config.together_embedding_model, "input": texts},
+                headers={"Authorization": f"Bearer {self.config.together_api_key}"},
+                timeout=self.config.request_timeout_sec,
+            )
+        except requests.RequestException as exc:
+            raise ProviderTemporaryError(f"Together embedding isteği başarısız: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise _classify_together_error(response.status_code, response.text)
+
+        try:
+            rows = response.json()["data"]
+        except (ValueError, KeyError) as exc:
+            raise ProviderTemporaryError(
+                f"Together embedding yanıtı beklenen biçimde değil: {exc}"
+            ) from exc
+
+        ordered = sorted(rows, key=lambda row: row.get("index", 0))
+        vectors = [list(row["embedding"]) for row in ordered]
+        if len(vectors) != len(texts):
+            raise ProviderTemporaryError(
+                f"Together embedding sayisi uyusmuyor: {len(vectors)} != {len(texts)}"
+            )
+        return vectors
+
+    def answer_from_context(
+        self, question: str, chunks: list[dict[str, Any]], language: str
+    ) -> dict[str, Any]:
+        prompt = build_rag_answer_prompt(question, chunks, language)
+        text = self._generate(
+            prompt,
+            system_instruction=RAG_SYSTEM_INSTRUCTION,
+            response_format={"type": "json_object", "schema": RAG_ANSWER_JSON_SCHEMA},
+        )
+        return parse_rag_answer(text)
+
     def _generate(
         self, prompt: str, system_instruction: str, response_format: dict[str, Any] | None = None
     ) -> str:
@@ -492,6 +735,150 @@ class TogetherLLMProvider:
         return text
 
 
+# --------------------------------------------------------------------- #
+# OpenRouter
+#
+# OpenRouter da OpenAI UYUMLU bir uc sunuyor; Together bolumunun basindaki
+# gerekce burada da gecerli: tek bir POST icin SDK tasimiyoruz, `requests`
+# zaten var. Farki yalnizca base URL, model kimligi bicimi
+# ("<saglayici>/<model>") ve iki ek baslik.
+# --------------------------------------------------------------------- #
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+class OpenRouterLLMProvider:
+    """OpenRouter uzerinden alt konu / calisma notu / RAG yaniti.
+
+    `TogetherLLMProvider` ile AYNI protokol ve AYNI istemler; cagiran taraf
+    hangisinin devrede oldugunu bilmiyor.
+
+    EMBEDDING YOK: OpenRouter'in embedding destegi modele gore degisiyor ve
+    cogu modelde hic yok. `embed()` bu yuzden bilerek KALICI hata yukseltiyor
+    -- RAG yolu embedding'i `create_rag_llm_provider` uzerinden Gemini veya
+    Together'dan aliyor (bkz. `ServerConfig.effective_embedding_provider`).
+    """
+
+    def __init__(self, config: AppConfig):
+        if not config.openrouter_api_key:
+            raise ProviderPermanentError("OPENROUTER_API_KEY tanımlı değil")
+        self.config = config
+
+    def generate_subtopics(
+        self, topic: str, language: str, max_items: int = DEFAULT_SUBTOPIC_COUNT
+    ) -> list[dict[str, Any]]:
+        prompt = build_subtopic_prompt(topic, language, max_items)
+        text = self._generate(
+            prompt,
+            system_instruction="Return only valid JSON. No prose, no markdown fences.",
+            json_schema=SUBTOPIC_JSON_SCHEMA,
+        )
+        return _parse_subtopics(text)[:max_items]
+
+    def generate_study_note(
+        self, topic: str, subtopic: str, video_title: str, transcript_text: str, language: str
+    ) -> str:
+        prompt = build_study_note_prompt(
+            topic, subtopic, video_title, transcript_text, language,
+            self.config.study_note_transcript_char_limit,
+        )
+        return self._generate(prompt, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise ProviderPermanentError(
+            "OpenRouter embedding desteklemiyor; EMBEDDING_PROVIDER=gemini veya together ayarlayın."
+        )
+
+    def answer_from_context(
+        self, question: str, chunks: list[dict[str, Any]], language: str
+    ) -> dict[str, Any]:
+        prompt = build_rag_answer_prompt(question, chunks, language)
+        text = self._generate(
+            prompt,
+            system_instruction=RAG_SYSTEM_INSTRUCTION,
+            json_schema=RAG_ANSWER_JSON_SCHEMA,
+        )
+        return parse_rag_answer(text)
+
+    def _generate(
+        self, prompt: str, system_instruction: str, json_schema: dict[str, Any] | None = None
+    ) -> str:
+        """Tek POST; sema zorlamasi model destekliyorsa acilir.
+
+        OpenRouter'da `response_format={"type": "json_schema"}` destegi MODELE
+        BAGLI: desteklemeyen model 400 donuyor. Bu durumda bir kez
+        `json_object` kipine dusuluyor -- istem zaten ayni dort alani acikca
+        istiyor ve ayristiricilar (`_parse_subtopics`, `parse_rag_answer`)
+        toleransli. Sema hic gondermemek ise destekleyen modellerde
+        `used_chunk_ids` gibi alanlarin sessizce atlanmasi riskini geri
+        getirirdi (bkz. `SUBTOPIC_SCHEMA` yorumu).
+        """
+        import requests
+
+        payload: dict[str, Any] = {
+            "model": self.config.openrouter_model,
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.4,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+        }
+        if json_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "response", "schema": json_schema},
+            }
+
+        response = self._post(payload)
+        if response.status_code == 400 and json_schema is not None:
+            # Model yapilandirilmis semayi reddetti; gevsek JSON kipiyle bir kez daha dene.
+            payload["response_format"] = {"type": "json_object"}
+            response = self._post(payload)
+
+        if response.status_code >= 400:
+            raise _classify_openrouter_error(response.status_code, response.text)
+
+        try:
+            text = response.json()["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError) as exc:
+            raise ProviderTemporaryError(f"OpenRouter yanıtı beklenen biçimde değil: {exc}") from exc
+
+        text = (text or "").strip()
+        if not text:
+            raise ProviderTemporaryError("Empty OpenRouter response")
+        return text
+
+    def _post(self, payload: dict[str, Any]):
+        import requests
+
+        try:
+            return requests.post(
+                OPENROUTER_URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {self.config.openrouter_api_key}",
+                    # OpenRouter bu iki basligi ISTEGE BAGLI istiyor; siralama/
+                    # istatistik icin kullaniliyor, gizlilik tasimiyor.
+                    "HTTP-Referer": "https://localhost",
+                    "X-Title": "make-a-playlist",
+                },
+                timeout=self.config.request_timeout_sec,
+            )
+        except requests.RequestException as exc:
+            raise ProviderTemporaryError(f"OpenRouter isteği başarısız: {exc}") from exc
+
+
+def _classify_openrouter_error(status_code: int, body: str) -> Exception:
+    """Together ile ayni ayrim: 429 hiz siniri, 5xx gecici, geri kalani kalici."""
+    detail = body[:300]
+    if status_code == 429:
+        return ProviderRateLimitedError(f"OpenRouter hız sınırı: {detail}")
+    if status_code in _TOGETHER_RETRYABLE_STATUS:
+        return ProviderTemporaryError(f"OpenRouter geçici hata {status_code}: {detail}")
+    return ProviderPermanentError(f"OpenRouter isteği reddedildi ({status_code}): {detail}")
+
+
 def create_llm_provider(config: AppConfig) -> LLMProvider:
     """Yapilandirmaya gore LLM saglayicisini kurar.
 
@@ -501,4 +888,48 @@ def create_llm_provider(config: AppConfig) -> LLMProvider:
     """
     if config.llm_provider == "together":
         return TogetherLLMProvider(config)
+    if config.llm_provider == "openrouter":
+        return OpenRouterLLMProvider(config)
     return GeminiLLMProvider(config)
+
+
+class _SplitLLMProvider:
+    """Uretim bir saglayicidan, embedding digerinden.
+
+    `llm_provider=openrouter` iken embedding'in Gemini/Together'da kalmasi
+    gerekiyor (OpenRouter'da embedding yok). RAG yolu tek bir `llm` nesnesi
+    tasidigi icin iki saglayiciyi bu ince sarmalayicida birlestiriyoruz;
+    `rag_service` ve `embedding_service` bunu fark etmiyor.
+    """
+
+    def __init__(self, generation: LLMProvider, embedding: LLMProvider):
+        self._generation = generation
+        self._embedding = embedding
+
+    def generate_subtopics(self, *args, **kwargs):
+        return self._generation.generate_subtopics(*args, **kwargs)
+
+    def generate_study_note(self, *args, **kwargs):
+        return self._generation.generate_study_note(*args, **kwargs)
+
+    def answer_from_context(self, *args, **kwargs):
+        return self._generation.answer_from_context(*args, **kwargs)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._embedding.embed(texts)
+
+
+def create_rag_llm_provider(config: AppConfig) -> LLMProvider:
+    """RAG yolu icin saglayici: uretim `llm_provider`, embedding `effective_embedding_provider`.
+
+    Ikisi ayni saglayiciya denk geliyorsa sarmalama YOK, dogrudan o saglayici
+    donuyor -- gereksiz dolaylama hata ayiklamayi zorlastirirdi.
+    """
+    generation = create_llm_provider(config)
+    embed_name = config.effective_embedding_provider()
+    if embed_name == config.llm_provider:
+        return generation
+    embedding = (
+        TogetherLLMProvider(config) if embed_name == "together" else GeminiLLMProvider(config)
+    )
+    return _SplitLLMProvider(generation, embedding)

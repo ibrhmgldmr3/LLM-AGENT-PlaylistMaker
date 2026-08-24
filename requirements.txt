@@ -15,6 +15,11 @@ tzdata>=2024.1; sys_platform == "win32"
 # API (arayuz React; bkz. web/)
 fastapi>=0.115.0,<1.0.0
 uvicorn[standard]>=0.30.0,<1.0.0
+# Dokuman yukleme ucu (`POST /api/spaces/{id}/sources/document`) multipart
+# govde okuyor. FastAPI bunu ISTEGE BAGLI bir ekstra sayiyor ve eksikse rotayi
+# tanimlarken hata veriyor -- yani uygulama ACILISTA kiriliyor, ilk istekte
+# degil. Ortamda dolayli olarak kurulu geliyordu; acikca yaziliyor.
+python-multipart>=0.0.9,<1.0.0
 
 # LLM
 google-genai>=1.0.0,<2.0.0
@@ -31,6 +36,14 @@ youtube-transcript-api>=1.0.0,<2.0.0
 
 # Optional ASR
 faster-whisper>=1.1.0,<2.0.0
+
+# RAG: ogrenme alani (embedding + dokuman ayristirma)
+# numpy zaten `faster-whisper` uzerinden geliyordu; ACIKCA yaziliyor cunku
+# `embedding_service` ona DOGRUDAN bagimli ve transitif bir bagimliliga
+# yaslanmak, ASR kaldirildigi gun sessizce kirilmak demek.
+numpy>=1.26,<3.0.0
+pypdf>=5.0.0,<7.0.0
+python-docx>=1.1.0,<2.0.0
 
 # Optional official playlist publishing
 google-auth>=2.30.0,<3.0.0

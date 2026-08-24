@@ -3,9 +3,66 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Make A Playlist</title>
+    <title>Derslik — Make A Playlist</title>
+    <meta
+      name="description"
+      content="Bir konu yaz, sıralı bir ders planı al. Videoları izle, işaretle, kaynaklı soru sor."
+    />
+    <meta name="theme-color" content="#1b3a31" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1512" media="(prefers-color-scheme: dark)" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600;7..72,700&display=swap"
+    />
+
+    <script>
+      // Temayı BOYAMADAN once uygula: React mount olana kadar gecen surede
+      // yanlis temanin bir kare bile gorunmesi, gece calisan kullaniciya
+      // beyaz ekran patlatiyordu.
+      (function () {
+        try {
+          var saved = localStorage.getItem("derslik:theme");
+          var dark = saved
+            ? saved === "dark"
+            : window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
   </head>
   <body>
+    <!--
+      THESIS: Kendi kendine ogrenen birinin DERSI; arama sonucu listesi degil.
+      Sirali unite dizisi nesnenin kendisi. Reddedilen kategori varsayilani:
+      alaka puanli, ayni boyda video kartlarindan olusan sonsuz akis.
+
+      OWN-WORLD: Dershanenin iki yuzeyi. Koyu tahta yesili (#1b3a31) gezinmeyi,
+      ders basligini ve "su an buradasin" isaretini tasir; sicak yulaf kagit
+      (#f0ede4) okunan her seyi. Tebesir kehribari (#c9861a) TEK sinyal:
+      aktif olan, sirada olan, ne kadar ilerledigin. Archivo = kurum konusuyor
+      (tabela register). Literata = okudugun malzeme (kitap register).
+      Golge degil cizgi; cam ve parlaklik yok.
+
+      STORY: Tek soru sorulur, plan bir GUZERGAH olarak kurulurken izlenir,
+      sonucta numarali unitelerden olusan isaretlenebilir bir ders cikar,
+      ve o derse soru sorulup videonun tam saniyesine gidilir.
+
+      FIRST VIEWPORT: Solda tahta yesili ray, uc durak. Kagit zeminde tek
+      buyuk soru, altinda tek genis alan, dort gercek ornek konu. Tercihler
+      katli. Birincil eylem alanin hemen altinda.
+
+      FORM: Muze sergi yonlendirmesi + ders izlencesi. Kullanici tarafindan
+      sabitlendi (zar atilmadi).
+
+      FINISH: unreviewed and undocumented is unfinished; this build ends with
+      the finish review, the verdict, and DESIGN.md
+    -->
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,11 +23,26 @@ from src.utils.logging_utils import redact_secrets
 from src.utils.retry_utils import retry_with_backoff
 
 
+# Transcript downloads are mostly network-bound and may run in parallel. ASR
+# is different: a single faster-whisper call can consume every CPU core (or a
+# GPU), so it gets its own process-wide gate. Production has one AppConfig;
+# retaining a gate per configured limit also keeps independently configured
+# test/app instances from unexpectedly sharing a semaphore.
+_ASR_GATES: dict[int, threading.BoundedSemaphore] = {}
+_ASR_GATES_LOCK = threading.Lock()
+
+
+def _asr_gate(max_workers: int) -> threading.BoundedSemaphore:
+    with _ASR_GATES_LOCK:
+        return _ASR_GATES.setdefault(max_workers, threading.BoundedSemaphore(max_workers))
+
+
 @dataclass
 class RunTranscriptState:
     attempted_pairs: set[tuple[str, str]] = field(default_factory=set)
     downloaded_audio: dict[str, str] = field(default_factory=dict)
     asr_video_count: int = 0
+    asr_seconds_used: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def claim_attempt(self, video_id: str, provider_name: str) -> bool:
@@ -38,13 +54,47 @@ class RunTranscriptState:
             self.attempted_pairs.add(key)
             return True
 
-    def claim_asr_slot(self, limit: int) -> bool:
-        """Calistirma basina ASR kotasindan bir yer ayirir."""
+    def claim_asr_slot(
+        self, limit: int, duration_sec: int | None = None, seconds_budget: int = 0
+    ) -> bool:
+        """Calistirma basina ASR kotasindan yer ayirir.
+
+        IKI ayri tavan var cunku "kac video" ile "ne kadar hesaplama" ayni sey
+        degil: ASR'in bedeli video SURESIYLE orantili ve yalnizca adet sayan
+        bir kota, 3 saatlik iki dersi de kabul ediyordu. Ikisi de 0 iken
+        sinirsiz.
+
+        Sure bilinmiyorsa (`duration_sec` None) butceden DUSULMUYOR ama adet
+        tavani yine isliyor: bilinmeyen bir sureyi tahmin edip butceyi ona
+        gore harcamak, olcmedigimiz bir seye gore karar vermek olurdu.
+        """
         with self.lock:
             if limit and self.asr_video_count >= limit:
                 return False
+            if seconds_budget and duration_sec and (
+                self.asr_seconds_used + duration_sec > seconds_budget
+            ):
+                return False
             self.asr_video_count += 1
+            self.asr_seconds_used += duration_sec or 0
             return True
+
+
+def _asr_skip_reason(config: AppConfig, candidate: VideoCandidate) -> str | None:
+    """ASR'a hic girmemek icin bir sebep varsa dondurur.
+
+    Bu kontroller SES INDIRMEDEN once yapilmali: canli bir yayinin sesini
+    indirmek yayin bitene kadar surer, uzun bir videonunki ise kotanin
+    tamamini tek basina yer. Ikisi de `VideoCandidate` uzerinde ZATEN duran
+    ama ASR yolunda hic okunmayan alanlar.
+    """
+    if candidate.is_live:
+        return "canlı yayın"
+    limit = config.max_asr_video_duration_sec
+    duration = candidate.duration_sec
+    if limit and duration and duration > limit:
+        return f"süre {duration}sn > tavan {limit}sn"
+    return None
 
 
 def select_transcription_backend(config: AppConfig):
@@ -73,7 +123,7 @@ def get_transcript(
 ) -> TranscriptResult:
     language_hint = preferred_language or candidate.language
     providers: list[tuple[str, object]] = [
-        ("youtube_transcript_api", lambda: _fetch_youtube_transcript(candidate, language_hint, logger)),
+        ("youtube_transcript_api", lambda: _fetch_youtube_transcript(config, candidate, language_hint, logger)),
         ("yt_dlp_subtitles", lambda: _fetch_ytdlp_subtitles(config, candidate, language_hint, logger)),
     ]
     if config.enable_asr_fallback:
@@ -85,7 +135,7 @@ def get_transcript(
     for provider_name, loader in providers:
         attempted.append(provider_name)
 
-        cached = store.get_transcript_cache(candidate.video_id, provider_name)
+        cached = store.get_transcript_cache(candidate.video_id, provider_name, language_hint)
         if cached is not None:
             cached.attempted_providers = attempted.copy()
             if cached.status == "available":
@@ -100,7 +150,24 @@ def get_transcript(
                 logger.info("Skipping %s for %s: provider in cooldown", provider_name, candidate.video_id)
             continue
 
-        if provider_name == "asr" and not state.claim_asr_slot(config.max_asr_videos_per_run):
+        if provider_name == "asr":
+            skip_reason = _asr_skip_reason(config, candidate)
+            if skip_reason:
+                if logger:
+                    logger.info("Skipping ASR for %s: %s", candidate.video_id, skip_reason)
+                continue
+
+        # A duplicate attempt must not consume the scarce ASR quota. The old
+        # order reserved a slot first, then discovered this pair was already
+        # running or handled.
+        if not state.claim_attempt(candidate.video_id, provider_name):
+            continue
+
+        if provider_name == "asr" and not state.claim_asr_slot(
+            config.max_asr_videos_per_run,
+            candidate.duration_sec,
+            config.max_asr_seconds_per_run,
+        ):
             if logger:
                 logger.info(
                     "Skipping ASR for %s: run limit of %s reached",
@@ -109,17 +176,22 @@ def get_transcript(
                 )
             continue
 
-        if not state.claim_attempt(candidate.video_id, provider_name):
-            continue
-
         try:
-            result = retry_with_backoff(
-                loader,
-                attempts=config.retry_max_attempts,
-                base_delay=config.retry_base_delay_sec,
-                logger=logger,
-                on_exception=(ProviderTemporaryError,),
-            )
+            # Audio download and transcription have different retry semantics.
+            # `_fetch_asr_transcript` retries each phase independently and
+            # retains a successful download while transcription is retried.
+            # Wrapping the whole function here used to download the same audio
+            # again after every transient Whisper failure.
+            if provider_name == "asr":
+                result = loader()
+            else:
+                result = retry_with_backoff(
+                    loader,
+                    attempts=config.retry_max_attempts,
+                    base_delay=config.retry_base_delay_sec,
+                    logger=logger,
+                    on_exception=(ProviderTemporaryError,),
+                )
         except ProviderRateLimitedError as exc:
             # Sunucu acikca "yavasla" diyor. Tekrar DENEME; saglayiciyi hemen
             # dinlendir. Eskiden bu hata genel "gecici hata" sayiliyor, her video
@@ -142,12 +214,31 @@ def get_transcript(
                 error=redact_secrets(str(exc)),
                 attempted_providers=attempted.copy(),
             )
-            store.put_transcript_cache(result, config.transcript_cache_ttl_sec)
+            store.put_transcript_cache(result, config.transcript_cache_ttl_sec, language_hint)
             continue
         except ProviderPermanentError as exc:
             # Yapilandirma/kurulum hatasi: tekrar denemek fayda etmez, cezalandirmak da.
+            #
+            # Ama SORMAYI BIRAKMALIYIZ: bu hatalar (PO token istegi, okunamayan
+            # Chrome cerezleri, eksik yt-dlp secenegi) TEK bir videoyla degil
+            # kurulumla ilgili, yani kalan her aday icin de ayni sekilde
+            # basarisiz olacak. Eskiden 12 adayin 12'sinde de deneniyordu.
+            # Dinlenme sayaci ARTIRILMIYOR (`mark_provider_cooldown` ardisik
+            # hata sayacina dokunmuyor): saglayici arizali degil, eksik
+            # yapilandirilmis.
+            store.mark_provider_cooldown(
+                provider_name,
+                redact_secrets(str(exc)),
+                config.provider_cooldown_sec,
+                event=store.MISCONFIGURED,
+            )
             if logger:
-                logger.error("Permanent transcript failure on %s: %s", provider_name, exc)
+                logger.error(
+                    "Permanent transcript failure on %s (cooling down %ss): %s",
+                    provider_name,
+                    config.provider_cooldown_sec,
+                    exc,
+                )
             result = TranscriptResult(
                 video_id=candidate.video_id,
                 status="failed_permanent",
@@ -155,7 +246,7 @@ def get_transcript(
                 error=redact_secrets(str(exc)),
                 attempted_providers=attempted.copy(),
             )
-            store.put_transcript_cache(result, config.failure_cache_ttl_sec)
+            store.put_transcript_cache(result, config.failure_cache_ttl_sec, language_hint)
             continue
         except Exception as exc:
             message = redact_secrets(str(exc))
@@ -181,16 +272,17 @@ def get_transcript(
                 error=message,
                 attempted_providers=attempted.copy(),
             )
-            store.put_transcript_cache(result, config.failure_cache_ttl_sec)
+            store.put_transcript_cache(result, config.failure_cache_ttl_sec, language_hint)
             continue
 
         result.attempted_providers = attempted.copy()
         if result.status == "available":
-            store.put_transcript_cache(result, config.transcript_cache_ttl_sec)
+            store.put_transcript_cache(result, config.transcript_cache_ttl_sec, language_hint)
             store.clear_provider_cooldown(provider_name)
+            store.record_provider_success(provider_name)
             return result
 
-        store.put_transcript_cache(result, config.failure_cache_ttl_sec)
+        store.put_transcript_cache(result, config.failure_cache_ttl_sec, language_hint)
         # Saglayici cevap verdi ama icerik yok: bu bir saglayici arizasi degil.
         store.clear_provider_cooldown(provider_name)
 
@@ -204,9 +296,9 @@ def get_transcript(
 
 
 def _fetch_youtube_transcript(
-    candidate: VideoCandidate, language_hint: str | None, logger=None
+    config: AppConfig, candidate: VideoCandidate, language_hint: str | None, logger=None
 ) -> TranscriptResult:
-    provider = YouTubeTranscriptAPIProvider()
+    provider = YouTubeTranscriptAPIProvider(config, logger=logger)
     transcript = provider.fetch(candidate.video_id, language_hint)
     if transcript:
         if logger:
@@ -248,21 +340,127 @@ def _fetch_asr_transcript(
     audio_dir = Path(run_dir) / "audio"
     audio_path = state.downloaded_audio.get(candidate.video_id)
     if not audio_path or not os.path.exists(audio_path):
-        audio_path = ytdlp.download_audio(candidate.url, str(audio_dir), candidate.video_id)
+        audio_path = retry_with_backoff(
+            lambda: ytdlp.download_audio(candidate.url, str(audio_dir), candidate.video_id),
+            attempts=config.retry_max_attempts,
+            base_delay=config.retry_base_delay_sec,
+            logger=logger,
+            on_exception=(ProviderTemporaryError,),
+        )
         state.downloaded_audio[candidate.video_id] = audio_path
 
     if logger:
         logger.info("Using ASR backend %s for %s", backend.name, candidate.video_id)
+    timed_out = False
+    timed_out_worker: threading.Thread | None = None
     try:
-        result = backend.transcribe(audio_path, candidate.video_id, language_hint)
+        def transcribe_once() -> TranscriptResult:
+            nonlocal timed_out, timed_out_worker
+            result, timed_out, timed_out_worker = _transcribe_with_timeout(
+                backend,
+                audio_path,
+                candidate.video_id,
+                language_hint,
+                config,
+            )
+            return result
+
+        # A download is expensive but immutable. Keep it while a temporary
+        # transcription error is retried instead of fetching it three times.
+        result = retry_with_backoff(
+            transcribe_once,
+            attempts=config.retry_max_attempts,
+            base_delay=config.retry_base_delay_sec,
+            logger=logger,
+            on_exception=(ProviderTemporaryError,),
+        )
     finally:
-        _cleanup_audio(state, candidate.video_id, audio_path)
+        if timed_out and timed_out_worker is not None:
+            # Python cannot safely terminate CTranslate2 from another thread.
+            # The daemon keeps the ASR gate until its native call actually
+            # returns; cleanup then runs exactly once without blocking the job.
+            threading.Thread(
+                target=_cleanup_audio_after_thread,
+                args=(state, candidate.video_id, audio_path, timed_out_worker),
+                daemon=True,
+                name="asr-cleanup",
+            ).start()
+        else:
+            _cleanup_audio(state, candidate.video_id, audio_path)
 
     result.source = "asr"
     result.backend = backend.name
     if result.status != "available" and logger:
         logger.warning("ASR backend %s returned %s for %s", backend.name, result.status, candidate.video_id)
     return result
+
+
+def _transcribe_with_timeout(
+    backend,
+    audio_path: str,
+    video_id: str,
+    language_hint: str | None,
+    config: AppConfig,
+) -> tuple[TranscriptResult, bool, threading.Thread | None]:
+    """Run ASR under its own concurrency gate and bounded caller wait.
+
+    faster-whisper runs native code in-process, so forcefully killing a timed
+    out thread could corrupt its shared model. The worker is therefore daemon
+    based: the API job receives a temporary failure at the deadline while the
+    gate remains held until the native call is genuinely finished.
+    """
+    timeout = config.faster_whisper_timeout_sec if backend.name == "faster_whisper" else config.whisper_cpp_timeout_sec
+    gate = _asr_gate(config.max_asr_workers)
+    if not gate.acquire(timeout=timeout):
+        return (
+            TranscriptResult(
+                video_id=video_id,
+                status="failed_temporary",
+                source="asr",
+                backend=backend.name,
+                error=f"ASR worker was unavailable for {timeout} seconds",
+            ),
+            False,
+            None,
+        )
+
+    outcomes: queue.Queue[object] = queue.Queue(maxsize=1)
+
+    def work() -> None:
+        try:
+            outcomes.put(backend.transcribe(audio_path, video_id, language_hint))
+        except BaseException as exc:  # hand the original provider error to retry logic
+            outcomes.put(exc)
+        finally:
+            gate.release()
+
+    worker = threading.Thread(target=work, daemon=True, name="asr-transcribe")
+    worker.start()
+    try:
+        outcome = outcomes.get(timeout=timeout)
+    except queue.Empty:
+        return (
+            TranscriptResult(
+                video_id=video_id,
+                status="failed_temporary",
+                source="asr",
+                backend=backend.name,
+                error=f"{backend.name} did not finish within {timeout} seconds",
+            ),
+            True,
+            worker,
+        )
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome, False, None
+
+
+def _cleanup_audio_after_thread(
+    state: RunTranscriptState, video_id: str, audio_path: str, worker: threading.Thread
+) -> None:
+    """Wait for a timed-out daemon to stop reading the audio before deletion."""
+    worker.join()
+    _cleanup_audio(state, video_id, audio_path)
 
 
 def _cleanup_audio(state: RunTranscriptState, video_id: str, audio_path: str) -> None:

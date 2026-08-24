@@ -210,6 +210,10 @@ class SQLiteStore:
                 CREATE TABLE IF NOT EXISTS transcript_cache (
                     video_id TEXT NOT NULL,
                     provider TEXT NOT NULL,
+                    -- ISTENEN dil (sonuctaki dil degil): saglayicinin ne
+                    -- yapacagini belirleyen girdi budur. Bkz.
+                    -- `get_transcript_cache`.
+                    language TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
@@ -282,6 +286,69 @@ class SQLiteStore:
                     email TEXT,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
+                );
+                -- ------------------------------------------------- ogrenme alani
+                -- Bir "alan" (space) kullanicinin kalici bilgi havuzu: birden
+                -- cok calistirmanin videolari + yukledigi dokumanlar. Calistirma
+                -- (`run`) ile ARASINDA bag yok -- alan ondan uzun yasiyor ve
+                -- calistirma silinse de icerigi alanda kalmali.
+                CREATE TABLE IF NOT EXISTS space (
+                    space_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_space_user ON space (user_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS space_source (
+                    space_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,          -- video | document
+                    ref_id TEXT NOT NULL,        -- video_id | saklanan dosya adi
+                    title TEXT NOT NULL,
+                    url TEXT,
+                    language TEXT,
+                    status TEXT NOT NULL,        -- pending | indexed | no_text | failed
+                    chunk_count INTEGER NOT NULL DEFAULT 0,
+                    byte_size INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (space_id, source_id)
+                );
+                CREATE TABLE IF NOT EXISTS chunk (
+                    chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    space_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    start_sec REAL,
+                    end_sec REAL,
+                    page INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_chunk_space ON chunk (space_id);
+                CREATE INDEX IF NOT EXISTS idx_chunk_source ON chunk (space_id, source_id);
+                CREATE TABLE IF NOT EXISTS chunk_embedding (
+                    chunk_id INTEGER PRIMARY KEY,
+                    model TEXT NOT NULL,
+                    dim INTEGER NOT NULL,
+                    vector BLOB NOT NULL          -- float32, little-endian
+                );
+                -- ARAMA INDEKSI. `content=` KULLANILMIYOR (harici icerik kipi):
+                -- o kipte silme, `INSERT INTO chunk_fts(chunk_fts, 'delete', ...)`
+                -- gibi ozel komutlar ve satirin ESKI degerinin birebir
+                -- tekrarlanmasini gerektiriyor; senkron kalmayan bir indeks ise
+                -- sessizce yanlis sonuc verir. Kendi kopyasini tutan duz bir FTS
+                -- tablosunda silme siradan bir DELETE. Bedeli metnin ikinci bir
+                -- kopyasi -- alan basina birkac bin parcada onemsiz.
+                --
+                -- `search_text` = `text_utils.search_key(...)`: Turkce harfler
+                -- Latin karsiligina indirgenmis hali. Sorgu tarafi AYNI
+                -- fonksiyondan geciyor; kritik olan donusum degil TEK olmasi.
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+                    search_text,
+                    chunk_id UNINDEXED,
+                    space_id UNINDEXED,
+                    tokenize="unicode61 remove_diacritics 2"
                 );
                 CREATE INDEX IF NOT EXISTS idx_session_expires ON session (expires_at);
                 CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache (expires_at);
@@ -394,6 +461,12 @@ class SQLiteStore:
         cls._add_column_if_missing(
             conn, "run", "reserved_units", "reserved_units INTEGER NOT NULL DEFAULT 0"
         )
+        # Mevcut satirlar '' (dil belirtilmemis) olarak isaretlenir; bir sonraki
+        # dilli istek onlari iskalar ve yeniden ceker. Bir kerelik isabet
+        # kaybi, yanlis dilde transkript dondurmenin yanina bile yaklasmaz.
+        cls._add_column_if_missing(
+            conn, "transcript_cache", "language", "language TEXT NOT NULL DEFAULT ''"
+        )
         cls._copy_legacy_provider_health(conn)
         cls._collapse_cooldowns_to_server_scope(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
@@ -451,30 +524,53 @@ class SQLiteStore:
                 ),
             )
 
-    def get_transcript_cache(self, video_id: str, provider: str) -> TranscriptResult | None:
+    # Onbellek anahtari ISTENEN dili de icerir. Dil, saglayicinin davranisini
+    # DOGRUDAN degistiriyor (hangi altyazi izi secilir, ceviri yapilir mi);
+    # anahtarda olmamasi iki yonden de yanlis sonuc veriyordu: Turkce bir kosu
+    # "altyazi yok" yazinca Ingilizce kosu da o kaydi okuyor, tersi durumda ise
+    # 30 gun boyunca YANLIS DILDE transkript donuyordu.
+    #
+    # Birincil anahtar (video_id, provider) olarak KALIYOR: dili anahtara
+    # eklemek tabloyu yeniden kurmayi gerektirirdi. Bunun yerine yazma
+    # ustune yaziyor, okuma ise dil esitligi ariyor -- yani iki dil ayni anda
+    # onbellekte duramaz, ama YANLIS dilde bir kayit ASLA okunmaz. Kaciran
+    # okuma zaten yeniden cekiyor; kabul edilen bedel isabet orani, dogruluk
+    # degil.
+
+    @staticmethod
+    def _normalize_cache_language(language: str | None) -> str:
+        return (language or "").strip().lower()
+
+    def get_transcript_cache(
+        self, video_id: str, provider: str, language: str | None = None
+    ) -> TranscriptResult | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT payload_json, expires_at
                 FROM transcript_cache
-                WHERE video_id = ? AND provider = ?
+                WHERE video_id = ? AND provider = ? AND language = ?
                 """,
-                (video_id, provider),
+                (video_id, provider, self._normalize_cache_language(language)),
             ).fetchone()
         if not row or _is_expired(row["expires_at"]):
             return None
         return TranscriptResult.model_validate(json.loads(row["payload_json"]))
 
-    def put_transcript_cache(self, transcript: TranscriptResult, ttl_sec: int) -> None:
+    def put_transcript_cache(
+        self, transcript: TranscriptResult, ttl_sec: int, language: str | None = None
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO transcript_cache (video_id, provider, status, payload_json, expires_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO transcript_cache
+                    (video_id, provider, language, status, payload_json, expires_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     transcript.video_id,
                     transcript.source,
+                    self._normalize_cache_language(language),
                     transcript.status,
                     json.dumps(transcript.model_dump(), ensure_ascii=False),
                     _iso_in(ttl_sec),
@@ -493,6 +589,12 @@ class SQLiteStore:
     RATE_LIMITED = "rate_limited"
     FAILURE = "failure"
     COOLDOWN = "cooldown"
+    SUCCESS = "success"
+    # Yapilandirma eksigi yuzunden dinlendirme (PO token istegi, okunamayan
+    # cerezler). Hiz sinirindan AYRI sayiliyor: ikisini ayni kovaya atmak
+    # "bugun kac kez hiz sinirina takildik" sorusunun cevabini bozardi ve o
+    # sayi es zamanlilik ayarlarini olcumle degistirmenin tek dayanagi.
+    MISCONFIGURED = "misconfigured"
 
     def _record_provider_event(self, conn: sqlite3.Connection, provider: str, event: str) -> None:
         """Olayi gunluk sayaca ekler. ACIK bir baglanti aliyor: sayac, sayilan
@@ -523,6 +625,16 @@ class SQLiteStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def record_provider_success(self, provider: str) -> None:
+        """Count a usable provider result for operational success-rate checks.
+
+        Failures and cooldowns alone cannot tell whether a fallback is healthy
+        or merely being attempted.  Keep this beside the other provider event
+        writes so callers cannot need direct database knowledge.
+        """
+        with self.connect() as conn:
+            self._record_provider_event(conn, provider, self.SUCCESS)
+
     def get_provider_cooldown(self, provider: str) -> str | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -537,8 +649,16 @@ class SQLiteStore:
             return cooldown_until
         return None
 
-    def mark_provider_cooldown(self, provider: str, error: str, cooldown_sec: int) -> None:
-        """Saglayiciyi SUNUCU GENELINDE dinlendirir (bkz. `SERVER_SCOPE`)."""
+    def mark_provider_cooldown(
+        self, provider: str, error: str, cooldown_sec: int, event: str | None = None
+    ) -> None:
+        """Saglayiciyi SUNUCU GENELINDE dinlendirir (bkz. `SERVER_SCOPE`).
+
+        `event` dinlendirmenin SEBEBINI etiketler ve varsayilani hiz siniri:
+        bu metodun uzun sure tek cagrilma sebebi oydu. Yapilandirma kaynakli
+        dinlendirmeler `MISCONFIGURED` gecmeli, yoksa hiz siniri sayaci
+        gercekte yasanmamis olaylarla sisiyordu.
+        """
         user_id = SERVER_SCOPE
         with self.connect() as conn:
             conn.execute(
@@ -556,7 +676,7 @@ class SQLiteStore:
             # Sayac BURADA, store icinde artiyor: cagri yerlerinde artirmak
             # unutulabilir bir adim olurdu ve bir kez unutuldugunda olcum
             # sessizce eksik kalirdi.
-            self._record_provider_event(conn, provider, self.RATE_LIMITED)
+            self._record_provider_event(conn, provider, event or self.RATE_LIMITED)
 
     def record_provider_failure(
         self,
@@ -1128,6 +1248,359 @@ class SQLiteStore:
             conn.execute("DELETE FROM run_subtopic WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM run_video WHERE run_id = ?", (run_id,))
         return True
+
+    # ------------------------------------------------------- ogrenme alanlari
+    #
+    # SAHIPLIK her sorguda `user_id` ile suzuluyor ve cagiran bunu ES GECEMEZ:
+    # `user_id` opsiyonel bir filtre DEGIL, zorunlu parametre. `run` tarafinda
+    # `None` = "tum kullanicilar" seklinde bir yonetim kacisi var; burada
+    # bilerek yok -- alanlar kullanicinin YUKLEDIGI dosyalari tasiyor ve
+    # "yanlislikla None gecildi" durumunun bedeli orada cok daha agir.
+
+    def create_space(self, space_id: str, user_id: str, name: str) -> None:
+        now = _to_iso(_utc_now())
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO space (space_id, user_id, name, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (space_id, user_id, name, now, now),
+            )
+
+    def get_space(self, space_id: str, user_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT space_id, user_id, name, created_at, updated_at FROM space"
+                " WHERE space_id = ? AND user_id = ?",
+                (space_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_spaces(
+        self, user_id: str, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.space_id, s.name, s.created_at, s.updated_at,
+                       (SELECT COUNT(*) FROM space_source ss
+                         WHERE ss.space_id = s.space_id) AS source_count,
+                       (SELECT COUNT(*) FROM chunk c
+                         WHERE c.space_id = s.space_id) AS chunk_count
+                FROM space s
+                WHERE s.user_id = ?
+                ORDER BY s.updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (user_id, limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_spaces(self, user_id: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM space WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def touch_space(self, space_id: str) -> None:
+        """`updated_at`i tazeler. Alan listesi buna gore siralaniyor."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE space SET updated_at = ? WHERE space_id = ?",
+                (_to_iso(_utc_now()), space_id),
+            )
+
+    def delete_space(self, space_id: str, user_id: str) -> bool:
+        """Alani ve BAGLI HER SEYI siler: kaynaklar, parcalar, FTS, vektorler.
+
+        Tek transaction icinde: yarim kalan bir silme, arama indeksinde sahibi
+        olmayan satirlar birakirdi ve o satirlar sonuclara sizardi.
+
+        Diskteki yuklenmis dosyalara BURADA dokunulmuyor -- depo katmani dosya
+        sistemini tanimiyor (ayni gerekce `run_retention.py` ust aciklamasinda
+        yazili). Onu `space_retention.delete_space` yapiyor.
+        """
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM space WHERE space_id = ? AND user_id = ?",
+                (space_id, user_id),
+            )
+            if not cursor.rowcount:
+                return False
+            self._delete_space_content(conn, space_id)
+        return True
+
+    @staticmethod
+    def _delete_space_content(conn: sqlite3.Connection, space_id: str) -> None:
+        conn.execute(
+            "DELETE FROM chunk_embedding WHERE chunk_id IN"
+            " (SELECT chunk_id FROM chunk WHERE space_id = ?)",
+            (space_id,),
+        )
+        conn.execute("DELETE FROM chunk_fts WHERE space_id = ?", (space_id,))
+        conn.execute("DELETE FROM chunk WHERE space_id = ?", (space_id,))
+        conn.execute("DELETE FROM space_source WHERE space_id = ?", (space_id,))
+
+    # -------------------------------------------------------------- kaynaklar
+
+    def add_source(
+        self,
+        space_id: str,
+        source_id: str,
+        *,
+        kind: str,
+        ref_id: str,
+        title: str,
+        url: str | None = None,
+        language: str | None = None,
+        status: str = "pending",
+        byte_size: int = 0,
+    ) -> None:
+        """Kaynagi ekler ya da mevcut kaydin uzerine yazar.
+
+        `INSERT OR REPLACE`: ayni videoyu iceren ikinci bir calistirma alana
+        eklendiginde ya da basarisiz bir indeksleme tekrarlandiginda kayit
+        TAZELENMELI, ikinci kez eklenmemeli. Tekillik zaten
+        `(space_id, source_id)` birincil anahtarinda.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO space_source (
+                    space_id, source_id, kind, ref_id, title, url, language,
+                    status, chunk_count, byte_size, error, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?)
+                """,
+                (
+                    space_id,
+                    source_id,
+                    kind,
+                    ref_id,
+                    title,
+                    url,
+                    language,
+                    status,
+                    int(byte_size),
+                    _to_iso(_utc_now()),
+                ),
+            )
+
+    def update_source(
+        self,
+        space_id: str,
+        source_id: str,
+        *,
+        status: str,
+        chunk_count: int = 0,
+        error: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE space_source SET status = ?, chunk_count = ?, error = ?"
+                " WHERE space_id = ? AND source_id = ?",
+                (status, int(chunk_count), error, space_id, source_id),
+            )
+
+    _SOURCE_COLUMNS = (
+        "source_id, kind, ref_id, title, url, language, status,"
+        " chunk_count, byte_size, error, created_at"
+    )
+
+    def list_sources(self, space_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._SOURCE_COLUMNS} FROM space_source"
+                " WHERE space_id = ? ORDER BY created_at, source_id",
+                (space_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_source(self, space_id: str, source_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._SOURCE_COLUMNS} FROM space_source"
+                " WHERE space_id = ? AND source_id = ?",
+                (space_id, source_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_source(self, space_id: str, source_id: str) -> bool:
+        """Kaynagi ve parcalarini siler. Alanin kendisine dokunmaz."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM space_source WHERE space_id = ? AND source_id = ?",
+                (space_id, source_id),
+            )
+            if not cursor.rowcount:
+                return False
+            self._delete_source_chunks(conn, space_id, source_id)
+        return True
+
+    @staticmethod
+    def _delete_source_chunks(
+        conn: sqlite3.Connection, space_id: str, source_id: str
+    ) -> None:
+        selection = "SELECT chunk_id FROM chunk WHERE space_id = ? AND source_id = ?"
+        conn.execute(
+            f"DELETE FROM chunk_embedding WHERE chunk_id IN ({selection})",
+            (space_id, source_id),
+        )
+        conn.execute(
+            f"DELETE FROM chunk_fts WHERE chunk_id IN ({selection})",
+            (space_id, source_id),
+        )
+        conn.execute(
+            "DELETE FROM chunk WHERE space_id = ? AND source_id = ?",
+            (space_id, source_id),
+        )
+
+    # ---------------------------------------------------------------- parcalar
+
+    def replace_chunks(self, space_id: str, source_id: str, drafts) -> int:
+        """Bir kaynagin parcalarini SIFIRDAN yazar; yazilan sayiyi doner.
+
+        "Ekle" degil "degistir": yeniden indeksleme (parcalama ayari degisti,
+        transkript tazelendi) eskilerin YANINA degil YERINE yazmali. Aksi halde
+        ayni icerik iki kez aranir ve baglami tekrarla doldurur.
+
+        `search_text` BURADA uretiliyor: cagiranlarin bunu hatirlamasi
+        gerekmemeli ve unutulan tek bir cagri yeri arama indeksini sessizce
+        eksik birakirdi.
+        """
+        from src.utils.text_utils import search_key
+
+        with self.connect() as conn:
+            self._delete_source_chunks(conn, space_id, source_id)
+            written = 0
+            for draft in drafts:
+                cursor = conn.execute(
+                    "INSERT INTO chunk (space_id, source_id, ordinal, text,"
+                    " start_sec, end_sec, page) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        space_id,
+                        source_id,
+                        draft.ordinal,
+                        draft.text,
+                        draft.start_sec,
+                        draft.end_sec,
+                        draft.page,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO chunk_fts (search_text, chunk_id, space_id)"
+                    " VALUES (?, ?, ?)",
+                    (search_key(draft.text), cursor.lastrowid, space_id),
+                )
+                written += 1
+        return written
+
+    def count_chunks(self, space_id: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM chunk WHERE space_id = ?", (space_id,)
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def get_chunks(self, chunk_ids: list[int]) -> list[dict[str, Any]]:
+        """Verilen kimliklerdeki parcalari kaynak bilgisiyle birlikte dondurur.
+
+        Sira KORUNMUYOR (SQL `IN` sirasiz); cagiran taraf zaten kendi
+        siralamasini uyguluyor.
+        """
+        if not chunk_ids:
+            return []
+        placeholders = ",".join("?" for _ in chunk_ids)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.chunk_id, c.space_id, c.source_id, c.ordinal, c.text,
+                       c.start_sec, c.end_sec, c.page,
+                       s.title, s.url, s.kind
+                FROM chunk c
+                LEFT JOIN space_source s
+                       ON s.space_id = c.space_id AND s.source_id = c.source_id
+                WHERE c.chunk_id IN ({placeholders})
+                """,
+                list(chunk_ids),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def search_chunks_fts(
+        self, space_id: str, match_query: str, limit: int = 20
+    ) -> list[tuple[int, float]]:
+        """Leksik arama. `(chunk_id, skor)` listesi, EN IYIDEN kotuye.
+
+        `bm25()` FTS5'te NEGATIF doner (daha negatif = daha iyi eslesme).
+        Isaret burada cevriliyor ki cagiran "buyuk = iyi" varsayabilsin --
+        isaret karisikligi tam da sessizce TERS siralama uretecek turden bir
+        hata ve birlestirme katmaninda fark edilmesi zor olurdu.
+
+        Gecersiz FTS sorgusu (dengesiz tirnak, yalniz basina `AND`) burada
+        istisna DEGIL bos sonuc: sorgu metnini kullanici yaziyor ve bir soru
+        yuzunden 500 donmek yanlis olurdu. Cagiran taraf zaten tokenlardan
+        guvenli bir sorgu kuruyor; bu ikinci savunma hatti.
+        """
+        if not match_query.strip():
+            return []
+        try:
+            with self.connect() as conn:
+                rows = conn.execute(
+                    "SELECT chunk_id, bm25(chunk_fts) AS score FROM chunk_fts"
+                    " WHERE space_id = ? AND chunk_fts MATCH ?"
+                    " ORDER BY score LIMIT ?",
+                    (space_id, match_query, max(1, limit)),
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _log.warning("FTS sorgusu calistirilamadi (%s): %r", exc, match_query)
+            return []
+        return [(int(row["chunk_id"]), -float(row["score"])) for row in rows]
+
+    # --------------------------------------------------------------- vektorler
+
+    def chunks_missing_embeddings(
+        self, space_id: str, model: str
+    ) -> list[tuple[int, str]]:
+        """Bu MODEL ile gomulmemis parcalar.
+
+        Olcut yalnizca "kayit var mi" DEGIL, "AYNI modelle mi": farkli
+        modellerin vektorleri arasinda kosinus benzerligi anlamsizdir. Model
+        degistiginde eski satirlar gomulmemis sayilip tembel bicimde yeniden
+        uretiliyor -- toplu bir goc adimina gerek kalmiyor.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT c.chunk_id, c.text FROM chunk c"
+                " LEFT JOIN chunk_embedding e ON e.chunk_id = c.chunk_id"
+                " WHERE c.space_id = ? AND (e.chunk_id IS NULL OR e.model != ?)"
+                " ORDER BY c.chunk_id",
+                (space_id, model),
+            ).fetchall()
+        return [(int(row["chunk_id"]), row["text"]) for row in rows]
+
+    def put_embeddings(self, rows: list[tuple[int, str, int, bytes]]) -> None:
+        """`(chunk_id, model, dim, vector)` satirlarini yazar."""
+        if not rows:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO chunk_embedding"
+                " (chunk_id, model, dim, vector) VALUES (?, ?, ?, ?)",
+                rows,
+            )
+
+    def load_embeddings(self, space_id: str, model: str) -> list[tuple[int, bytes]]:
+        """Alanin bu modele ait tum vektorleri."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT e.chunk_id, e.vector FROM chunk_embedding e"
+                " JOIN chunk c ON c.chunk_id = e.chunk_id"
+                " WHERE c.space_id = ? AND e.model = ?"
+                " ORDER BY e.chunk_id",
+                (space_id, model),
+            ).fetchall()
+        return [(int(row["chunk_id"]), row["vector"]) for row in rows]
 
 
 def _run_summary_row(row: sqlite3.Row) -> dict[str, Any]:

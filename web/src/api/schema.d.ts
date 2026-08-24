@@ -343,10 +343,193 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/spaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Spaces */
+        get: operations["list_spaces_api_spaces_get"];
+        put?: never;
+        /** Create Space */
+        post: operations["create_space_api_spaces_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Space */
+        get: operations["get_space_api_spaces__space_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Space
+         * @description Alani veritabanindan ve DISKTEN siler.
+         */
+        delete: operations["delete_space_api_spaces__space_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask
+         * @description Alandaki kaynaklara dayanarak soruyu yanitlar.
+         *
+         *     SENKRON: tek bir erisim + tek bir LLM cagrisi, olculen sure birkac saniye.
+         *     Arka plana atmak, istemciye ikinci bir akis mekanizmasi tasittirirdi ve
+         *     kazanci yoktu.
+         *
+         *     `answered=False` bir HATA DEGIL, 200 ile donuyor. Ozelligin asil vaadi bu
+         *     ve onu HTTP hatasi yapmak, arayuzun onu kirmizi bir kutuda gostermesine ve
+         *     kullanicinin sistemi bozuk sanmasina yol acardi.
+         */
+        post: operations["ask_api_spaces__space_id__ask_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/jobs/{job_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Ingest Events
+         * @description Iceri alma ilerlemesini SSE olarak akitir. `runs` ile AYNI mekanizma.
+         */
+        get: operations["stream_ingest_events_api_spaces__space_id__jobs__job_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/sources/document": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Document Source
+         * @description Bir dokuman yukler ve indekslemeyi kuyruga alir.
+         *
+         *     Dosya SENKRON yaziliyor, indeksleme arka planda: yazma hizlidir ve
+         *     basarisiz olursa kullanici bunu ANINDA ogrenmeli (boyut/tur reddi bir
+         *     arka plan isinin icinde kaybolmamali).
+         */
+        post: operations["add_document_source_api_spaces__space_id__sources_document_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/sources/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Run Source
+         * @description Tamamlanmis bir calistirmanin videolarini alana ekler.
+         *
+         *     HEMEN doner: transkript cekme + parcalama + gomme dakikalar surebiliyor
+         *     (ASR acikken daha da fazla) ve bir HTTP istegi bunu bekleyemez.
+         */
+        post: operations["add_run_source_api_spaces__space_id__sources_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Source
+         * @description Kaynagi, parcalarini ve (dokumansa) diskteki dosyasini siler.
+         *
+         *     `{source_id:path}` cunku kimlik `doc:0a1b.pdf` bicimde ve iki nokta
+         *     tasiyor; varsayilan yol donusturucu bunu sorunsuz gecirse de bicimi
+         *     acikca belirtmek ileride ayrac degisirse kirilmayi onluyor.
+         */
+        delete: operations["delete_source_api_spaces__space_id__sources__source_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AddRunSourceRequest */
+        AddRunSourceRequest: {
+            /** Run Id */
+            run_id: string;
+        };
+        /** AskRequest */
+        AskRequest: {
+            /**
+             * Language
+             * @default Türkçe
+             */
+            language?: string;
+            /** Question */
+            question: string;
+        };
+        /** Body_add_document_source_api_spaces__space_id__sources_document_post */
+        Body_add_document_source_api_spaces__space_id__sources_document_post: {
+            /**
+             * File
+             * Format: binary
+             */
+            file: string;
+            /** Title */
+            title?: string | null;
+        };
         /**
          * CapabilitiesResponse
          * @description Arayuzun hangi kontrolleri acabilecegi. SIR ICERMEZ.
@@ -371,6 +554,11 @@ export interface components {
             gemini_configured: boolean;
             /** Llm Configured */
             llm_configured: boolean;
+            /**
+             * Rag Available
+             * @default false
+             */
+            rag_available: boolean;
             /** Runs Remaining Today */
             runs_remaining_today: number | null;
             /**
@@ -383,6 +571,29 @@ export interface components {
             /** Youtube Search Configured */
             youtube_search_configured: boolean;
         };
+        /**
+         * Citation
+         * @description Yanitin dayandigi tek bir parcaya isaret.
+         *
+         *     `url` video icin zaman damgasi GOMULU gelir (`...&t=123s`), yani tiklayan
+         *     kullanici dogrudan o ana gider. Zaman bilinmiyorsa (segment tasimayan eski
+         *     bir transkript) saniye EKLENMEZ -- uydurulmus bir saniye, kullaniciyi
+         *     alakasiz bir yere goturur ve konumsuz bir alintidan kotudur.
+         */
+        Citation: {
+            /** Page */
+            page: number | null;
+            /** Quote */
+            quote: string;
+            /** Source Id */
+            source_id: string;
+            /** Start Sec */
+            start_sec: number | null;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string | null;
+        };
         /** CreateRunRequest */
         CreateRunRequest: {
             /**
@@ -394,6 +605,11 @@ export interface components {
             options?: components["schemas"]["RunOptionsOverride"];
             /** Topic */
             topic: string;
+        };
+        /** CreateSpaceRequest */
+        CreateSpaceRequest: {
+            /** Name */
+            name: string;
         };
         /** ExportArtifacts */
         ExportArtifacts: {
@@ -436,6 +652,21 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * IngestAccepted
+         * @description 202 yaniti: iceri alma kuyruga alindi.
+         *
+         *     Uc adres `runs` ile AYNI deseni izliyor -- istemci tarafinda tek bir
+         *     ilerleme akisi mantigi iki ozelligi birden kapsayabilsin diye.
+         */
+        IngestAccepted: {
+            /** Events Url */
+            events_url: string;
+            /** Job Id */
+            job_id: string;
+            /** Space Id */
+            space_id: string;
         };
         /** MetadataScore */
         MetadataScore: {
@@ -511,6 +742,34 @@ export interface components {
             url: string;
             /** Warnings */
             warnings: string[];
+        };
+        /**
+         * RagAnswer
+         * @description Bir soruya verilen yanit -- ya da verilemedigi bilgisi.
+         *
+         *     `answered=False` BIRINCI SINIF bir sonuc, hata degil. Havuzda cevabi
+         *     olmayan bir soruya cevap URETMEK, bu projenin her yerinde reddedilen seyin
+         *     ta kendisi (`StudyNote.no_transcript`, `interrupted` calistirma durumu,
+         *     "zayif eslesme" etiketi): bilinmeyeni bilinmeyen olarak isaretlemek, tahmin
+         *     uretmekten iyidir.
+         *
+         *     `searched_sources` seffaflik icin: kullanici eksik olanin kendi sorusu mu
+         *     yoksa havuzu mu oldugunu gorebilmeli.
+         */
+        RagAnswer: {
+            /** Answer */
+            answer: string | null;
+            /** Answered */
+            answered: boolean;
+            /** Citations */
+            citations: components["schemas"]["Citation"][];
+            /** Reason */
+            reason: string | null;
+            /**
+             * Searched Sources
+             * @default 0
+             */
+            searched_sources: number;
         };
         /** Recommendation */
         Recommendation: {
@@ -682,6 +941,101 @@ export interface components {
             run_id: string;
             /** Topic */
             topic: string;
+        };
+        /**
+         * SpaceDetail
+         * @description Alan + kaynaklari.
+         *
+         *     `SpaceSummary`den TUREMESI kasitli: alanlari elle tekrarlamak ikisinin
+         *     sessizce ayrisabilecegi anlamina gelirdi (ayni gerekce `RunSnapshotBody`
+         *     icin de yazili).
+         */
+        SpaceDetail: {
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
+            /** Created At */
+            created_at: string;
+            /** Name */
+            name: string;
+            /**
+             * Source Count
+             * @default 0
+             */
+            source_count: number;
+            /** Sources */
+            sources: components["schemas"]["SpaceSource"][];
+            /** Space Id */
+            space_id: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** SpaceListResponse */
+        SpaceListResponse: {
+            /** Items */
+            items: components["schemas"]["SpaceSummary"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * SpaceSource
+         * @description Bir ogrenme alanindaki tek bir kaynak (video ya da dokuman).
+         */
+        SpaceSource: {
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
+            /** Error */
+            error: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "video" | "document";
+            /** Language */
+            language: string | null;
+            /** Ref Id */
+            ref_id: string;
+            /** Source Id */
+            source_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "indexed" | "no_text" | "failed";
+            /** Title */
+            title: string;
+            /** Url */
+            url: string | null;
+        };
+        /** SpaceSummary */
+        SpaceSummary: {
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
+            /** Created At */
+            created_at: string;
+            /** Name */
+            name: string;
+            /**
+             * Source Count
+             * @default 0
+             */
+            source_count: number;
+            /** Space Id */
+            space_id: string;
+            /** Updated At */
+            updated_at: string;
         };
         /**
          * StudyNote
@@ -1239,6 +1593,298 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RunStatus"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_spaces_api_spaces_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_space_api_spaces_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSpaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_space_api_spaces__space_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_space_api_spaces__space_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ask_api_spaces__space_id__ask_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RagAnswer"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_ingest_events_api_spaces__space_id__jobs__job_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_document_source_api_spaces__space_id__sources_document_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_add_document_source_api_spaces__space_id__sources_document_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_run_source_api_spaces__space_id__sources_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddRunSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_source_api_spaces__space_id__sources__source_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

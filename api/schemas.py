@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from src.models import FilterOptions, PlaylistResult
+from src.models import FilterOptions, PlaylistResult, SpaceSource
 
 
 # `JobState` degerlerinin tel uzerindeki karsiligi ARTI `interrupted`.
@@ -129,6 +129,10 @@ class CapabilitiesResponse(BaseModel):
     youtube_publish_configured: bool
     asr_available: bool
     cookies_configured: bool
+    # Ogrenme alani (RAG) kullanilabilir mi. `public_capabilities()` ile bu
+    # modelin alanlari BIREBIR ayni olmali -- yukaridaki docstring'de anlatilan
+    # sessiz kaybolma tam da boyle olmustu.
+    rag_available: bool = False
     # Kullanicinin BUGUN kalan calistirma hakki. `None` = sinir yok.
     #
     # Neden yetenek ucundan donuyor: kullanici bugune kadar hakkinin dolduğunu
@@ -141,3 +145,58 @@ class CapabilitiesResponse(BaseModel):
     service_capacity_reached: bool = False
     defaults: dict[str, Any] = Field(default_factory=dict)
 
+
+# ------------------------------------------------------------- ogrenme alani
+
+
+class CreateSpaceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class SpaceSummary(BaseModel):
+    space_id: str
+    name: str
+    created_at: str
+    updated_at: str
+    source_count: int = 0
+    chunk_count: int = 0
+
+
+class SpaceListResponse(BaseModel):
+    items: list[SpaceSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class SpaceDetail(SpaceSummary):
+    """Alan + kaynaklari.
+
+    `SpaceSummary`den TUREMESI kasitli: alanlari elle tekrarlamak ikisinin
+    sessizce ayrisabilecegi anlamina gelirdi (ayni gerekce `RunSnapshotBody`
+    icin de yazili).
+    """
+
+    sources: list[SpaceSource] = Field(default_factory=list)
+
+
+class AddRunSourceRequest(BaseModel):
+    run_id: str = Field(min_length=1, max_length=64)
+
+
+class IngestAccepted(BaseModel):
+    """202 yaniti: iceri alma kuyruga alindi.
+
+    Uc adres `runs` ile AYNI deseni izliyor -- istemci tarafinda tek bir
+    ilerleme akisi mantigi iki ozelligi birden kapsayabilsin diye.
+    """
+
+    job_id: str
+    space_id: str
+    events_url: str
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    # Yanitin dili. Varsayilan Turkce: arayuz de kaynaklarin cogunlugu da oyle.
+    language: str = Field(default="Türkçe", max_length=40)

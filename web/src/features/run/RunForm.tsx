@@ -1,10 +1,55 @@
-import { useState } from "react";
+import { useId, useState } from "react";
+import { ChevronDown, Play, SlidersHorizontal } from "lucide-react";
 import type { Capabilities, CreateRunRequest, Difficulty, Freshness, Language } from "../../api/types";
+import { Note, Spinner } from "../../components/ui";
 
 interface Props {
   capabilities: Capabilities | null;
   busy: boolean;
   onSubmit: (payload: CreateRunRequest) => void;
+}
+
+/**
+ * Bos bir alana bakip ne yazacagini bilememek, bu ekranin en pahali anı.
+ * Ornekler SUSLEME DEGIL: tiklanabilir ve alanı dolduruyorlar, yani "ne kadar
+ * dar/genis yazmaliyim" sorusunu gostererek yanitliyorlar.
+ */
+const EXAMPLES = [
+  "Doğrusal cebirde özdeğerler ve özvektörler",
+  "React'te durum yönetimi",
+  "Makroekonomide enflasyon nasıl ölçülür",
+  "Fotoğrafta ışık ölçümü",
+];
+
+function Check({
+  checked,
+  onChange,
+  label,
+  hint,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  label: string;
+  hint: string;
+}) {
+  const id = useId();
+  return (
+    <div className="check">
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        aria-describedby={`${id}-hint`}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <label className="check__text" htmlFor={id}>
+        {label}
+      </label>
+      <p className="check__hint" id={`${id}-hint`}>
+        {hint}
+      </p>
+    </div>
+  );
 }
 
 export function RunForm({ capabilities, busy, onSubmit }: Props) {
@@ -38,126 +83,181 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
     });
   };
 
+  const blocked = busy || !topic.trim() || outOfRuns || serviceFull;
+
   return (
-    <form className="card" onSubmit={submit}>
-      <h3>Playlist oluştur</h3>
-      <p className="muted">
-        Tek bir öğrenme hedefi girin. Konu alt başlıklara ayrılır, her biri için aday havuzu
-        toplanır ve videolar önce metadata'ya göre sıralanır.
-      </p>
-
-      <label htmlFor="topic">Konu</label>
-      <input
-        id="topic"
-        type="text"
-        value={topic}
-        placeholder="Örnek: Makine öğrenmesi ile zaman serisi tahmini"
-        onChange={(event) => setTopic(event.target.value)}
-      />
-
-      <div className="grid" style={{ marginTop: "1rem" }}>
-        <div>
-          <label htmlFor="language">Dil</label>
-          <select id="language" value={language} onChange={(e) => setLanguage(e.target.value as Language)}>
-            <option value="tr">Türkçe</option>
-            <option value="en">English</option>
-          </select>
-        </div>
-        <div>
-          <label htmlFor="difficulty">Seviye</label>
-          <select id="difficulty" value={difficulty} onChange={(e) => setDifficulty(e.target.value as Difficulty)}>
-            <option value="mixed">Karışık</option>
-            <option value="beginner">Başlangıç</option>
-            <option value="intermediate">Orta</option>
-            <option value="advanced">İleri</option>
-          </select>
-        </div>
-        <div>
-          <label htmlFor="freshness">Tazelik</label>
-          <select id="freshness" value={freshness} onChange={(e) => setFreshness(e.target.value as Freshness)}>
-            <option value="balanced">Dengeli</option>
-            <option value="evergreen">Kalıcı içerik</option>
-            <option value="recent">Güncel</option>
-          </select>
-        </div>
-        <div>
-          <label htmlFor="duration">En fazla süre: {maxDuration} dk</label>
-          <input
-            id="duration"
-            type="range"
-            min={10}
-            max={180}
-            step={5}
-            value={maxDuration}
-            onChange={(event) => setMaxDuration(Number(event.target.value))}
-          />
-        </div>
+    <form className="start" onSubmit={submit}>
+      <div className="stack stack--tight">
+        <h2 className="start__q">
+          <label htmlFor="topic">Ne öğrenmek istiyorsun?</label>
+        </h2>
+        <p className="start__sub">
+          Tek bir hedef yaz. Konuyu alt başlıklara ayırıp her biri için en uygun videoyu
+          seçiyoruz; sonunda baştan sona izlenecek sıralı bir ders planın oluyor.
+        </p>
       </div>
 
-      <div className="row" style={{ marginTop: "1rem" }}>
-        {language !== "en" && (
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={includeEnglish}
-              onChange={(event) => setIncludeEnglish(event.target.checked)}
-            />
-            İngilizce içeriği de dahil et
-          </label>
-        )}
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={enableAsr}
-            onChange={(event) => setEnableAsr(event.target.checked)}
-          />
-          Sesten transkript çıkar (yavaş)
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={enableStudyNotes}
-            onChange={(event) => setEnableStudyNotes(event.target.checked)}
-          />
-          Çalışma notu üret (ek LLM çağrısı)
-        </label>
-      </div>
-
-      {capabilities && !capabilities.youtube_search_configured && (
-        <p className="alert" style={{ marginTop: "0.9rem" }}>
-          YouTube Data API anahtarı tanımlı değil — arama yt-dlp ile yapılacak ve hız
-          sınırlarına takılabilir.
-        </p>
-      )}
-
-      {serviceFull && (
-        <p className="alert alert--error" style={{ marginTop: "0.9rem" }}>
-          Servisin bugünkü kapasitesi doldu. Arama kotası tüm kullanıcılar için ortak;
-          kota sıfırlandığında (Pasifik saatiyle gece yarısı) tekrar deneyebilirsiniz.
-        </p>
-      )}
-
-      {/* Kalan hak yalnizca sunucuda sinir varsa (`null` degilse) gosteriliyor.
-          Hak bittiginde gonder dugmesi de kapaniyor: sunucu zaten 429 donecek,
-          onu tiklamadan once soylemek daha durust. */}
-      {!serviceFull &&
-        capabilities?.runs_remaining_today !== null &&
-        capabilities?.runs_remaining_today !== undefined && (
-          <p
-            className={capabilities.runs_remaining_today === 0 ? "alert alert--error" : "muted"}
-            style={{ marginTop: "0.9rem" }}
-          >
-            {capabilities.runs_remaining_today === 0
-              ? "Bugünlük çalıştırma hakkınız doldu. Yarın tekrar deneyebilirsiniz."
-              : `Bugün kalan çalıştırma hakkınız: ${capabilities.runs_remaining_today}`}
-          </p>
-        )}
-
-      <div style={{ marginTop: "1rem" }}>
-        <button type="submit" disabled={busy || !topic.trim() || outOfRuns || serviceFull}>
-          {busy ? "Oluşturuluyor…" : "Playlist Oluştur"}
+      <div className="start__ask">
+        <input
+          id="topic"
+          type="text"
+          value={topic}
+          autoComplete="off"
+          placeholder="Örnek: Makine öğrenmesiyle zaman serisi tahmini"
+          onChange={(event) => setTopic(event.target.value)}
+        />
+        <button type="submit" className="btn btn--primary btn--lg" disabled={blocked}>
+          {busy ? <Spinner /> : <Play className="h-4 w-4" aria-hidden />}
+          {busy ? "Oluşturuluyor…" : "Ders planımı oluştur"}
         </button>
       </div>
+
+      <div className="start__examples">
+        <span className="start__examples-label">Şunları deneyebilirsin:</span>
+        {EXAMPLES.map((example) => (
+          <button
+            key={example}
+            type="button"
+            className="chip"
+            disabled={busy}
+            onClick={() => setTopic(example)}
+          >
+            {example}
+          </button>
+        ))}
+      </div>
+
+      {serviceFull ? (
+        <Note tone="danger" title="Bugünlük kapasite doldu">
+          Servisin bugünkü kapasitesi doldu. Arama kotası tüm kullanıcılar için ortak; kota
+          sıfırlandığında (Pasifik saatiyle gece yarısı) yeniden deneyebilirsin.
+        </Note>
+      ) : (
+        /* Kalan hak yalnizca sunucuda sinir varsa (`null` degilse) gosteriliyor.
+           Hak bittiginde gonder dugmesi de kapaniyor: sunucu zaten 429 donecek,
+           onu tiklamadan once soylemek daha durust. */
+        capabilities?.runs_remaining_today !== null &&
+        capabilities?.runs_remaining_today !== undefined &&
+        (capabilities.runs_remaining_today === 0 ? (
+          <Note tone="danger" title="Bugünlük hakkın doldu">
+            Yarın yeniden ders planı oluşturabilirsin. Bu arada “Derslerim”deki planlarına
+            çalışmaya devam edebilirsin.
+          </Note>
+        ) : (
+          <p className="meta">
+            Bugün {capabilities.runs_remaining_today} ders planı hakkın kaldı.
+          </p>
+        ))
+      )}
+
+      {capabilities && !capabilities.youtube_search_configured && (
+        <Note tone="warn" title="Arama yedek yöntemle yapılacak">
+          YouTube Data API anahtarı tanımlı değil — arama yt-dlp ile yapılacak ve hız
+          sınırlarına takılabilir.
+        </Note>
+      )}
+
+      <details className="prefs">
+        <summary>
+          <SlidersHorizontal className="h-4 w-4" aria-hidden />
+          Tercihler
+          <span className="meta" style={{ fontWeight: 400 }}>
+            Dil · Seviye · Süre
+          </span>
+          <ChevronDown className="prefs__caret h-4 w-4" aria-hidden />
+        </summary>
+
+        <div className="prefs__body">
+          <div className="prefs__grid">
+            <div>
+              <label className="label" htmlFor="language">
+                Dil
+              </label>
+              <select
+                id="language"
+                value={language}
+                onChange={(event) => setLanguage(event.target.value as Language)}
+              >
+                <option value="tr">Türkçe</option>
+                <option value="en">English</option>
+              </select>
+              <p className="hint">Videoların ve çalışma notlarının dili.</p>
+            </div>
+
+            <div>
+              <label className="label" htmlFor="difficulty">
+                Seviye
+              </label>
+              <select
+                id="difficulty"
+                value={difficulty}
+                onChange={(event) => setDifficulty(event.target.value as Difficulty)}
+              >
+                <option value="mixed">Karışık</option>
+                <option value="beginner">Yeni başlıyorum</option>
+                <option value="intermediate">Temeli var</option>
+                <option value="advanced">İleri düzey</option>
+              </select>
+              <p className="hint">Konuya ne kadar yakın olduğunu söyler.</p>
+            </div>
+
+            <div>
+              <label className="label" htmlFor="freshness">
+                Video yaşı
+              </label>
+              <select
+                id="freshness"
+                value={freshness}
+                onChange={(event) => setFreshness(event.target.value as Freshness)}
+              >
+                <option value="balanced">Fark etmez</option>
+                <option value="evergreen">Zamansız anlatımlar</option>
+                <option value="recent">Yeni videolar</option>
+              </select>
+              <p className="hint">Hızlı değişen konularda “yeni” işe yarar.</p>
+            </div>
+
+            <div>
+              <label className="label" htmlFor="duration">
+                <span>Ders başına en fazla süre: {maxDuration} dk</span>
+              </label>
+              <input
+                id="duration"
+                type="range"
+                min={10}
+                max={180}
+                step={5}
+                value={maxDuration}
+                onChange={(event) => setMaxDuration(Number(event.target.value))}
+              />
+              <p className="hint">Kısa tutarsan daha derli toplu, uzun tutarsan daha derin.</p>
+            </div>
+          </div>
+
+          <div className="prefs__opts">
+            {language !== "en" && (
+              <Check
+                checked={includeEnglish}
+                onChange={setIncludeEnglish}
+                label="İngilizce videoları da değerlendir"
+                hint="Türkçe kaynak az olan konularda seçenekleri genişletir."
+              />
+            )}
+            <Check
+              checked={enableAsr}
+              onChange={setEnableAsr}
+              label="Altyazısı olmayan videoların sesini yazıya dök"
+              hint="Daha iyi eşleşme sağlar ama hazırlık belirgin şekilde uzar."
+            />
+            <Check
+              checked={enableStudyNotes}
+              onChange={setEnableStudyNotes}
+              label="Her ders için çalışma notu çıkar"
+              hint="Videonun transkriptinden kısa bir özet üretilir."
+            />
+          </div>
+        </div>
+      </details>
     </form>
   );
 }

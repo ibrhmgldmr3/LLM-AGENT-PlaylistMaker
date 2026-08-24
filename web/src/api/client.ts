@@ -1,9 +1,14 @@
 import type {
   Capabilities,
   CreateRunRequest,
+  IngestAccepted,
+  RagAnswer,
   RunAccepted,
   RunListResponse,
   RunResultResponse,
+  SpaceDetail,
+  SpaceListResponse,
+  SpaceSummary,
 } from "./types";
 
 /** Sunucunun dondurdugu hata govdesini tasiyan istisna. */
@@ -36,10 +41,24 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
   onUnauthorized = handler;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+interface RequestInitWithBody extends RequestInit {
+  /**
+   * `multipart/form-data` govdeler icin.
+   *
+   * Varsayilan `application/json` basligi FormData govdede YANLIS: tarayici
+   * `boundary` parametresini kendisi uretiyor ve basligi elle koymak onu ezip
+   * sunucunun govdeyi ayristirmasini imkansiz kiliyor.
+   */
+  omitContentType?: boolean;
+}
+
+async function request<T>(path: string, init?: RequestInitWithBody): Promise<T> {
+  const { omitContentType, ...rest } = init ?? {};
   const response = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    ...rest,
+    headers: omitContentType
+      ? { ...rest.headers }
+      : { "Content-Type": "application/json", ...rest.headers },
   });
 
   if (!response.ok) {
@@ -116,4 +135,53 @@ export const api = {
 
   exportUrl: (runId: string, artifact: "json" | "markdown") =>
     `/api/runs/${runId}/export/${artifact}`,
+
+  // ------------------------------------------------------- ogrenme alani
+
+  listSpaces: (limit = 50, offset = 0) =>
+    request<SpaceListResponse>(`/api/spaces?limit=${limit}&offset=${offset}`),
+
+  createSpace: (name: string) =>
+    request<SpaceSummary>("/api/spaces", { method: "POST", body: JSON.stringify({ name }) }),
+
+  getSpace: (spaceId: string) => request<SpaceDetail>(`/api/spaces/${spaceId}`),
+
+  deleteSpace: (spaceId: string) =>
+    request<void>(`/api/spaces/${spaceId}`, { method: "DELETE" }),
+
+  addRunToSpace: (spaceId: string, runId: string) =>
+    request<IngestAccepted>(`/api/spaces/${spaceId}/sources/run`, {
+      method: "POST",
+      body: JSON.stringify({ run_id: runId }),
+    }),
+
+  /**
+   * Dokuman yukler.
+   *
+   * `Content-Type` BILEREK silinmis: `request` varsayilan olarak
+   * `application/json` koyuyor ve multipart govdede bu baslik, tarayicinin
+   * uretmesi gereken `boundary` degerini EZER -- sunucu govdeyi ayristiramaz.
+   */
+  uploadDocument: (spaceId: string, file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("title", file.name);
+    return request<IngestAccepted>(`/api/spaces/${spaceId}/sources/document`, {
+      method: "POST",
+      body,
+      headers: {},
+      omitContentType: true,
+    });
+  },
+
+  deleteSource: (spaceId: string, sourceId: string) =>
+    request<void>(`/api/spaces/${spaceId}/sources/${encodeURIComponent(sourceId)}`, {
+      method: "DELETE",
+    }),
+
+  ask: (spaceId: string, question: string, language = "Türkçe") =>
+    request<RagAnswer>(`/api/spaces/${spaceId}/ask`, {
+      method: "POST",
+      body: JSON.stringify({ question, language }),
+    }),
 };
