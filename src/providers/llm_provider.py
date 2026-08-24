@@ -813,8 +813,6 @@ class OpenRouterLLMProvider:
         `used_chunk_ids` gibi alanlarin sessizce atlanmasi riskini geri
         getirirdi (bkz. `SUBTOPIC_SCHEMA` yorumu).
         """
-        import requests
-
         payload: dict[str, Any] = {
             "model": self.config.openrouter_model,
             "messages": [

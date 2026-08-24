@@ -41,7 +41,8 @@ faster-whisper>=1.1.0,<2.0.0
 # numpy zaten `faster-whisper` uzerinden geliyordu; ACIKCA yaziliyor cunku
 # `embedding_service` ona DOGRUDAN bagimli ve transitif bir bagimliliga
 # yaslanmak, ASR kaldirildigi gun sessizce kirilmak demek.
-numpy>=1.26,<3.0.0
+# Python 3.13 icin ilk manylinux/wheel surumu 2.1.0.
+numpy>=2.1.0,<3.0.0
 pypdf>=5.0.0,<7.0.0
 python-docx>=1.1.0,<2.0.0
 
