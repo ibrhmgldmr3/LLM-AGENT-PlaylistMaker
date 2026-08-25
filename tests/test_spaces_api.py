@@ -420,7 +420,6 @@ def test_get_source_text_unknown_source_is_404(client):
 def test_transcribe_video_source_in_space(client, monkeypatch):
     """Calisma odasindaki bir video icin ASR ile transkript cikarilabilmeli."""
     from src.models import TranscriptResult
-    from src.services import transcript_service
 
     space_id = _create(client)
     store = SQLiteStore(client.app_config.sqlite_path)
