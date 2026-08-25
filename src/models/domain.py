@@ -168,6 +168,8 @@ class StudyNote(BaseModel):
     video_id: str
     status: StudyNoteStatus
     content: str | None = None
+    transcript_source: str | None = None
+    transcript_backend: str | None = None
     error: str | None = None
 
 
@@ -267,3 +269,28 @@ class ProgressEvent(BaseModel):
         if value > 1:
             return 1.0
         return value
+
+
+class SourceChunk(BaseModel):
+    chunk_id: int
+    ordinal: int
+    text: str
+    start_sec: float | None = None
+    end_sec: float | None = None
+    page: int | None = None
+
+
+class SourceTextResult(BaseModel):
+    source_id: str
+    title: str
+    kind: SourceKind
+    status: SourceStatus
+    url: str | None = None
+    language: str | None = None
+    full_text: str = ""
+    chunk_count: int = 0
+    chunks: list[SourceChunk] = Field(default_factory=list)
+    transcript_source: str | None = None
+    transcript_backend: str | None = None
+    error: str | None = None
+

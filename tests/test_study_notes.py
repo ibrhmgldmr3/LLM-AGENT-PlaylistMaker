@@ -310,3 +310,85 @@ def test_markdown_export_shows_all_three_statuses_distinctly():
     assert "ozet metni" in markdown
     assert "No transcript was available" in markdown
     assert "LLM zaman asimi" in markdown
+
+
+def test_asr_transcript_produces_study_note_with_source_and_backend():
+    """ASR ile uretilen transkriptten calisma notu cikarilabilmeli ve kaynak etiketlenmeli."""
+    work = [_work("Konu Başlığı")]
+    rec = _recommendation("v_asr", subtopic="Konu Başlığı", title="ASR Video")
+    request = PlaylistRequest(topic="Konu", filters=FilterOptions(language="tr"))
+    llm = DummyLLM(note_text="ASR transkriptinden uretilmis calisma notu")
+    transcripts = {
+        "v_asr": TranscriptResult(
+            video_id="v_asr",
+            status="available",
+            source="asr",
+            backend="faster_whisper",
+            text="bu video sesinden cikarilmis transkript metnidir",
+        )
+    }
+
+    notes = _generate_study_notes(
+        AppConfig(gemini_api_key="x"),
+        llm,
+        request,
+        work,
+        [rec],
+        transcripts,
+        None,
+        lambda *a, **k: None,
+    )
+
+    assert len(notes) == 1
+    assert notes[0].status == "available"
+    assert notes[0].content == "ASR transkriptinden uretilmis calisma notu"
+    assert notes[0].transcript_source == "asr"
+    assert notes[0].transcript_backend == "faster_whisper"
+
+
+def test_targeted_asr_fallback_for_missing_transcript_in_study_notes(tmp_path, monkeypatch):
+    """Transkripti henuz cekilmemis secilen video icin ASR fallback devreye girip not uretebilmeli."""
+    from src.storage import SQLiteStore
+
+    config = _config(tmp_path, enable_asr_fallback=True)
+    store = SQLiteStore(config.sqlite_path)
+    work = [_work("Hedef Konu")]
+    rec = _recommendation("v_targeted", subtopic="Hedef Konu", title="Targeted Video")
+    request = PlaylistRequest(topic="Konu", filters=FilterOptions(language="tr"))
+    llm = DummyLLM(note_text="Hedefli ASR ile not")
+
+    # get_transcript cagrildiginda ASR sonucu dondurulsun
+    monkeypatch.setattr(
+        playlist_service,
+        "get_transcript",
+        lambda *a, **k: TranscriptResult(
+            video_id="v_targeted",
+            status="available",
+            source="asr",
+            backend="whisper_cpp",
+            text="otomatik cikarilmis ASR transkripti",
+        ),
+    )
+
+    transcripts = {}  # bos transkript sozlugu
+    notes = _generate_study_notes(
+        config,
+        llm,
+        request,
+        work,
+        [rec],
+        transcripts,
+        None,
+        lambda *a, **k: None,
+        store=store,
+        run_id="run123",
+        run_dir=tmp_path,
+    )
+
+    assert len(notes) == 1
+    assert notes[0].status == "available"
+    assert notes[0].content == "Hedefli ASR ile not"
+    assert notes[0].transcript_source == "asr"
+    assert notes[0].transcript_backend == "whisper_cpp"
+    assert "v_targeted" in transcripts
+

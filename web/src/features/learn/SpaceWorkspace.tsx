@@ -4,6 +4,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import {
   ArrowLeft,
   ArrowUpRight,
+  AudioWaveform,
   BookMarked,
   Copy,
   FileText,
@@ -366,6 +367,166 @@ function Moments({
   );
 }
 
+/* ------------------------------------------------------------- transkript & metin */
+
+function SourceTranscriptViewer({
+  source,
+  sourceText,
+  loading,
+  activeSecond,
+  onSeek,
+  onTranscribe,
+  transcribing,
+}: {
+  source: SpaceSource | null;
+  sourceText: ReturnType<typeof useVideoRAG>["sourceText"];
+  loading: boolean;
+  activeSecond: number;
+  onSeek: (second: number) => void;
+  onTranscribe: (sourceId: string) => void;
+  transcribing: boolean;
+}) {
+  const [filterQuery, setFilterQuery] = useState("");
+
+  if (!source) {
+    return (
+      <div className="panel panel__pad">
+        <p className="hint" style={{ margin: 0 }}>
+          Metnini ve transkriptini görmek için bir kaynak seçin.
+        </p>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="panel panel__pad">
+        <p className="meta" style={{ margin: 0 }}>
+          <Spinner /> Kaynak metni yükleniyor…
+        </p>
+      </div>
+    );
+  }
+
+  if (source.status === "no_text") {
+    return (
+      <div className="panel panel__pad stack stack--tight">
+        <div className="row row--between" style={{ alignItems: "center" }}>
+          <h3 className="section-title" style={{ fontSize: "1rem" }}>
+            Transkript Bulunamadı
+          </h3>
+          <span className="tag tag--warn">Metin Yok</span>
+        </div>
+        <p className="hint" style={{ marginTop: 0 }}>
+          {source.kind === "video"
+            ? "Bu videoda YouTube altyazısı bulunamadı. Whisper ASR ile sesi metne dönüştürebilirsiniz."
+            : "Bu dosyadan metin çıkarılamadı (taranmış bir belge olabilir)."}
+        </p>
+        {source.kind === "video" && (
+          <div className="row" style={{ marginTop: "0.5rem" }}>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => onTranscribe(source.source_id)}
+              disabled={transcribing}
+            >
+              {transcribing ? <Spinner /> : <AudioWaveform className="h-4 w-4" aria-hidden />}
+              {transcribing ? "ASR İşleniyor…" : "Whisper ile Transkript Çıkar"}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const chunks = sourceText?.chunks ?? [];
+  const filteredChunks = filterQuery.trim()
+    ? chunks.filter((c) => c.text.toLowerCase().includes(filterQuery.toLowerCase()))
+    : chunks;
+
+  const isAsr = sourceText?.transcript_source === "asr";
+
+  return (
+    <div className="panel panel__pad stack stack--tight">
+      <div className="row row--between" style={{ alignItems: "center" }}>
+        <div className="row" style={{ gap: "0.5rem", alignItems: "center" }}>
+          <h3 className="section-title" style={{ fontSize: "1rem" }}>
+            {source.kind === "video" ? "Transkript" : "Döküman Metni"}
+          </h3>
+          {isAsr && (
+            <span className="tag tag--chalk" title={sourceText?.transcript_backend ?? "Whisper"}>
+              Whisper ASR
+            </span>
+          )}
+          <span className="meta">{chunks.length} bölüm</span>
+        </div>
+
+        {chunks.length > 2 && (
+          <div className="row" style={{ gap: "0.4rem" }}>
+            <input
+              type="text"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              placeholder="Metin içinde ara…"
+              style={{ padding: "0.25rem 0.5rem", fontSize: "0.85rem", width: "11rem" }}
+            />
+            {filterQuery && (
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setFilterQuery("")}
+                aria-label="Aramayı temizle"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {chunks.length === 0 ? (
+        <p className="hint" style={{ margin: 0 }}>
+          {sourceText?.full_text || "Bu kaynak için henüz metin bölümü bulunmuyor."}
+        </p>
+      ) : filteredChunks.length === 0 ? (
+        <p className="hint" style={{ margin: "0.5rem 0" }}>
+          "{filterQuery}" ifadesini içeren bir bölüm bulunamadı.
+        </p>
+      ) : (
+        <div className="lines" style={{ maxHeight: "20rem", overflowY: "auto" }}>
+          {filteredChunks.map((chunk) => {
+            const hasTime = chunk.start_sec !== null && chunk.start_sec !== undefined;
+            const isActive =
+              hasTime &&
+              Math.abs((chunk.start_sec ?? 0) - activeSecond) < 5;
+            return (
+              <button
+                key={chunk.chunk_id}
+                type="button"
+                className={cn("line", isActive && "line--active")}
+                onClick={() => hasTime && onSeek(chunk.start_sec!)}
+                disabled={!hasTime}
+                style={{ textAlign: "left" }}
+              >
+                <span className="line__t">
+                  {hasTime
+                    ? formatClock(chunk.start_sec!)
+                    : chunk.page
+                    ? `s. ${chunk.page}`
+                    : `§${chunk.ordinal + 1}`}
+                </span>
+                <span className="min-w-0" style={{ whiteSpace: "pre-wrap" }}>
+                  {chunk.text}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------- sohbet */
 
 function Chat({
@@ -569,6 +730,7 @@ function AddSources({
 function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => void }) {
   const rag = useVideoRAG(spaceId);
   const [startSecond, setStartSecond] = useState(0);
+  const [activeTab, setActiveTab] = useState<"transcript" | "moments">("transcript");
   const ingesting = rag.ingestJob.state === "running";
   const ready = Boolean(rag.space && rag.space.chunk_count > 0);
 
@@ -660,11 +822,42 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
           <main className="stack">
             <Player source={rag.selectedSource} startSecond={startSecond} />
 
-            <Moments
-              citations={moments}
-              activeSecond={startSecond}
-              onSeek={(second) => setStartSecond(second)}
-            />
+            <div className="row" style={{ gap: "0.4rem", marginTop: "0.2rem" }}>
+              <button
+                type="button"
+                className={cn("btn", activeTab === "transcript" ? "btn--primary" : "btn--quiet")}
+                onClick={() => setActiveTab("transcript")}
+              >
+                <FileText className="h-4 w-4" aria-hidden />
+                {rag.selectedSource?.kind === "video" ? "Transkript" : "Metin"}
+              </button>
+              <button
+                type="button"
+                className={cn("btn", activeTab === "moments" ? "btn--primary" : "btn--quiet")}
+                onClick={() => setActiveTab("moments")}
+              >
+                <BookMarked className="h-4 w-4" aria-hidden />
+                İşaretli anlar ({moments.length})
+              </button>
+            </div>
+
+            {activeTab === "transcript" ? (
+              <SourceTranscriptViewer
+                source={rag.selectedSource}
+                sourceText={rag.sourceText}
+                loading={rag.sourceTextLoading}
+                activeSecond={startSecond}
+                onSeek={(second) => setStartSecond(second)}
+                onTranscribe={(sourceId) => void rag.transcribeSource(sourceId)}
+                transcribing={ingesting}
+              />
+            ) : (
+              <Moments
+                citations={moments}
+                activeSecond={startSecond}
+                onSeek={(second) => setStartSecond(second)}
+              />
+            )}
 
             <div className="panel panel__pad">
               <h3 className="section-title" style={{ fontSize: "1rem", marginBottom: "0.7rem" }}>

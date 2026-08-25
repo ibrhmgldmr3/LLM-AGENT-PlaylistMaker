@@ -626,11 +626,16 @@ class SQLiteStore:
         return [dict(row) for row in rows]
 
     def record_provider_success(self, provider: str) -> None:
-        """Count a usable provider result for operational success-rate checks.
+        """Kullanilabilir bir saglayici sonucunu sayar.
 
-        Failures and cooldowns alone cannot tell whether a fallback is healthy
-        or merely being attempted.  Keep this beside the other provider event
-        writes so callers cannot need direct database knowledge.
+        Yalnizca hata ve dinlenme sayilari, bir yedegin GERCEKTEN calisip
+        calismadigini soyleyemez -- sadece denendigini soyler. "yt-dlp altyazi
+        yolu vakalarin yuzde kacinda ise yariyor" sorusunun cevabi bu sayaca
+        bagli ve o cevap, es zamanlilik ayarlarini tahminle degil olcumle
+        degistirmenin tek dayanagi.
+
+        Diger saglayici olay yazimlarinin YANINDA duruyor ki cagiran taraflarin
+        veritabani semasini bilmesi gerekmesin.
         """
         with self.connect() as conn:
             self._record_provider_event(conn, provider, self.SUCCESS)
@@ -1502,6 +1507,21 @@ class SQLiteStore:
                 "SELECT COUNT(*) AS n FROM chunk WHERE space_id = ?", (space_id,)
             ).fetchone()
         return int(row["n"]) if row else 0
+
+    def list_source_chunks(self, space_id: str, source_id: str) -> list[dict[str, Any]]:
+        """Belirli bir kaynaga ait parcalari sira ile dondurur."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT chunk_id, space_id, source_id, ordinal, text,
+                       start_sec, end_sec, page
+                FROM chunk
+                WHERE space_id = ? AND source_id = ?
+                ORDER BY ordinal ASC
+                """,
+                (space_id, source_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_chunks(self, chunk_ids: list[int]) -> list[dict[str, Any]]:
         """Verilen kimliklerdeki parcalari kaynak bilgisiyle birlikte dondurur.

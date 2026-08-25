@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import threading
+import time
 from dataclasses import dataclass
 
 from src.config import AppConfig
@@ -49,10 +50,25 @@ class FasterWhisperProvider:
 
     def transcribe(self, audio_path: str, video_id: str, language: str | None = None) -> TranscriptResult:
         if os.name == "nt" and self.config.allow_unsafe_openmp_workaround:
-            # Work around duplicate Intel OpenMP DLL loads seen in mixed TensorFlow/ASR Conda environments.
+            # Karisik TensorFlow/ASR Conda ortamlarinda ayni Intel OpenMP DLL'i
+            # iki kez yukleniyor ve surec cokuyor; bu bayrak onu tolere ettiriyor.
             os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
         model = self._load_model()
+
+        # Butce `transcribe` CAGRISINDAN ONCE basliyor. Cagrinin adi yaniltici:
+        # ureteci dondurmeden once sesi cozuyor ve VAD calistiriyor
+        # (`decode_audio`, `get_speech_timestamps`), yani uzun bir dosyada
+        # gercek bir sure buraya harcaniyor. Sayaci cagrinin ardindan
+        # baslatmak bu isi butcenin DISINDA birakiyordu.
+        #
+        # Model yuklemesi bilerek disarida: onbellege alinmis ve videolar
+        # arasinda paylasilan bir maliyeti tek bir videonun butcesine yazmak
+        # yanlis olurdu; onu cagiran taraftaki pay karsiliyor
+        # (`_ASR_TIMEOUT_GRACE_SEC`).
+        timeout_sec = self.config.faster_whisper_timeout_sec
+        deadline = time.monotonic() + timeout_sec if timeout_sec else None
+
         raw_segments, info = model.transcribe(
             audio_path,
             language=language,
@@ -70,7 +86,28 @@ class FasterWhisperProvider:
         # `transcribe` TEMBEL bir uretec doner; tek gecis icin listeye aliniyor.
         # Ayni ureteci hem metin hem segment icin iki kez dolasmak, ikincisinde
         # bos sonuc verirdi.
-        segments = _to_segments(raw_segments)
+        #
+        # Tembellik ayni zamanda zaman asiminin CALISMA SEBEBI: kod cozme isi
+        # dongu donduginde yapiliyor, dolayisiyla her segmentte saate bakmak
+        # gercekten isi kesiyor. whisper.cpp ayri bir surec oldugu icin
+        # `subprocess timeout` ile sinirlanabiliyordu; faster-whisper surec
+        # icinde calisiyor ve hicbir tavani yoktu -- yani `auto` modun
+        # VARSAYILAN arka ucu sinirsizdi ve asili kalan tek bir is transkript
+        # worker'ini suresiz blokluyordu.
+        try:
+            segments = _to_segments(raw_segments, deadline)
+        except _TranscriptionTimeout:
+            # Kismi cikti BILEREK atiliyor. Cagiran taraf "tamamlandi" ile
+            # "yarida kesildi"yi `status` uzerinden ayirt edemez; yarim bir
+            # transkriptin calisma notuna ya da RAG'a sessizce girmesi, hic
+            # transkript olmamasindan daha yaniltici olurdu.
+            return TranscriptResult(
+                video_id=video_id,
+                status="failed_temporary",
+                source="asr",
+                backend=self.name,
+                error=f"faster-whisper {timeout_sec} sn içinde tamamlanmadı",
+            )
         text = normalize_text(" ".join(segment.text for segment in segments))
         if len(text) < MIN_TRANSCRIPT_CHARS:
             return TranscriptResult(
@@ -91,10 +128,23 @@ class FasterWhisperProvider:
         )
 
 
-def _to_segments(raw_segments) -> list[TranscriptSegment]:
-    """faster-whisper segmentlerini alan modeline cevirir."""
+class _TranscriptionTimeout(Exception):
+    """Kod cozme butcesi doldu. Yalnizca bu modul icinde akis kontrolu."""
+
+
+def _to_segments(raw_segments, deadline: float | None = None) -> list[TranscriptSegment]:
+    """faster-whisper segmentlerini alan modeline cevirir.
+
+    `deadline` (varsa) `time.monotonic()` olceginde bir an. Saate HER SEGMENTTE
+    bakiliyor cunku `raw_segments` tembel bir uretec: kod cozme isi dongu
+    donerken yapiliyor, dolayisiyla burada durmak gercekten isi kesiyor.
+    Duvar saati (`time.time()`) DEGIL: sistem saatinin geri alinmasi butceyi
+    sessizce uzatirdi.
+    """
     segments: list[TranscriptSegment] = []
     for segment in raw_segments:
+        if deadline is not None and time.monotonic() > deadline:
+            raise _TranscriptionTimeout()
         text = (getattr(segment, "text", "") or "").strip()
         if not text:
             continue

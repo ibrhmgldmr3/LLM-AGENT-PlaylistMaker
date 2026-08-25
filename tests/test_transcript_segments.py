@@ -15,6 +15,7 @@ from src.models import TranscriptResult
 from src.providers import faster_whisper_provider, whisper_cpp_provider, ytdlp_provider
 from src.providers.youtube_transcript_api_provider import _to_segments as yt_to_segments
 from src.storage import SQLiteStore
+from src.utils.text_utils import normalize_text
 
 
 # ------------------------------------------------------ youtube_transcript_api
@@ -82,17 +83,84 @@ def test_vtt_rolling_window_duplicate_is_dropped_at_first_occurrence():
 
     assert segments[0].text == "kalman filtresi"
     assert segments[1].text == "sensor fuzyonu"
-    assert ytdlp_provider._vtt_to_text(VTT) == (
+    # Duz metin uretimde TAM OLARAK boyle uretiliyor (bkz. `fetch_subtitles`).
+    assert normalize_text(" ".join(s.text for s in segments)) == (
         "kalman filtresi sensor fuzyonu kovaryans matrisi"
     )
 
 
-def test_vtt_text_is_derived_from_segments():
-    """`text` ayri bir gecisten DEGIL, segmentlerden turetiliyor."""
-    text = ytdlp_provider._vtt_to_text(VTT)
-    joined = " ".join(s.text for s in ytdlp_provider._vtt_to_segments(VTT))
+def test_subtitle_text_is_derived_from_segments(tmp_path, monkeypatch):
+    """`text` ayri bir gecisten DEGIL, segmentlerden turetiliyor.
 
-    assert text == joined
+    Bu guvence eskiden yalnizca `_vtt_to_text` uzerinde dogrulaniyordu -- ama
+    o yardimci uretimde hicbir yerden cagrilmiyordu, yani test gercek yolu
+    degil kendi kopyasini korurdu. Artik `fetch_subtitles`in DONDURDUGU
+    sonucta dogrulaniyor: `text` ile `segments` ayrisamaz.
+    """
+
+    # Paylasilan `VTT` sabiti 48 karakter uretiyor ve uretim esigi
+    # `MIN_TRANSCRIPT_CHARS` = 50; bu test esigin altinda kalmamali, yoksa
+    # olcmek istedigi seye hic ulasamaz.
+    long_vtt = "\n".join(
+        [
+            "WEBVTT",
+            "",
+            "00:00:01.000 --> 00:00:04.000",
+            "kalman filtresi durum kestirimi icin kullanilir",
+            "",
+            "00:00:04.000 --> 00:00:07.500",
+            "sensor fuzyonu ve kovaryans matrisi konulari",
+            "",
+        ]
+    )
+
+    class FakeResponse:
+        status_code = 200
+        headers: dict[str, str] = {}
+        text = long_vtt
+
+        def raise_for_status(self):
+            return None
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, timeout=None):
+            return FakeResponse()
+
+    class FakeYdl:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"subtitles": {"tr": [{"ext": "vtt", "url": "https://example.invalid/s.vtt"}]}}
+
+    monkeypatch.setattr(ytdlp_provider, "build_session", lambda cfg, logger=None: FakeSession())
+    monkeypatch.setattr(ytdlp_provider.yt_dlp, "YoutubeDL", FakeYdl)
+
+    config = AppConfig(
+        gemini_api_key="test",
+        gemini_model="gemini-test",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+    )
+    result = ytdlp_provider.YtDlpProvider(config).fetch_subtitles(
+        "https://www.youtube.com/watch?v=abc123def45", "abc123def45", "tr"
+    )
+
+    assert result is not None
+    assert result.segments
+    assert result.text == normalize_text(" ".join(s.text for s in result.segments))
 
 
 def test_vtt_accepts_short_and_comma_timestamps():

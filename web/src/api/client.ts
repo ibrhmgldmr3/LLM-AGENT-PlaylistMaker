@@ -6,9 +6,11 @@ import type {
   RunAccepted,
   RunListResponse,
   RunResultResponse,
+  SourceTextResponse,
   SpaceDetail,
   SpaceListResponse,
   SpaceSummary,
+  TranscribeSourceAccepted,
 } from "./types";
 
 /** Sunucunun dondurdugu hata govdesini tasiyan istisna. */
@@ -184,4 +186,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ question, language }),
     }),
+
+  getSourceText: (spaceId: string, sourceId: string) =>
+    request<SourceTextResponse>(
+      `/api/spaces/${spaceId}/sources/${encodeURIComponent(sourceId)}/text`,
+    ),
+
+  transcribeSource: (spaceId: string, sourceId: string) =>
+    request<TranscribeSourceAccepted>(
+      `/api/spaces/${spaceId}/sources/${encodeURIComponent(sourceId)}/transcribe`,
+      { method: "POST" },
+    ),
 };

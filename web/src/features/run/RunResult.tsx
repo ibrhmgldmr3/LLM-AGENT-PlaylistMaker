@@ -122,11 +122,19 @@ function StudyNoteBody({ note }: { note: StudyNote }) {
       </Note>
     );
   }
+  const isAsr = note.transcript_source === "asr";
   return (
     <>
-      <p className="hint" style={{ marginTop: 0 }}>
-        Videonun transkriptinden üretildi — özet niteliğindedir, videonun kendisiyle doğrula.
-      </p>
+      <div className="row row--between" style={{ alignItems: "center", marginBottom: "0.4rem" }}>
+        <p className="hint" style={{ margin: 0 }}>
+          Videonun transkriptinden üretildi — özet niteliğindedir, videonun kendisiyle doğrula.
+        </p>
+        {isAsr && (
+          <span className="tag tag--chalk" title={note.transcript_backend ?? "Whisper ASR"}>
+            ASR Transkripti
+          </span>
+        )}
+      </div>
       <div className="prose" style={{ whiteSpace: "pre-wrap" }}>
         {note.content}
       </div>

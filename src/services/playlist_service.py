@@ -289,7 +289,18 @@ def _run_pipeline(
     # secilen videolar icin, transkriptten DOGRUDAN baglamla calisma notu uretir.
     if config.enable_study_notes:
         result.study_notes = _generate_study_notes(
-            config, llm, request, work, assignments, transcripts_by_video, logger, emit
+            config,
+            llm,
+            request,
+            work,
+            assignments,
+            transcripts_by_video,
+            logger,
+            emit,
+            store=store,
+            run_id=run_id,
+            run_dir=run_dir,
+            user_id=user_id,
         )
         for note in result.study_notes:
             if note.status == "failed":
@@ -510,6 +521,10 @@ def _generate_study_notes(
     transcripts_by_video: dict[str, TranscriptResult],
     logger,
     emit,
+    store: SQLiteStore | None = None,
+    run_id: str | None = None,
+    run_dir: Path | str | None = None,
+    user_id: str = DEFAULT_USER_ID,
 ) -> list[StudyNote]:
     """Secilen videolarin transkriptinden calisma notu uretir.
 
@@ -522,6 +537,10 @@ def _generate_study_notes(
     "no_transcript" durumuyla isaretleniyor. Bu, projenin geri kalaniyla ayni
     cizgide (`interrupted` calistirma durumu, "zayif eslesme" etiketi):
     bilinmeyeni bilinmeyen olarak isaretlemek, tahmin uretmekten iyidir.
+
+    Transkript onceden cekilmemisse (ornek: siralama oncesi zenginlestirme havuzunun
+    disinda kalmis ama secilmis video) ve ASR etkinse, secilen video icin
+    hedefli ASR/transkript denenir.
 
     `run_one` hicbir zaman FIRLATMIYOR -- LLM hatasi bile `StudyNote(status="failed")`
     olarak donuyor. Bu yuzden `_guard` sarmalayicisina (transkript fazinin
@@ -537,18 +556,49 @@ def _generate_study_notes(
         return []
 
     total = len(targets)
-    # Ayri bir "max_study_note_workers" ayari EKLENMEDI: olculmus bir ihtiyac
-    # yok ve transkript fazi da AYNI turden is (ag+LLM cagrisi, IO-bound) icin
-    # ayni sinira tabi. Gereksiz bir tuning duzeyi eklemek yerine mevcut sinir
-    # yeniden kullanildi.
     workers = max(1, min(config.max_transcript_workers, total))
+    asr_state = RunTranscriptState()
 
     def run_one(pair) -> StudyNote:
         item, recommendation = pair
         video_id = recommendation.video.video_id
         transcript = transcripts_by_video.get(video_id)
+
+        # Transkript henuz yoksa ve store/ASR kullanilabiliyorsa hedefli transkript dene
+        if (
+            (transcript is None or transcript.status != "available" or not transcript.text)
+            and store is not None
+            and config.enable_asr_fallback
+        ):
+            try:
+                dir_path = str(run_dir) if run_dir else str(config.cache_dir)
+                fetched = get_transcript(
+                    config,
+                    store,
+                    recommendation.video,
+                    dir_path,
+                    asr_state,
+                    logger=logger,
+                    preferred_language=request.filters.language,
+                    user_id=user_id,
+                )
+                if fetched and fetched.status == "available" and fetched.text:
+                    transcript = fetched
+                    transcripts_by_video[video_id] = fetched
+                    if run_id:
+                        store.add_run_video(run_id, "transcript", video_id, fetched.model_dump())
+            except Exception as exc:
+                if logger:
+                    logger.warning("Targeted ASR transcript fetch failed for %s: %s", video_id, exc)
+
         if transcript is None or transcript.status != "available" or not transcript.text:
-            return StudyNote(subtopic=item.subtopic.title, video_id=video_id, status="no_transcript")
+            return StudyNote(
+                subtopic=item.subtopic.title,
+                video_id=video_id,
+                status="no_transcript",
+                transcript_source=transcript.source if transcript else None,
+                transcript_backend=transcript.backend if transcript else None,
+            )
         try:
             content = llm.generate_study_note(
                 request.topic,
@@ -558,7 +608,12 @@ def _generate_study_notes(
                 request.filters.language,
             )
             return StudyNote(
-                subtopic=item.subtopic.title, video_id=video_id, status="available", content=content
+                subtopic=item.subtopic.title,
+                video_id=video_id,
+                status="available",
+                content=content,
+                transcript_source=transcript.source,
+                transcript_backend=transcript.backend,
             )
         except Exception as exc:
             if logger:
@@ -567,6 +622,8 @@ def _generate_study_notes(
                 subtopic=item.subtopic.title,
                 video_id=video_id,
                 status="failed",
+                transcript_source=transcript.source if transcript else None,
+                transcript_backend=transcript.backend if transcript else None,
                 error=redact_secrets(str(exc))[:300],
             )
 
@@ -642,6 +699,9 @@ def _render_markdown(result: PlaylistResult) -> str:
             lines.append(f"### {note.subtopic}")
             lines.append("")
             if note.status == "available":
+                if note.transcript_source == "asr":
+                    backend_label = f" ({note.transcript_backend})" if note.transcript_backend else ""
+                    lines.append(f"> _Source: ASR transcript{backend_label}_\n")
                 lines.append(note.content or "")
             elif note.status == "no_transcript":
                 lines.append("_No transcript was available for this video; no note was generated._")
@@ -653,3 +713,4 @@ def _render_markdown(result: PlaylistResult) -> str:
         lines.extend([f"- {warning}" for warning in result.warnings])
         lines.append("")
     return "\n".join(lines)
+

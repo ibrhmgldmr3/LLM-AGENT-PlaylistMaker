@@ -48,9 +48,11 @@ from api.schemas import (
     AskRequest,
     CreateSpaceRequest,
     IngestAccepted,
+    SourceTextResponse,
     SpaceDetail,
     SpaceListResponse,
     SpaceSummary,
+    TranscribeSourceAccepted,
 )
 from src.config import AppConfig, RunOptions, ServerConfig, UserCredentials
 from src.jobs import JobRunner, new_job_id
@@ -402,6 +404,83 @@ def delete_source(
     if source["kind"] == "document":
         space_retention.delete_source_file(config, user_id, space_id, source["ref_id"])
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{space_id}/sources/{source_id:path}/text", response_model=SourceTextResponse)
+def get_source_text(
+    space_id: str,
+    source_id: str,
+    user_id: str = Depends(get_current_user),
+    credentials: UserCredentials = Depends(get_user_credentials),
+    defaults: RunOptions = Depends(get_default_run_options),
+    server: ServerConfig = Depends(get_server_config),
+    store: SQLiteStore = Depends(get_store),
+) -> SourceTextResponse:
+    """Kaynağın tam metnini ve zaman damgalı parçalarını döndürür."""
+    _config(credentials, defaults, server)
+    _owned_space(store, space_id, user_id)
+    result = rag_service.get_source_text(store, space_id, source_id)
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen kaynak")
+    return SourceTextResponse.model_validate(result.model_dump())
+
+
+@router.post(
+    "/{space_id}/sources/{source_id:path}/transcribe",
+    response_model=TranscribeSourceAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def transcribe_source(
+    space_id: str,
+    source_id: str,
+    user_id: str = Depends(get_current_user),
+    credentials: UserCredentials = Depends(get_user_credentials),
+    defaults: RunOptions = Depends(get_default_run_options),
+    server: ServerConfig = Depends(get_server_config),
+    store: SQLiteStore = Depends(get_store),
+    runner: JobRunner = Depends(get_job_runner),
+) -> TranscribeSourceAccepted:
+    """Çalışma odasındaki bir video için ASR (Whisper) ile transkript çıkarır ve indeksler."""
+    config = _config(credentials, defaults, server)
+    _owned_space(store, space_id, user_id)
+
+    source = store.get_source(space_id, source_id)
+    if source is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen kaynak")
+    if source["kind"] != "video":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Yalnızca video kaynakları için transkript çıkarılabilir"
+        )
+
+    llm = create_rag_llm_provider(config)
+    job_id = new_job_id()
+
+    def work(emit):
+        def progress(done: int, total: int, label: str) -> None:
+            emit(
+                ProgressEvent(
+                    stage="space_transcribe",
+                    message=f"İşleniyor: {label}",
+                    progress=(done / total) if total else 0.0,
+                    current=done,
+                    total=total,
+                )
+            )
+
+        emit(ProgressEvent(stage="space_transcribe", message="ASR başlatılıyor", progress=0.0))
+        report = rag_service.transcribe_space_source(
+            config, store, llm, space_id, source_id, user_id, progress=progress
+        )
+        emit(ProgressEvent(stage="done", message=_report_message(report), progress=1.0))
+        return report
+
+    runner.submit(job_id, user_id, work)
+    return TranscribeSourceAccepted(
+        job_id=job_id,
+        space_id=space_id,
+        source_id=source_id,
+        events_url=f"/api/spaces/{space_id}/jobs/{job_id}/events",
+    )
 
 
 # --------------------------------------------------------------------- akis
