@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
-import type { Citation, RagAnswer, RunSummary, SpaceDetail, SpaceSource } from "../api/types";
+import type {
+  Citation,
+  RagAnswer,
+  RunSummary,
+  SourceTextResponse,
+  SpaceDetail,
+  SpaceSource,
+} from "../api/types";
 import { useJobStream } from "./useJobStream";
 
 export interface RagMessage {
@@ -17,13 +24,18 @@ function messageId() {
 
 function answerText(answer: RagAnswer): string {
   if (answer.answered && answer.answer) return answer.answer;
-  return answer.reason ?? `${answer.searched_sources} kaynak arandı ama bu soruyu karşılayan bir bölüm bulunamadı. Deftere ilgili bir video ya da döküman eklemeyi deneyebilirsin.`;
+  return (
+    answer.reason ??
+    `${answer.searched_sources} kaynak arandı ama bu soruyu karşılayan bir bölüm bulunamadı. Deftere ilgili bir video ya da döküman eklemeyi deneyebilirsin.`
+  );
 }
 
 export function useVideoRAG(spaceId: string | null) {
   const [space, setSpace] = useState<SpaceDetail | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [sourceText, setSourceText] = useState<SourceTextResponse | null>(null);
+  const [sourceTextLoading, setSourceTextLoading] = useState(false);
   const [messages, setMessages] = useState<RagMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [asking, setAsking] = useState(false);
@@ -37,7 +49,13 @@ export function useVideoRAG(spaceId: string | null) {
       const [detail, runBody] = await Promise.all([api.getSpace(spaceId), api.listRuns(50, 0)]);
       setSpace(detail);
       setRuns(runBody.items.filter((run) => run.is_complete));
-      setSelectedSourceId((current) => current ?? detail.sources.find((source) => source.kind === "video")?.source_id ?? detail.sources[0]?.source_id ?? null);
+      setSelectedSourceId(
+        (current) =>
+          current ??
+          detail.sources.find((source) => source.kind === "video")?.source_id ??
+          detail.sources[0]?.source_id ??
+          null,
+      );
     } catch (exception) {
       setError(exception instanceof ApiError ? exception.message : "Defter açılamadı.");
     } finally {
@@ -45,11 +63,38 @@ export function useVideoRAG(spaceId: string | null) {
     }
   }, [spaceId]);
 
-  const ingestJob = useJobStream(load);
+  const loadSourceText = useCallback(
+    async (sourceId: string) => {
+      if (!spaceId || !sourceId) return;
+      setSourceTextLoading(true);
+      try {
+        const textData = await api.getSourceText(spaceId, sourceId);
+        setSourceText(textData);
+      } catch {
+        setSourceText(null);
+      } finally {
+        setSourceTextLoading(false);
+      }
+    },
+    [spaceId],
+  );
+
+  const ingestJob = useJobStream(() => {
+    void load();
+    if (selectedSourceId) void loadSourceText(selectedSourceId);
+  });
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (selectedSourceId) {
+      void loadSourceText(selectedSourceId);
+    } else {
+      setSourceText(null);
+    }
+  }, [loadSourceText, selectedSourceId]);
 
   const addRun = useCallback(
     async (runId: string) => {
@@ -75,6 +120,21 @@ export function useVideoRAG(spaceId: string | null) {
         ingestJob.watch(accepted.job_id, accepted.events_url);
       } catch (exception) {
         setError(exception instanceof ApiError ? exception.message : "Döküman yüklenemedi.");
+      }
+    },
+    [ingestJob, load, spaceId],
+  );
+
+  const transcribeSource = useCallback(
+    async (sourceId: string) => {
+      if (!spaceId || !sourceId) return;
+      setError(null);
+      try {
+        const accepted = await api.transcribeSource(spaceId, sourceId);
+        await load();
+        ingestJob.watch(accepted.job_id, accepted.events_url);
+      } catch (exception) {
+        setError(exception instanceof ApiError ? exception.message : "Transkript çıkarma başlatılamadı.");
       }
     },
     [ingestJob, load, spaceId],
@@ -148,6 +208,8 @@ export function useVideoRAG(spaceId: string | null) {
     runs,
     selectedSource,
     selectedSourceId,
+    sourceText,
+    sourceTextLoading,
     messages,
     loading,
     asking,
@@ -155,9 +217,12 @@ export function useVideoRAG(spaceId: string | null) {
     ingestJob,
     reload: load,
     setSelectedSourceId,
+    loadSourceText,
     addRun,
     uploadDocument,
+    transcribeSource,
     deleteSource,
     ask,
   };
 }
+

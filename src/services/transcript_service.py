@@ -31,6 +31,11 @@ from src.utils.retry_utils import retry_with_backoff
 _ASR_GATES: dict[int, threading.BoundedSemaphore] = {}
 _ASR_GATES_LOCK = threading.Lock()
 
+# Arka ucun kendi zaman asimi ile cagiranin beklemesi arasindaki pay.
+# Model yuklemesi (ilk cagride saniyeler surebilir) kod cozme butcesinin
+# DISINDA kaldigi icin sabit ve comert tutuluyor; bkz. `_transcribe_with_timeout`.
+_ASR_TIMEOUT_GRACE_SEC = 60
+
 
 def _asr_gate(max_workers: int) -> threading.BoundedSemaphore:
     with _ASR_GATES_LOCK:
@@ -157,9 +162,9 @@ def get_transcript(
                     logger.info("Skipping ASR for %s: %s", candidate.video_id, skip_reason)
                 continue
 
-        # A duplicate attempt must not consume the scarce ASR quota. The old
-        # order reserved a slot first, then discovered this pair was already
-        # running or handled.
+        # Tekrarlanan bir deneme kit ASR kotasini TUKETMEMELI. Eskiden once
+        # slot ayriliyor, ARDINDAN bu ciftin zaten islendigi fark ediliyordu --
+        # yani ayrilan slot geri verilmeden yaniyordu.
         if not state.claim_attempt(candidate.video_id, provider_name):
             continue
 
@@ -177,11 +182,11 @@ def get_transcript(
             continue
 
         try:
-            # Audio download and transcription have different retry semantics.
-            # `_fetch_asr_transcript` retries each phase independently and
-            # retains a successful download while transcription is retried.
-            # Wrapping the whole function here used to download the same audio
-            # again after every transient Whisper failure.
+            # Ses indirme ile transkripsiyonun tekrar deneme kurallari AYNI
+            # DEGIL. `_fetch_asr_transcript` iki asamayi ayri ayri tekrarliyor
+            # ve basarili bir indirmeyi, transkripsiyon tekrarlanirken
+            # KORUYOR. Butun fonksiyonu burada sarmalamak, her gecici Whisper
+            # hatasindan sonra ayni sesi bastan indirmek demekti.
             if provider_name == "asr":
                 result = loader()
             else:
@@ -365,8 +370,9 @@ def _fetch_asr_transcript(
             )
             return result
 
-        # A download is expensive but immutable. Keep it while a temporary
-        # transcription error is retried instead of fetching it three times.
+        # Indirme PAHALI ama DEGISMEZ: ayni video ayni sesi verir. Gecici bir
+        # transkripsiyon hatasi tekrarlanirken indirilen ses korunuyor -- aksi
+        # halde ayni dosya uc kez cekilirdi.
         result = retry_with_backoff(
             transcribe_once,
             attempts=config.retry_max_attempts,
@@ -376,9 +382,11 @@ def _fetch_asr_transcript(
         )
     finally:
         if timed_out and timed_out_worker is not None:
-            # Python cannot safely terminate CTranslate2 from another thread.
-            # The daemon keeps the ASR gate until its native call actually
-            # returns; cleanup then runs exactly once without blocking the job.
+            # Python, CTranslate2'yi baska bir thread'den GUVENLE sonlandiramaz;
+            # zorla oldurmek paylasilan modeli bozabilir. Bu yuzden daemon
+            # thread, yerel cagri gercekten donene kadar ASR kapisini tutmaya
+            # devam ediyor; temizlik ardindan TAM BIR KEZ ve isi bloklamadan
+            # calisiyor.
             threading.Thread(
                 target=_cleanup_audio_after_thread,
                 args=(state, candidate.video_id, audio_path, timed_out_worker),
@@ -402,14 +410,27 @@ def _transcribe_with_timeout(
     language_hint: str | None,
     config: AppConfig,
 ) -> tuple[TranscriptResult, bool, threading.Thread | None]:
-    """Run ASR under its own concurrency gate and bounded caller wait.
+    """ASR'i kendi es zamanlilik kapisi ve SINIRLI bir cagiran beklemesiyle calistirir.
 
-    faster-whisper runs native code in-process, so forcefully killing a timed
-    out thread could corrupt its shared model. The worker is therefore daemon
-    based: the API job receives a temporary failure at the deadline while the
-    gate remains held until the native call is genuinely finished.
+    faster-whisper yerel kodu SUREC ICINDE calistiriyor; zaman asimina ugramis
+    bir thread'i zorla oldurmek paylasilan modeli bozabilirdi. Bu yuzden isci
+    bir daemon: sure dolunca API isi gecici bir hata aliyor, kapi ise yerel
+    cagri gercekten bitene kadar tutulmaya devam ediyor. Yani "cagirani
+    bekletmeyi birakmak" ile "isi durdurmak" AYRI seyler.
     """
     timeout = config.faster_whisper_timeout_sec if backend.name == "faster_whisper" else config.whisper_cpp_timeout_sec
+    # Dis bekleme, arka ucun KENDI butcesinden bir miktar UZUN olmali.
+    #
+    # Iki arka uc da kendini zaten sinirliyor: faster-whisper kod cozme
+    # dongusunde her segmentte saate bakiyor, whisper.cpp `subprocess`
+    # zaman asimi kullaniyor. Ikisi de temiz durur ve `failed_temporary`
+    # doner. Buradaki bekleme ayni degeri kullanirsa ONCE O doluyor --
+    # cunku sayaci daha erken basliyor (thread kurulumu ve model yuklemesi
+    # araya giriyor) -- ve her seferinde asagidaki pahali yola sapiliyordu:
+    # terk edilmis daemon thread, tutulmaya devam eden ASR kapisi, ertelenmis
+    # temizlik. Pay birakinca temiz durdurma kazaniyor ve bu yol yalnizca
+    # arka uc gercekten kendini sinirlayamadiginda calisiyor.
+    wait_timeout = timeout + _ASR_TIMEOUT_GRACE_SEC
     gate = _asr_gate(config.max_asr_workers)
     if not gate.acquire(timeout=timeout):
         return (
@@ -429,15 +450,26 @@ def _transcribe_with_timeout(
     def work() -> None:
         try:
             outcomes.put(backend.transcribe(audio_path, video_id, language_hint))
-        except BaseException as exc:  # hand the original provider error to retry logic
+        except BaseException as exc:  # ozgun saglayici hatasini retry katmanina tasi
             outcomes.put(exc)
         finally:
             gate.release()
 
     worker = threading.Thread(target=work, daemon=True, name="asr-transcribe")
-    worker.start()
     try:
-        outcome = outcomes.get(timeout=timeout)
+        worker.start()
+    except BaseException:
+        # Izni BURADA geri veriyoruz cunku `work` hic calismadi, yani onun
+        # `finally` dali da calismayacak. Thread baslatilamamasi ("can't start
+        # new thread") nadir ama sonucu kalici: varsayilan `MAX_ASR_WORKERS=1`
+        # ile tek bir sizinti kapiyi sonsuza kadar kapali birakir ve sonraki
+        # her ASR istegi zaman asimina ugrayip "worker unavailable" doner --
+        # surec yeniden baslatilana kadar.
+        gate.release()
+        raise
+
+    try:
+        outcome = outcomes.get(timeout=wait_timeout)
     except queue.Empty:
         return (
             TranscriptResult(
@@ -445,7 +477,7 @@ def _transcribe_with_timeout(
                 status="failed_temporary",
                 source="asr",
                 backend=backend.name,
-                error=f"{backend.name} did not finish within {timeout} seconds",
+                error=f"{backend.name} did not finish within {wait_timeout} seconds",
             ),
             True,
             worker,
@@ -458,7 +490,10 @@ def _transcribe_with_timeout(
 def _cleanup_audio_after_thread(
     state: RunTranscriptState, video_id: str, audio_path: str, worker: threading.Thread
 ) -> None:
-    """Wait for a timed-out daemon to stop reading the audio before deletion."""
+    """Zaman asimina ugramis daemon sesi okumayi BIRAKANA KADAR bekler, sonra siler.
+
+    Dosyayi hemen silmek, hala okumakta olan yerel cagriyi ortasindan vururdu.
+    """
     worker.join()
     _cleanup_audio(state, video_id, audio_path)
 

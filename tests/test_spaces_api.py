@@ -392,3 +392,85 @@ def test_deleting_an_unknown_source_is_404(client):
     space_id = _create(client)
 
     assert client.delete(f"/api/spaces/{space_id}/sources/doc:yok.txt").status_code == 404
+
+
+# --------------------------------------------------------- metin & transkript
+
+
+def test_get_source_text_returns_full_text_and_chunks(client):
+    space_id = _create(client)
+    source = _upload(client, space_id, filename="not.txt", content=b"Matris ve kovaryans hesabi.")
+    source_id = source["source_id"]
+
+    response = client.get(f"/api/spaces/{space_id}/sources/{source_id}/text")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_id"] == source_id
+    assert body["kind"] == "document"
+    assert "Matris" in body["full_text"]
+    assert len(body["chunks"]) >= 1
+
+
+def test_get_source_text_unknown_source_is_404(client):
+    space_id = _create(client)
+    response = client.get(f"/api/spaces/{space_id}/sources/doc:bilinmeyen.txt/text")
+    assert response.status_code == 404
+
+
+def test_transcribe_video_source_in_space(client, monkeypatch):
+    """Calisma odasindaki bir video icin ASR ile transkript cikarilabilmeli."""
+    from src.models import TranscriptResult
+
+    space_id = _create(client)
+    store = SQLiteStore(client.app_config.sqlite_path)
+    store.add_source(
+        space_id,
+        "video:vid123",
+        kind="video",
+        ref_id="vid123",
+        title="Test Video",
+        url="https://youtu.be/vid123",
+        status="no_text",
+    )
+
+    # get_transcript mock'u ASR basarisi donsun
+    from src.services import rag_service
+
+    monkeypatch.setattr(
+        rag_service,
+        "get_transcript",
+        lambda *a, **k: TranscriptResult(
+            video_id="vid123",
+            status="available",
+            source="asr",
+            backend="faster_whisper",
+            text="ASR ile cozulmus video transkripti burada",
+        ),
+    )
+
+    response = client.post(f"/api/spaces/{space_id}/sources/video:vid123/transcribe")
+    assert response.status_code == 202
+    body = response.json()
+    assert body["space_id"] == space_id
+    assert body["source_id"] == "video:vid123"
+
+    # Arka plan isinin bitmesini bekle
+    deadline = time.monotonic() + 10
+    source = None
+    while time.monotonic() < deadline:
+        source = store.get_source(space_id, "video:vid123")
+        if source and source["status"] in ("indexed", "failed"):
+            break
+        time.sleep(0.05)
+    assert source is not None
+    assert source["status"] == "indexed"
+    assert source["chunk_count"] > 0
+
+    # Metin ucuyla kontrol et
+    text_res = client.get(f"/api/spaces/{space_id}/sources/video:vid123/text")
+    assert text_res.status_code == 200
+    text_body = text_res.json()
+    assert "ASR ile cozulmus" in text_body["full_text"]
+    assert text_body["transcript_source"] == "asr"
+
+

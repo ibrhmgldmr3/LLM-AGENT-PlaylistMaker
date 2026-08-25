@@ -154,6 +154,8 @@ export interface StudyNote {
   video_id: string;
   status: StudyNoteStatus;
   content: string | null;
+  transcript_source?: string | null;
+  transcript_backend?: string | null;
   error: string | null;
 }
 
@@ -298,3 +300,32 @@ export interface RagAnswer {
   searched_sources: number;
   reason: string | null;
 }
+
+export interface SourceChunk {
+  chunk_id: number;
+  ordinal: number;
+  text: string;
+  start_sec: number | null;
+  end_sec: number | null;
+  page: number | null;
+}
+
+export interface SourceTextResponse {
+  source_id: string;
+  title: string;
+  kind: "video" | "document";
+  status: "pending" | "indexed" | "no_text" | "failed";
+  url: string | null;
+  language: string | null;
+  full_text: string;
+  chunk_count: number;
+  chunks: SourceChunk[];
+  transcript_source: string | null;
+  transcript_backend: string | null;
+  error: string | null;
+}
+
+export interface TranscribeSourceAccepted extends IngestAccepted {
+  source_id: string;
+}
+

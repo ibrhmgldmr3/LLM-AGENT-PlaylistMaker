@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from src.models import FilterOptions, PlaylistResult, SpaceSource
+from src.models import FilterOptions, PlaylistResult, SourceKind, SourceStatus, SpaceSource
 
 
 # `JobState` degerlerinin tel uzerindeki karsiligi ARTI `interrupted`.
@@ -200,3 +200,32 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     # Yanitin dili. Varsayilan Turkce: arayuz de kaynaklarin cogunlugu da oyle.
     language: str = Field(default="Türkçe", max_length=40)
+
+
+class SourceChunkResponse(BaseModel):
+    chunk_id: int
+    ordinal: int
+    text: str
+    start_sec: float | None = None
+    end_sec: float | None = None
+    page: int | None = None
+
+
+class SourceTextResponse(BaseModel):
+    source_id: str
+    title: str
+    kind: SourceKind
+    status: SourceStatus
+    url: str | None = None
+    language: str | None = None
+    full_text: str = ""
+    chunk_count: int = 0
+    chunks: list[SourceChunkResponse] = Field(default_factory=list)
+    transcript_source: str | None = None
+    transcript_backend: str | None = None
+    error: str | None = None
+
+
+class TranscribeSourceAccepted(IngestAccepted):
+    source_id: str
+

@@ -20,17 +20,6 @@ from src.providers.errors import (
     ProviderTemporaryError,
     VideoUnavailableError,
 )
-
-
-def _parse_retry_after(value: str | None) -> int | None:
-    """`Retry-After` basligini saniyeye cevirir (saniye bicimi; tarih bicimi yok sayilir)."""
-    if not value:
-        return None
-    try:
-        seconds = int(value.strip())
-    except (TypeError, ValueError):
-        return None
-    return seconds if seconds > 0 else None
 from src.utils.http_identity import build_session
 from src.utils.text_utils import MIN_TRANSCRIPT_CHARS, normalize_text
 from src.utils.ytdlp_options import build_ydl_common_options
@@ -72,6 +61,28 @@ _VIDEO_LEVEL_HINTS = (
     "video has been removed",
 )
 
+# Hiz siniri / IP blogu: tekrar denemek durumu KOTULESTIRIR.
+# YouTube 403'u "bu IP'yi tanimiyorum" anlaminda kullaniyor; 429 klasik hiz
+# siniri. Ikisi de `ProviderRateLimitedError` olmali ki retry sarmalayicisi
+# DENEMEKTEN VAZGECSIN ve saglayici hemen dinlendirilsin.
+_RATE_LIMIT_HINTS = (
+    "http error 403",
+    "http error 429",
+    "too many requests",
+    "sign in to confirm",
+)
+
+
+def _parse_retry_after(value: str | None) -> int | None:
+    """`Retry-After` basligini saniyeye cevirir (saniye bicimi; tarih bicimi yok sayilir)."""
+    if not value:
+        return None
+    try:
+        seconds = int(value.strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
 
 def _classify_ytdlp_error(exc: Exception) -> Exception:
     message = str(exc)
@@ -86,6 +97,13 @@ def _classify_ytdlp_error(exc: Exception) -> Exception:
             "Tarayıcı çerezleri okunamıyor (Chrome 127+ App-Bound Encryption). "
             "`.env` içinde YTDLP_COOKIES_FROM_BROWSER satırını boşaltın ya da "
             "çerezleri bir dosyaya aktarıp YTDLP_COOKIES_FILE ile verin."
+        )
+    if any(hint in lowered for hint in _RATE_LIMIT_HINTS):
+        return ProviderRateLimitedError(
+            f"{message.strip()}\n"
+            "YouTube bu IP'den gelen istekleri engelliyor. "
+            "`.env` içinde YTDLP_PROXY ile bir konut (residential) proxy "
+            "ya da YTDLP_COOKIES_FILE ile oturum açmış tarayıcı çerezleri verin."
         )
     return ProviderTemporaryError(message)
 
@@ -205,6 +223,7 @@ class YtDlpProvider:
                 "noplaylist": True,
                 "format": "bestaudio/best",
                 "outtmpl": out_base,
+                "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
                 "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
                 "postprocessor_args": {"extractaudio": ["-ar", "16000", "-ac", "1"]},
             }
@@ -260,10 +279,10 @@ def _select_caption_track(
 
     for language in ordered_languages:
         formats = captions.get(language) or []
-        # VTT has the most straightforward parser, but YouTube does not
-        # guarantee it for every language.  json3 and srv3 carry the same
-        # captions and are preferable to treating a captioned video as empty.
-        for extension in ("vtt", "json3", "srv3"):
+        # VTT'nin ayristiricisi en dogrudan olani, ama YouTube onu HER DIL
+        # icin garanti etmiyor. json3 ve srv bicimleri AYNI altyaziyi tasiyor;
+        # altyazili bir videoyu bos saymaktansa onlari okumak yeglenir.
+        for extension in ("vtt", "json3", "srv3", "srv1"):
             subtitle_url = next(
                 (
                     item.get("url")
@@ -278,26 +297,38 @@ def _select_caption_track(
 
 
 def _subtitle_to_segments(content: str, extension: str) -> list[TranscriptSegment]:
-    """Parse the caption formats yt-dlp exposes for YouTube.
+    """yt-dlp'nin YouTube icin sundugu altyazi bicimlerini ayristirir.
 
-    Unknown formats intentionally yield no segments.  A malformed subtitle
-    document should not be mistaken for a provider outage and the next track
-    or provider can still be tried.
+    Taninmayan bicim BILEREK bos doner. Bozuk bir altyazi belgesi, saglayici
+    arizasiyla KARISTIRILMAMALI: birincisi bir sonraki ize ya da saglayiciya
+    gecmeyi gerektirir, ikincisi ise saglayiciyi dinlendirmeyi. Ayristiriciyi
+    hata firlatir yapmak, ikisini ayni sonuca goturur.
     """
     if extension == "vtt":
         return _vtt_to_segments(content)
     if extension == "json3":
         return _json3_to_segments(content)
-    if extension == "srv3":
-        return _srv3_to_segments(content)
+    if extension in ("srv3", "srv2", "srv1"):
+        # Uc bicim de XML; semalarini `_timedtext_xml_to_segments` ayirt ediyor.
+        return _timedtext_xml_to_segments(content)
     return []
 
 
 def _json3_to_segments(content: str) -> list[TranscriptSegment]:
     try:
-        events = json.loads(content).get("events", [])
-    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = json.loads(content)
+    except ValueError:
+        # `json.JSONDecodeError` zaten `ValueError` turevi; ayrica yazmak
+        # okuyanda iki ayri durum varmis izlenimi birakiyordu.
         return []
+    # Kok bir sozluk OLMAYABILIR (bozuk yanit, hata govdesi, bos dizi). Eskiden
+    # dogrudan `.get` cagriliyor ve liste donen bir govde `AttributeError` ile
+    # PATLIYORDU -- yani "bicimi taniyamadim" durumu, saglayici arizasi gibi
+    # gorunup hata sayacini artiriyordu. Bu ayristiricinin sozu, taniyamadigi
+    # belgede sessizce bos donmek.
+    if not isinstance(payload, dict):
+        return []
+    events = payload.get("events", [])
     if not isinstance(events, list):
         return []
 
@@ -306,9 +337,16 @@ def _json3_to_segments(content: str) -> list[TranscriptSegment]:
         if not isinstance(event, dict):
             continue
         parts = event.get("segs") or []
-        text = "".join(
-            part.get("utf8", "") for part in parts if isinstance(part, dict)
-        ).replace("\n", " ").strip()
+        if not isinstance(parts, list):
+            continue
+        # `normalize_text` DIGER ayristiricilarla ayni: segment metinleri RAG
+        # alintilarinda dogrudan gosteriliyor ve bicime gore farkli
+        # bosluklanmalari, ayni videonun iki kaynaktan farkli gorunmesi demekti.
+        text = normalize_text(
+            "".join(
+                part.get("utf8", "") for part in parts if isinstance(part, dict)
+            ).replace("\n", " ")
+        )
         if not text:
             continue
         try:
@@ -324,28 +362,65 @@ def _json3_to_segments(content: str) -> list[TranscriptSegment]:
     return _drop_repeated_segments(segments)
 
 
-def _srv3_to_segments(content: str) -> list[TranscriptSegment]:
+def _timedtext_xml_to_segments(content: str) -> list[TranscriptSegment]:
+    """YouTube'un XML altyazi bicimlerini segmentlere cevirir.
+
+    IKI ayri sema var ve ikisi de `timedtext` ucundan geliyor:
+      - srv3: `<p t="1000" d="3000"><s>kelime</s>...</p>` -- zaman MILISANIYE
+      - srv1/srv2: `<text start="1.0" dur="3.0">satir</text>` -- zaman SANIYE
+
+    Onceki surum yalnizca `<text start dur>` ariyordu ama `_select_caption_track`
+    `srv3` istiyordu; gercek srv3 belgesinde hicbir dugum eslesmiyor, ayristirici
+    sessizce BOS donuyordu. Yani "altyazili videoyu bos saymayalim" diye eklenen
+    yedek tam olarak onu yapiyordu -- ustelik hicbir hata vermeden.
+
+    `<s>` cocuklari `itertext()` ile birlestiriliyor: srv3 bir cue'yu kelime
+    kelime bolebiliyor ve her kelimeyi ayri segment yapmak, ayni cue'ya ait
+    yapay parcalar uretirdi.
+    """
     try:
         root = ElementTree.fromstring(content)
     except ElementTree.ParseError:
         return []
 
+    # srv3 once denenir; bulunamazsa srv1/srv2 semasina dusulur.
+    nodes = root.findall(".//p") or root.findall(".//text")
+
     segments: list[TranscriptSegment] = []
-    for node in root.findall(".//text"):
+    for node in nodes:
         text = normalize_text("".join(node.itertext()))
         if not text:
+            # srv3 zamanlama/ekleme amacli bos `<p>` dugumleri de tasiyor.
             continue
-        try:
-            start_sec = max(0.0, float(node.attrib.get("start", 0)))
-        except (TypeError, ValueError):
-            start_sec = 0.0
-        try:
-            duration = float(node.attrib.get("dur"))
-            end_sec = start_sec + duration if duration > 0 else None
-        except (TypeError, ValueError):
-            end_sec = None
+        start_sec, end_sec = _timedtext_timing(node)
         segments.append(TranscriptSegment(start_sec=start_sec, end_sec=end_sec, text=text))
     return _drop_repeated_segments(segments)
+
+
+def _timedtext_timing(node) -> tuple[float, float | None]:
+    """Dugumun baslangic/bitis zamanini uygun birimle okur.
+
+    `t`/`d` varsa milisaniye (srv3), yoksa `start`/`dur` saniye (srv1/srv2).
+    Zamani okunamayan dugum ATILMIYOR: 0.0'a sabitlenip metni korunuyor --
+    yanlis olan yalnizca konumu ve o durumda alinti saniye gostermez.
+    """
+    if "t" in node.attrib or "d" in node.attrib:
+        scale = 1000.0
+        raw_start, raw_duration = node.attrib.get("t"), node.attrib.get("d")
+    else:
+        scale = 1.0
+        raw_start, raw_duration = node.attrib.get("start"), node.attrib.get("dur")
+
+    try:
+        start_sec = max(0.0, float(raw_start) / scale)
+    except (TypeError, ValueError):
+        start_sec = 0.0
+    try:
+        duration = float(raw_duration) / scale
+        end_sec = start_sec + duration if duration > 0 else None
+    except (TypeError, ValueError):
+        end_sec = None
+    return start_sec, end_sec
 
 
 def _parse_vtt_timestamp(value: str) -> float | None:
@@ -362,11 +437,13 @@ def _parse_vtt_timestamp(value: str) -> float | None:
 
 
 def _drop_repeated_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
-    """Remove recent rolling-window caption repeats without losing timing.
+    """Kayan pencere altyazi tekrarlarini eler; zaman bilgisini KAYBETMEDEN.
 
-    YouTube's automatic tracks can repeat a phrase after more than four cues;
-    retaining a modest twelve-segment window handles those streams while still
-    allowing a genuine repeated sentence later in the video.
+    YouTube'un otomatik izleri ayni ifadeyi dortten fazla cue sonra da
+    tekrarlayabiliyor. On iki segmentlik olculu bir pencere bu akislari
+    karsiliyor, ama videonun ilerisinde GERCEKTEN tekrar eden bir cumleyi
+    elemeyecek kadar da dar: pencereyi butun akisa yaymak, bilerek tekrarlanan
+    bir tanimi transkriptten silmek olurdu.
     """
     kept: list[TranscriptSegment] = []
     recent: list[str] = []
@@ -438,13 +515,8 @@ def _vtt_to_segments(vtt_text: str) -> list[TranscriptSegment]:
     return segments
 
 
-def _vtt_to_text(vtt_text: str) -> str:
-    """VTT'nin duz metin hali. Segmentlerden TURETILIYOR.
-
-    Ayri bir ayristirici DEGIL: iki ayri gecis, birinin degisip digerinin
-    degismedigi bir ayrisma noktasi olurdu. Cue basligi hic olmayan (yalnizca
-    metin satirlari iceren) bozuk bir VTT'de segment uretilemez; o durumda
-    metin de bos doner ve cagiran taraf `MIN_TRANSCRIPT_CHARS` kontroluyle
-    zaten bir sonraki saglayiciya geciyor.
-    """
-    return normalize_text(" ".join(segment.text for segment in _vtt_to_segments(vtt_text)))
+# `_vtt_to_text` KALDIRILDI. Uretimde hicbir yerden cagrilmiyordu; duz metni
+# `fetch_subtitles` zaten segmentlerden turetiyor. Yalnizca testler onu ayakta
+# tutuyordu, yani "metin segmentlerden turetiliyor" guvencesini gercek yolda
+# DEGIL, yalnizca bu kopyada dogruluyorlardi. Guvencenin kendisi korunuyor:
+# bkz. `test_subtitle_text_is_derived_from_segments`.

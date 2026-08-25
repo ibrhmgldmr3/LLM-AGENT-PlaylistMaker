@@ -8,6 +8,10 @@ from .domain import (
     ProgressEvent,
     RagAnswer,
     Recommendation,
+    SourceChunk,
+    SourceKind,
+    SourceStatus,
+    SourceTextResult,
     SpaceSource,
     Subtopic,
     StudyNote,
@@ -27,6 +31,10 @@ __all__ = [
     "ProgressEvent",
     "RagAnswer",
     "Recommendation",
+    "SourceChunk",
+    "SourceKind",
+    "SourceStatus",
+    "SourceTextResult",
     "SpaceSource",
     "Subtopic",
     "StudyNote",
@@ -35,3 +43,4 @@ __all__ = [
     "TranscriptSegment",
     "VideoCandidate",
 ]
+

@@ -24,12 +24,13 @@ degerini goturur.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.config import AppConfig
-from src.models import Citation, RagAnswer
+from src.models import Citation, RagAnswer, SourceChunk, SourceTextResult, VideoCandidate
 from src.providers.errors import ProviderPermanentError
 from src.services import embedding_service
 from src.services.chunking import chunk_document, chunk_transcript
@@ -497,3 +498,147 @@ def _embed_space(
             redact_secrets(str(exc)),
         )
         return 0
+
+
+def get_source_text(
+    store: SQLiteStore, space_id: str, source_id: str
+) -> SourceTextResult | None:
+    """Ogrenme alanindaki bir kaynagin tam metnini ve parcalarini dondurur."""
+    source = store.get_source(space_id, source_id)
+    if source is None:
+        return None
+    raw_chunks = store.list_source_chunks(space_id, source_id)
+    chunks = [
+        SourceChunk(
+            chunk_id=row["chunk_id"],
+            ordinal=row["ordinal"],
+            text=row["text"],
+            start_sec=row["start_sec"],
+            end_sec=row["end_sec"],
+            page=row["page"],
+        )
+        for row in raw_chunks
+    ]
+    full_text = "\n\n".join(chunk.text for chunk in chunks)
+
+    transcript_source = None
+    transcript_source = None
+    transcript_backend = None
+    if source["kind"] == "video":
+        with store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json FROM transcript_cache
+                WHERE video_id = ? AND status = 'available'
+                ORDER BY CASE provider WHEN 'asr' THEN 1 ELSE 2 END, updated_at DESC
+                LIMIT 1
+                """,
+                (source["ref_id"],),
+            ).fetchone()
+            if row:
+                cached_data = json.loads(row["payload_json"])
+                transcript_source = cached_data.get("source")
+                transcript_backend = cached_data.get("backend")
+
+    return SourceTextResult(
+        source_id=source["source_id"],
+        title=source["title"],
+        kind=source["kind"],
+        status=source["status"],
+        url=source.get("url"),
+        language=source.get("language"),
+        full_text=full_text,
+        chunk_count=len(chunks),
+        chunks=chunks,
+        transcript_source=transcript_source,
+        transcript_backend=transcript_backend,
+        error=source.get("error"),
+    )
+
+
+def transcribe_space_source(
+    config: AppConfig,
+    store: SQLiteStore,
+    llm,
+    space_id: str,
+    source_id: str,
+    user_id: str = DEFAULT_USER_ID,
+    progress=None,
+) -> IngestReport:
+    """Calisma odasindaki bir video icin ASR (Whisper) ile transkript cikarir ve indeksler."""
+    source = store.get_source(space_id, source_id)
+    if source is None:
+        raise ProviderPermanentError("Kaynak bulunamadı")
+    if source["kind"] != "video":
+        raise ProviderPermanentError("Yalnızca video kaynakları için transkript çıkarılabilir")
+
+    report = IngestReport(added=1)
+    if progress:
+        progress(1, 3, f"ASR başlatılıyor: {source['title']}")
+
+    store.update_source(space_id, source_id, status="pending", error=None)
+
+    asr_config = config.model_copy(update={"enable_asr_fallback": True})
+    state = RunTranscriptState()
+    work_dir = Path(config.cache_dir) / "ingest" / space_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    candidate = VideoCandidate(
+        video_id=source["ref_id"],
+        url=source["url"] or f"https://www.youtube.com/watch?v={source['ref_id']}",
+        title=source["title"],
+        language=source.get("language"),
+    )
+
+    try:
+        transcript = get_transcript(
+            asr_config,
+            store,
+            candidate,
+            str(work_dir),
+            state,
+            logger=_log,
+            preferred_language=source.get("language"),
+            user_id=user_id,
+        )
+    except Exception as exc:
+        message = redact_secrets(str(exc))[:300]
+        store.update_source(space_id, source_id, status="failed", error=message)
+        report.failed.append(source["title"])
+        return report
+
+    if transcript.status != "available" or not transcript.text:
+        error_msg = transcript.error or "Bu video için transkript çıkarılamadı"
+        store.update_source(
+            space_id,
+            source_id,
+            status="no_text",
+            error=error_msg,
+        )
+        report.skipped_no_text.append(source["title"])
+        return report
+
+    store.put_transcript_cache(transcript, config.transcript_cache_ttl_sec, source.get("language"))
+
+    if progress:
+        progress(2, 3, f"Metin parçalanıyor: {source['title']}")
+
+    drafts = chunk_transcript(
+        transcript.segments,
+        transcript.text,
+        max_chars=config.rag_chunk_chars,
+        overlap_chars=config.rag_chunk_overlap_chars,
+    )
+    written = store.replace_chunks(space_id, source_id, drafts)
+    store.update_source(
+        space_id, source_id, status="indexed", chunk_count=written, error=None
+    )
+    report.indexed = 1
+    report.chunks = written
+
+    if progress:
+        progress(3, 3, "Vektörler üretiliyor")
+    report.embedded = _embed_space(config, store, llm, space_id, user_id, progress)
+    store.touch_space(space_id)
+    return report
+
