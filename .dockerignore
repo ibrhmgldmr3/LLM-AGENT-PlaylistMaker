@@ -1,0 +1,42 @@
+# Sirlar ASLA imaja girmemeli: yapilandirma calisma aninda ortam
+# degiskenlerinden geliyor (`docker run --env-file`).
+.env
+.env.*
+!.env.example
+
+# Calisma verisi: veritabani, indirilen sesler, calistirma ciktilari.
+# Imaja gomulmemeli; kalici olmasi gereken sey bir birim (volume) olarak
+# baglanir -- bkz. Dockerfile icindeki VOLUME.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Derleme ciktilari imaj ICINDE uretiliyor; disaridan kopyalamak yerel
+# makinenin durumunu imaja tasirdi.
+web/node_modules/
+web/dist/
+web/openapi.json
+node_modules/
+build/
+dist/
+
+# whisper.cpp yerel bir derleme (yuzlerce MB) ve varsayilan ASR arka ucu
+# faster-whisper. Gerekirse imaja ayrica eklenir.
+whisper.cpp/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.benchmarks/
+.mypy_cache/
+.ruff_cache/
+
+.git/
+.github/
+.vscode/
+.claude/
+tests/
+docs/
+*.md
+!readme.md

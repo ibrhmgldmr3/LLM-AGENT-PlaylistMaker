@@ -175,3 +175,54 @@ def test_document_chunk_may_span_pages():
     assert len(chunks) == 1
     assert chunks[0].page == 1
     assert "Bir tane daha." in chunks[0].text
+
+
+def test_chunk_never_exceeds_max_chars_after_an_overlap_carry():
+    """Tavan, ortusme kuyrugu devredildikten SONRA da gecerli.
+
+    `_tail_for_overlap` kuyrugun ILK parcasini boyuna bakmadan aliyor (aksi
+    halde hic kuyruk kalmazdi). Kuyruk tek basina buyuk olunca, flush sonrasi
+    eklenen parcayla birlikte tavan bir daha hic kontrol edilmiyordu.
+    Olculdu: max_chars=200 iken 379 karakterlik parca (1.9x).
+    """
+    max_chars, overlap = 200, 80
+    sentences = ["a" * 8 + ".", "b" * 98 + ".", "c" * 188 + ".", "d" * 188 + "."]
+
+    chunks = chunk_document(
+        [(1, " ".join(sentences))], max_chars=max_chars, overlap_chars=overlap
+    )
+
+    assert chunks
+    assert [len(c.text) for c in chunks if len(c.text) > max_chars] == []
+
+
+def test_max_chars_holds_across_many_shapes():
+    """Tavan tek bir kurguda degil, GENEL olarak gecerli olmali."""
+    import random
+
+    random.seed(7)
+    for _ in range(200):
+        max_chars = random.randint(50, 400)
+        overlap = random.randint(0, max_chars)
+        sentences = [
+            chr(97 + i % 26) * random.randint(1, max_chars + 120) + "."
+            for i in range(random.randint(1, 25))
+        ]
+        chunks = chunk_document(
+            [(1, " ".join(sentences))], max_chars=max_chars, overlap_chars=overlap
+        )
+        assert all(len(c.text) <= max_chars for c in chunks), (max_chars, overlap)
+
+
+def test_oversized_boundary_does_not_lose_content():
+    """Tavani korumak icin kuyrugu birakmak, METNI dusurmemeli."""
+    max_chars, overlap = 200, 80
+    sentences = ["a" * 8 + ".", "b" * 98 + ".", "c" * 188 + ".", "d" * 188 + "."]
+
+    chunks = chunk_document(
+        [(1, " ".join(sentences))], max_chars=max_chars, overlap_chars=overlap
+    )
+
+    joined = " ".join(c.text for c in chunks)
+    for sentence in sentences:
+        assert sentence.strip(".")[:20] in joined

@@ -10,6 +10,7 @@ Calistirma:
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.deps import _base_config, get_server_config
+from src.config.settings import DEV_CORS_ORIGINS
 from api.routers import admin as admin_router
 from api.routers import auth as auth_router
 from api.routers import config as config_router
@@ -34,12 +36,28 @@ from src.utils.logging_utils import redact_secrets
 
 logger = logging.getLogger("api")
 
-# Vite gelistirme sunucusu. Uretimde ayni kokenden servis edilecegi icin
-# CORS'a gerek kalmaz; simdilik yerel gelistirme icin acik.
-DEV_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+def _cors_origins() -> list[str]:
+    """CORS kokenlerini yapilandirmadan okur; okunamazsa gelistirme kokenleri.
+
+    Yapilandirma IMPORT ZAMANINDA okunuyor (middleware o an kuruluyor) ve
+    `load_config` eksik `GEMINI_API_KEY` gibi durumlarda `RuntimeError`
+    firlatiyor. Burada patlamak, uygulamanin HIC import edilememesi demek
+    olurdu -- CI'nin "uygulama import edilebiliyor mu" adimi da tam olarak
+    `.env`siz calisiyor. Yapilandirma hatasi ilk istekte zaten yuzeye cikiyor;
+    dogru davranis guvenli varsayilana dusup devam etmek.
+    """
+    try:
+        server = get_server_config()
+    except Exception:
+        return list(DEV_CORS_ORIGINS)
+
+    if server.cors_wildcard_rejected():
+        logger.warning(
+            "CORS_ALLOW_ORIGINS içinde `*` yok sayıldı: bu API oturum çerezi "
+            "taşıyor ve joker köken, herhangi bir sitenin kullanıcı adına "
+            "istek atması anlamına gelirdi. Kökenleri açıkça listeleyin."
+        )
+    return server.cors_origins()
 
 
 def _warn_on_unbounded_shared_quota() -> None:
@@ -70,6 +88,76 @@ def _warn_on_unbounded_shared_quota() -> None:
             "kullanıcı günlük YouTube kotasının tamamını (~8-16 çalıştırma, tüm "
             "kullanıcılar toplamı) tüketebilir. .env.example bu mod için 3 öneriyor."
         )
+
+
+def _log_config_warnings() -> None:
+    """`.env` okunurken toplanan uyarilari gunluge yazar.
+
+    `_collect_env_warnings` bunlari HESAPLIYOR ve `AppConfig.config_warnings`e
+    koyuyordu, ama hicbir yerde okunmuyorlardi -- ne API yanitinda ne gunlukte.
+    Yani "`.env`'e yazdim ama hicbir sey degismedi" durumunu tam da yakalamak
+    icin var olan mekanizma, sonucunu sessizce cope atiyordu.
+    """
+    try:
+        for warning in _base_config().config_warnings:
+            logger.warning("%s", warning)
+    except Exception as exc:
+        # Yapilandirma hatasi ilk istekte zaten yuzeye cikiyor.
+        logger.warning("Yapılandırma uyarıları okunamadı: %s", exc)
+
+
+def _warn_on_plaintext_secrets() -> None:
+    """Sifreleme anahtari yokken OAuth jetonlari DUZ METIN yaziliyor.
+
+    `SECRET_ENCRYPTION_KEY` opsiyonel ve varsayilani yok, yani hicbir sey
+    yapmayan bir kurulumda bu durum KENDILIGINDEN olusuyor -- tipki
+    `_warn_on_unbounded_shared_quota`daki gibi. Jetonlar kullanicinin YouTube
+    hesabinda oynatma listesi olusturma yetkisi tasiyor; veritabani dosyasini
+    okuyan biri o yetkiyi dogrudan ele gecirir.
+
+    HATA degil UYARI: tek kullanicili yerel bir kurulumda sifrelemesiz calismak
+    mesru bir tercih. Sessiz kalmasi mesru degil.
+    """
+    try:
+        server = get_server_config()
+    except Exception:
+        return
+    if server.secret_encryption_key:
+        return
+    logger.warning(
+        "SECRET_ENCRYPTION_KEY tanımlı değil: OAuth jetonları veritabanına DÜZ "
+        "METİN yazılıyor. Üretimde tanımlayın (`python -m src.storage.crypto` "
+        "ile üretebilirsiniz)."
+    )
+
+
+def _warn_on_multi_process() -> None:
+    """Is durumu BELLEKTE; uygulama tek surec calismak zorunda.
+
+    `InProcessJobRunner` tutamaclari, olay kanallarini ve future'lari surec
+    icinde tutuyor. Ikinci bir surecte calisan istek, isi TANIMAYAN bir
+    runner'a duser: SSE akisi ve `/status` "bilinmeyen calistirma" doner --
+    is aslinda saglikli calisiyorken.
+
+    Kesin tespit mumkun degil (uvicorn `--workers` icin standart bir isaret
+    birakmiyor), ama gunicorn ve bazi PaaS'ler `WEB_CONCURRENCY` koyuyor.
+    Onu gorursek acikca uyariyoruz; goremezsek de kisiti bir kez yaziyoruz ki
+    kurulum yapan kisi bunu belgelerde aramak zorunda kalmasin.
+    """
+    concurrency = os.getenv("WEB_CONCURRENCY") or os.getenv("UVICORN_WORKERS")
+    try:
+        workers = int(concurrency) if concurrency else 1
+    except ValueError:
+        workers = 1
+    if workers > 1:
+        logger.error(
+            "WEB_CONCURRENCY=%s: bu uygulama TEK SÜREÇ çalışmalı. İş durumu "
+            "bellekte tutuluyor; ikinci süreçteki istek çalıştırmayı bulamaz ve "
+            "ilerleme akışı kopar. Tek süreç çalıştırın.",
+            workers,
+        )
+    else:
+        logger.info("İş durumu bellekte tutuluyor: tek süreç çalıştırın (--workers kullanmayın).")
 
 
 def _mark_interrupted_runs() -> None:
@@ -116,6 +204,9 @@ def _purge_orphan_run_dirs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _log_config_warnings()
+    _warn_on_multi_process()
+    _warn_on_plaintext_secrets()
     _warn_on_unbounded_shared_quota()
     _mark_interrupted_runs()
     _purge_orphan_run_dirs()
@@ -138,7 +229,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=DEV_ORIGINS,
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

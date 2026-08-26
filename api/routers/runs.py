@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -37,6 +38,8 @@ from src.services.run_retention import delete_run as delete_run_everywhere
 from src.storage import SQLiteStore
 from src.storage.sqlite_store import seconds_until_next_quota_day
 from src.utils.logging_utils import redact_secrets
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -93,9 +96,27 @@ def create_run(
     )
 
     def work(emit):
-        return build_playlist(
-            config, request, progress_callback=emit, run_id=run_id, user_id=user_id
-        )
+        try:
+            return build_playlist(
+                config, request, progress_callback=emit, run_id=run_id, user_id=user_id
+            )
+        except BaseException:
+            # Kota rezervasyonunu BIRAK. Basari yolunda bunu `finalize_run`
+            # yapiyor; hata ve iptal yolunda ise satir `result_json IS NULL`
+            # kaldigi icin "ucustaki rezervasyon" toplamina SURESIZ giriyordu.
+            # Olculdu: ust uste basarisiz uc calistirma, gercek harcama sifirken
+            # gunluk servis butcesinin tamamini kilitliyor ve o gunku her istegi
+            # "servisin kapasitesi doldu" ile reddettiriyordu. Ancak surec
+            # yeniden baslayip `mark_interrupted_runs` calisinca cozuluyordu.
+            #
+            # `BaseException`: `JobCancelled` de bu yoldan geciyor ve iptal
+            # edilen bir calistirma da kotayi tutmamali.
+            try:
+                store.release_run_reservation(run_id)
+            except Exception:
+                # Temizlik, isin GERCEK hatasini golgelemesin.
+                logger.warning("Kota rezervasyonu bırakılamadı: %s", run_id, exc_info=True)
+            raise
 
     # Satir KABUL ANINDA yaziliyor, isi baslatan is parcaciginda degil.
     #

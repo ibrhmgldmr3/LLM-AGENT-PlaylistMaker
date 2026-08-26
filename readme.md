@@ -19,8 +19,31 @@ cd web && npm run build
 python -m uvicorn api.main:app --port 8000           # → localhost:8000
 ```
 
+Or with Docker (builds the frontend and serves everything from one container):
+
+```bash
+docker build -t make-a-playlist .
+docker run -p 8000:8000 --env-file .env -v playlist-data:/app/data make-a-playlist
+```
+
 In development Vite proxies `/api` to port 8000, so start the API first. In production
 the API serves the built frontend from `web/dist`, so a single process is enough.
+
+> **Run exactly one process — never `--workers`, never multiple replicas.**
+> Job state lives in memory (`InProcessJobRunner` holds the handles, SSE event
+> channels and futures). A request that lands on a second process does not know
+> the run: the progress stream breaks and `/status` returns "unknown run" while
+> the job is in fact running fine. Only finished results survive, because those
+> are in SQLite. The app logs this at startup and reports an error if it sees
+> `WEB_CONCURRENCY > 1`. Scaling out needs a shared job backend (the
+> `JobRunner` protocol exists for exactly that swap).
+
+Two settings matter before exposing this to anyone else:
+
+| Setting | Why |
+|---|---|
+| `SECRET_ENCRYPTION_KEY` | Without it OAuth tokens are stored **in plain text**. They carry permission to create playlists on the user's YouTube account. Generate with `python -m src.storage.crypto`. |
+| `CORS_ALLOW_ORIGINS` | Leave empty when the UI is served from the same process (the default, and the recommended setup). Only set it if the frontend lives on a separate domain. `*` is ignored — this API carries a session cookie. |
 
 > Use `python -m uvicorn`, not the bare `uvicorn` command: on Windows the `uvicorn.exe`
 > on `PATH` may belong to a different Python installation than the one your dependencies
