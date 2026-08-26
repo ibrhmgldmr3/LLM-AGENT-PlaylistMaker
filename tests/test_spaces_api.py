@@ -12,6 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api import deps
+from src.config import settings
+from src.jobs import space_tasks
 from api.routers import spaces as spaces_router
 from src.config import AppConfig
 from src.models import (
@@ -62,8 +64,12 @@ def client(tmp_path, monkeypatch):
         max_upload_bytes=2048,
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    # IKI yol da yamanmali: `/ask` ISTEK yolunda saglayiciyi kendi kuruyor,
+    # iceri alma ise ARKA PLAN isinde (`src/jobs/space_tasks`). Yalnizca birini
+    # yamamak digerini gercek ag cagrisina birakiyor.
     monkeypatch.setattr(spaces_router, "create_rag_llm_provider", lambda _config: FakeLLM())
+    monkeypatch.setattr(space_tasks, "create_rag_llm_provider", lambda _config: FakeLLM())
 
     from api.main import app
 

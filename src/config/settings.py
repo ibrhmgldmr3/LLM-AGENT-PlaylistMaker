@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 from pathlib import Path
 from typing import Literal
@@ -771,3 +772,30 @@ def load_config() -> AppConfig:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc
     config.ensure_directories()
     return config
+
+
+# --------------------------------------------------- surec geneli yapilandirma
+#
+# `load_config` her cagrida `.env`i yeniden okur. Surec boyunca TEK bir taban
+# yapilandirma olmali ve bunu SORACAK olan iki taraf var: HTTP katmani
+# (`api/deps`) ve isi calistiran taraf (`src/jobs/runtime`).
+#
+# Erisim tek noktada toplandi cunku ayrildigi anda iki taraf FARKLI
+# yapilandirma okuyabiliyor. Bu somut olarak yasandi: is katmani dogrudan
+# `load_config()` cagirinca testlerin `api/deps` uzerine koydugu yama
+# baypas edildi ve testler gercek `.env`i okuyup GERCEK API cagrisi yapti.
+#
+# Cagiranlar bu fonksiyonu MODUL UZERINDEN cagirmali
+# (`settings.base_config()`), `from ... import base_config` ile degil:
+# yerel bir ada baglanan import, tek yama noktasi olma ozelligini bozar.
+
+
+@functools.lru_cache(maxsize=1)
+def base_config() -> AppConfig:
+    """Surec omru boyunca bir kez okunan taban yapilandirma."""
+    return load_config()
+
+
+def reset_base_config() -> None:
+    """Onbellegi bosaltir. Testler ve yapilandirma degisikligi sonrasi icin."""
+    base_config.cache_clear()

@@ -17,19 +17,23 @@ Vaat tutuldu: cok kullanicili moda gecerken rota imzalari hic degismedi.
 
 from __future__ import annotations
 
-from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request, status
 
-from src.config import AppConfig, RunOptions, ServerConfig, UserCredentials, load_config
+from src.config import AppConfig, RunOptions, ServerConfig, UserCredentials, settings
 from src.jobs import JobRunner
 from src.storage import DEFAULT_USER_ID, SQLiteStore
 
 
-@lru_cache(maxsize=1)
 def _base_config() -> AppConfig:
-    """`.env`'den okunan taban yapilandirma. Surec omru boyunca bir kez."""
-    return load_config()
+    """Taban yapilandirma. Onbellek `src.config.settings` icinde.
+
+    Erisim MODUL UZERINDEN: isi calistiran taraf (`src/jobs/runtime`) da ayni
+    fonksiyonu cagiriyor ve tek yama noktasi olmasi bunu gerektiriyor. Kendi
+    `lru_cache`i vardi; iki ayri onbellek, iki tarafin FARKLI yapilandirma
+    okumasi demekti.
+    """
+    return settings.base_config()
 
 
 def get_server_config() -> ServerConfig:

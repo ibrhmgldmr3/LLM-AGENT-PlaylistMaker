@@ -16,6 +16,8 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
+from src.config import settings
+from src.jobs import playlist_task
 from src.config import AppConfig, ServerConfig
 from src.providers.youtube_data_api_provider import estimate_run_units
 from src.storage import SQLiteStore
@@ -249,8 +251,6 @@ def test_retry_after_points_at_the_real_reset_not_an_hour():
 # ------------------------------------------------------------------- uc uca
 
 def _client(monkeypatch, tmp_path, **overrides):
-    from api import deps
-    from api.routers import runs as runs_router
 
     config = AppConfig(
         gemini_api_key="k",
@@ -260,8 +260,8 @@ def _client(monkeypatch, tmp_path, **overrides):
         **overrides,
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
-    monkeypatch.setattr(runs_router, "build_playlist", lambda *a, **k: None)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    monkeypatch.setattr(playlist_task, "build_playlist", lambda *a, **k: None)
 
     from api.main import app
 

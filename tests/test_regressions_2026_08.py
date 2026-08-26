@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from src.config import settings
 from src.config import AppConfig
 from src.storage import SQLiteStore
 from src.utils.logging_utils import _RedactSecretsFilter, redact_secrets
@@ -376,7 +377,6 @@ def test_non_http_error_while_adding_items_still_returns_the_playlist_url(monkey
 def _client_with(monkeypatch, tmp_path, **config_overrides):
     from fastapi.testclient import TestClient
 
-    from api import deps
 
     config = AppConfig(
         gemini_api_key="k",
@@ -386,7 +386,7 @@ def _client_with(monkeypatch, tmp_path, **config_overrides):
         **config_overrides,
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
 
     from api.main import app
 

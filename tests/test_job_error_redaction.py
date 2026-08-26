@@ -36,11 +36,11 @@ def _wait(runner, job_id):
         runner.result(job_id, timeout=5)
 
 
-def test_api_key_in_an_uncaught_exception_never_reaches_the_handle(runner):
+def test_api_key_in_an_uncaught_exception_never_reaches_the_handle(runner, task):
     def patlayan(emit):
         raise RuntimeError(f"istek basarisiz: {SIZAN_URL}")
 
-    runner.submit("is-1", "ali", patlayan)
+    runner.submit("is-1", "ali", task(patlayan))
     _wait(runner, "is-1")
 
     handle = runner.get("is-1")
@@ -51,18 +51,18 @@ def test_api_key_in_an_uncaught_exception_never_reaches_the_handle(runner):
     assert "istek basarisiz" in handle.error
 
 
-def test_the_snapshot_that_feeds_sse_is_also_clean(runner):
+def test_the_snapshot_that_feeds_sse_is_also_clean(runner, task):
     def patlayan(emit):
         raise RuntimeError(f"hata: {SIZAN_URL}")
 
-    runner.submit("is-2", "ali", patlayan)
+    runner.submit("is-2", "ali", task(patlayan))
     _wait(runner, "is-2")
 
     snapshot = runner.get("is-2").snapshot()
     assert "AIzaSyTOPSECRETVALUE123" not in snapshot["error"]
 
 
-def test_a_failing_job_leaves_a_traceback_in_the_server_log(runner, caplog):
+def test_a_failing_job_leaves_a_traceback_in_the_server_log(runner, caplog, task):
     """Future hicbir zaman beklenmedigi icin is istisnalari hic loglanmiyordu:
     calistirma "failed" gorunuyor, sebebi hicbir yerde yazmiyordu."""
 
@@ -70,7 +70,7 @@ def test_a_failing_job_leaves_a_traceback_in_the_server_log(runner, caplog):
         raise ValueError("ic hata")
 
     with caplog.at_level(logging.ERROR, logger="src.jobs.runner"):
-        runner.submit("is-3", "ali", patlayan)
+        runner.submit("is-3", "ali", task(patlayan))
         _wait(runner, "is-3")
 
     kayitlar = [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -78,10 +78,10 @@ def test_a_failing_job_leaves_a_traceback_in_the_server_log(runner, caplog):
     assert any(r.exc_info for r in kayitlar), "yigin izi tutulmali"
 
 
-def test_a_successful_job_still_reports_no_error(runner):
-    runner.submit("is-4", "ali", lambda emit: emit(
+def test_a_successful_job_still_reports_no_error(runner, task):
+    runner.submit("is-4", "ali", task(lambda emit: emit(
         ProgressEvent(stage="done", message="bitti", progress=1.0)
-    ))
+    )))
     runner.result("is-4", timeout=5)
 
     assert runner.get("is-4").error is None

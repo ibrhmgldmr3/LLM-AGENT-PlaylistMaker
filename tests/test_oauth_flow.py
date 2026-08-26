@@ -11,7 +11,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from api import deps
+from src.config import settings
 from api.routers import auth as auth_router
 from src.services.playlist_publish_service import ExchangedToken
 from api.routers import runs as runs_router
@@ -31,7 +31,7 @@ def client(tmp_path, monkeypatch):
         sqlite_path=str(tmp_path / "cache" / "app.db"),
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
     auth_router._pending_states.clear()
 
     from api.main import app
@@ -77,7 +77,7 @@ def test_status_reports_not_connected_initially(client):
 def test_status_reports_unconfigured_without_client_credentials(tmp_path, monkeypatch):
     config = AppConfig(gemini_api_key="k", data_dir=str(tmp_path), sqlite_path=str(tmp_path / "a.db"))
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
     from api.main import app
 
     with TestClient(app) as bare:

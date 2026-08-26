@@ -56,7 +56,8 @@ from api.schemas import (
 )
 from src.config import AppConfig, RunOptions, ServerConfig, UserCredentials
 from src.jobs import JobRunner, new_job_id
-from src.models import ProgressEvent, RagAnswer, SpaceSource
+from src.jobs.space_tasks import INGEST_DOCUMENT, INGEST_RUN, TRANSCRIBE_SOURCE
+from src.models import RagAnswer, SpaceSource
 from src.providers import create_rag_llm_provider
 from src.services import rag_service, space_retention
 from src.services.document_parser import SUPPORTED_EXTENSIONS
@@ -216,7 +217,12 @@ def add_run_source(
     HEMEN doner: transkript cekme + parcalama + gomme dakikalar surebiliyor
     (ASR acikken daha da fazla) ve bir HTTP istegi bunu bekleyemez.
     """
-    config = _config(credentials, defaults, server)
+    # YALNIZCA DOGRULAMA icin cagriliyor: `_config` icindeki `_require_rag`,
+    # RAG kapaliyken ya da LLM anahtari yokken 503 firlatiyor ve bu kontrol
+    # HTTP katmaninda kalmali -- isi kuyruga attiktan sonra ogrenilmemeli.
+    # Calistirmanin kendi `AppConfig`ini artik isin kendisi ortamdan kuruyor
+    # (bkz. `src/jobs/runtime.py`), bu yuzden donen deger kullanilmiyor.
+    _config(credentials, defaults, server)
     _owned_space(store, space_id, user_id)
 
     summary = store.get_run_summary(payload.run_id)
@@ -225,29 +231,12 @@ def add_run_source(
     if not summary["is_complete"]:
         raise HTTPException(status.HTTP_409_CONFLICT, "Çalıştırma henüz tamamlanmadı")
 
-    llm = create_rag_llm_provider(config)
     job_id = new_job_id()
-
-    def work(emit):
-        def progress(done: int, total: int, label: str) -> None:
-            emit(
-                ProgressEvent(
-                    stage="space_ingest",
-                    message=f"İşleniyor: {label}",
-                    progress=(done / total) if total else 0.0,
-                    current=done,
-                    total=total,
-                )
-            )
-
-        emit(ProgressEvent(stage="space_ingest", message="Kaynaklar ekleniyor", progress=0.0))
-        report = rag_service.ingest_run(
-            config, store, llm, space_id, payload.run_id, user_id, progress=progress
-        )
-        emit(ProgressEvent(stage="done", message=_report_message(report), progress=1.0))
-        return report
-
-    runner.submit(job_id, user_id, work)
+    # Kuyruga giden sey VERI: is adi + kimlikler. `config`, `store` ve `llm`
+    # isi calistiran tarafta ortamdan kuruluyor (bkz. `src/jobs/space_tasks.py`).
+    runner.submit(
+        job_id, user_id, INGEST_RUN, {"space_id": space_id, "run_id": payload.run_id}
+    )
     return IngestAccepted(
         job_id=job_id,
         space_id=space_id,
@@ -343,29 +332,19 @@ async def add_document_source(
         byte_size=written,
     )
 
-    llm = create_rag_llm_provider(config)
     job_id = new_job_id()
-
-    def work(emit):
-        def progress(done: int, total: int, label: str) -> None:
-            emit(
-                ProgressEvent(
-                    stage="space_ingest",
-                    message=f"İşleniyor: {label}",
-                    progress=(done / total) if total else 0.0,
-                    current=done,
-                    total=total,
-                )
-            )
-
-        report = rag_service.ingest_document(
-            config, store, llm, space_id, source_id, target, display_name, user_id,
-            progress=progress,
-        )
-        emit(ProgressEvent(stage="done", message=_report_message(report), progress=1.0))
-        return report
-
-    runner.submit(job_id, user_id, work)
+    runner.submit(
+        job_id,
+        user_id,
+        INGEST_DOCUMENT,
+        {
+            "space_id": space_id,
+            "source_id": source_id,
+            # `Path` degil DIZE: payload JSON'a cevrilebilir olmali.
+            "target": str(target),
+            "display_name": display_name,
+        },
+    )
     return IngestAccepted(
         job_id=job_id,
         space_id=space_id,
@@ -441,7 +420,12 @@ def transcribe_source(
     runner: JobRunner = Depends(get_job_runner),
 ) -> TranscribeSourceAccepted:
     """Çalışma odasındaki bir video için ASR (Whisper) ile transkript çıkarır ve indeksler."""
-    config = _config(credentials, defaults, server)
+    # YALNIZCA DOGRULAMA icin cagriliyor: `_config` icindeki `_require_rag`,
+    # RAG kapaliyken ya da LLM anahtari yokken 503 firlatiyor ve bu kontrol
+    # HTTP katmaninda kalmali -- isi kuyruga attiktan sonra ogrenilmemeli.
+    # Calistirmanin kendi `AppConfig`ini artik isin kendisi ortamdan kuruyor
+    # (bkz. `src/jobs/runtime.py`), bu yuzden donen deger kullanilmiyor.
+    _config(credentials, defaults, server)
     _owned_space(store, space_id, user_id)
 
     source = store.get_source(space_id, source_id)
@@ -452,29 +436,10 @@ def transcribe_source(
             status.HTTP_400_BAD_REQUEST, "Yalnızca video kaynakları için transkript çıkarılabilir"
         )
 
-    llm = create_rag_llm_provider(config)
     job_id = new_job_id()
-
-    def work(emit):
-        def progress(done: int, total: int, label: str) -> None:
-            emit(
-                ProgressEvent(
-                    stage="space_transcribe",
-                    message=f"İşleniyor: {label}",
-                    progress=(done / total) if total else 0.0,
-                    current=done,
-                    total=total,
-                )
-            )
-
-        emit(ProgressEvent(stage="space_transcribe", message="ASR başlatılıyor", progress=0.0))
-        report = rag_service.transcribe_space_source(
-            config, store, llm, space_id, source_id, user_id, progress=progress
-        )
-        emit(ProgressEvent(stage="done", message=_report_message(report), progress=1.0))
-        return report
-
-    runner.submit(job_id, user_id, work)
+    runner.submit(
+        job_id, user_id, TRANSCRIBE_SOURCE, {"space_id": space_id, "source_id": source_id}
+    )
     return TranscribeSourceAccepted(
         job_id=job_id,
         space_id=space_id,

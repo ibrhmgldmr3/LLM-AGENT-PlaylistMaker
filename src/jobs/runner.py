@@ -19,8 +19,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Iterator, Protocol
+from typing import Any, Iterator, Protocol
 
+from src.jobs.tasks import TaskContext, resolve_task
 from src.models import ProgressEvent
 from src.utils.logging_utils import redact_secrets
 
@@ -71,11 +72,19 @@ class JobRunner(Protocol):
     """Cagiranin bilmesi gereken tek yuzey."""
 
     def submit(
-        self, job_id: str, user_id: str, work: Callable[[Callable[[ProgressEvent], None]], Any]
+        self, job_id: str, user_id: str, task: str, payload: dict[str, Any] | None = None
     ) -> JobHandle:
         """Isi kuyruga alir ve hemen doner.
 
-        `work`, ilerleme bildirmek icin kullanacagi callback'i argüman olarak alir.
+        `task` KAYITLI bir is adi, `payload` ise JSON'a cevrilebilir girdisi
+        (bkz. `src/jobs/tasks.py`). Eskiden buraya bir CLOSURE geciriliyordu;
+        surec-ici calisirken sorunsuzdu ama closure surec sinirini gecemez,
+        yani paylasimli kuyruk kullanan bir uygulama o imzayi hicbir zaman
+        karsilayamazdi. Ad + veri, hem bu uygulamanin hem dagitik olanin
+        karsilayabilecegi tek bicim.
+
+        Bilinmeyen bir is adi HEMEN hata vermeli: cagiran taraf isi kabul edip
+        202 dondukten sonra ogrenmemeli.
         """
 
     def get(self, job_id: str) -> JobHandle | None: ...
@@ -155,8 +164,14 @@ class InProcessJobRunner:
 
     # ------------------------------------------------------------------ API
     def submit(
-        self, job_id: str, user_id: str, work: Callable[[Callable[[ProgressEvent], None]], Any]
+        self, job_id: str, user_id: str, task: str, payload: dict[str, Any] | None = None
     ) -> JobHandle:
+        # Is adi SUBMIT ANINDA cozuluyor, calisma aninda degil: bilinmeyen bir
+        # ad, cagirana 202 dondukten sonra arka planda patlayan bir is degil,
+        # hemen goze carpan bir hata olmali.
+        task_fn = resolve_task(task)
+        context = TaskContext(job_id=job_id, user_id=user_id, payload=dict(payload or {}))
+
         handle = JobHandle(job_id=job_id, user_id=user_id)
         channel = _EventChannel()
 
@@ -175,7 +190,7 @@ class InProcessJobRunner:
         def run() -> Any:
             handle.state = JobState.RUNNING
             try:
-                result = work(emit)
+                result = task_fn(context, emit)
                 handle.state = JobState.DONE
                 return result
             except JobCancelled:
