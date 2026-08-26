@@ -50,6 +50,10 @@ DESCRIPTION_SAMPLE_CHARS = 1200
 # Kullanicinin sure sinirini asan videolar icin uygulanan sabit ceza.
 OVER_LIMIT_PENALTY = -3.0
 
+# "Ogretici olacak kadar uzun" esigi. Kullanicinin sure tavani bunun altina
+# indiginde taban da iniyor; bkz. `_duration_fit_score`.
+IDEAL_MIN_DURATION_SEC = 480
+
 # `confidence_score` icin kalibrasyon araligi. Teorik maksimum (~15) pratikte asla
 # gorulmedigi icin gercekci bir bant kullaniliyor; aksi halde tum videolar 4.7-5.8
 # arasina sikisiyor ve guven puani ayirt edici olmuyordu.
@@ -264,7 +268,21 @@ def _duration_fit_score(duration_sec: int | None, max_duration_minutes: int) -> 
     upper_bound = max_duration_minutes * 60
     if duration_sec > upper_bound:
         return OVER_LIMIT_PENALTY
-    if 480 <= duration_sec <= upper_bound:
+
+    # "Ideal sure" tabani normalde 8 dakika, AMA kullanicinin tavani bunun
+    # altindaysa taban da inmeli. Eskiden sabit 480 yaziliyordu ve tavan 8
+    # dakikanin altina cekildiginde `480 <= sure <= tavan` araligi BOSALIYORDU:
+    # hicbir video "ideal" puanini alamiyor, en iyi ihtimalle 1.25 aliyordu.
+    # Yani "kisa videolar istiyorum" diyen kullanici icin bu sinyal tumden
+    # sessizlesiyordu.
+    #
+    # Tavan 8 dakika ve UZERINDEYSE davranis birebir eskisi gibi kaliyor;
+    # degisen yalnizca bozuk olan durum.
+    ideal_floor = IDEAL_MIN_DURATION_SEC
+    if upper_bound < IDEAL_MIN_DURATION_SEC:
+        ideal_floor = upper_bound // 2
+
+    if ideal_floor <= duration_sec <= upper_bound:
         return 2.0
     if 180 <= duration_sec:
         return 1.25

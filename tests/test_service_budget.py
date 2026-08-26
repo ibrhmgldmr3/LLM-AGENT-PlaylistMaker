@@ -289,3 +289,55 @@ def test_capabilities_warns_before_the_user_even_submits(monkeypatch, tmp_path):
         store.record_api_usage("local", "youtube_data_api", "search.list", 1_900)
 
         assert client.get("/api/config").json()["service_capacity_reached"] is True
+
+
+def test_failed_run_releases_its_quota_reservation(tmp_path):
+    """Basarisiz calistirma butceyi TUTMAMALI.
+
+    `finalize_run` rezervasyonu yalnizca BASARI yolunda birakiyordu. Basarisiz
+    bir calistirmada `result_json` NULL kaliyor ve satir "ucustaki rezervasyon"
+    toplamina SURESIZ giriyordu -- gercek harcama sifir olsa bile. Olculdu:
+    3.000 birimlik butcede ust uste basarisiz uc calistirma butcenin tamamini
+    kilitliyor ve o gunku her istegi "servisin kapasitesi doldu" ile
+    reddettiriyordu. Ancak surec yeniden baslayinca cozuluyordu.
+    """
+    store = SQLiteStore(str(tmp_path / "budget.db"))
+    budget, estimate = 3000, 1000
+
+    def admit(run_id: str):
+        return store.create_run_within_daily_limit(
+            run_id, "konu", {}, "user1",
+            max_per_day=0, max_units_per_day=budget, estimated_units=estimate,
+        )
+
+    for run_id in ("run1", "run2", "run3"):
+        assert admit(run_id).accepted
+        store.release_run_reservation(run_id)  # is patladi
+
+    with store.connect() as conn:
+        reserved = conn.execute(
+            "SELECT COALESCE(SUM(reserved_units), 0) AS t FROM run"
+            " WHERE result_json IS NULL AND interrupted_at IS NULL"
+        ).fetchone()["t"]
+
+    assert reserved == 0
+    # Hicbir birim GERCEKTEN harcanmadigi icin butce hala acik olmali.
+    assert admit("run4").accepted
+
+
+def test_releasing_a_reservation_does_not_invent_a_result(tmp_path):
+    """Rezervasyonu birakmak, calistirmayi "tamamlanmis" gostermemeli."""
+    store = SQLiteStore(str(tmp_path / "budget.db"))
+    store.create_run_within_daily_limit(
+        "run1", "konu", {}, "user1",
+        max_per_day=0, max_units_per_day=3000, estimated_units=1000,
+    )
+
+    store.release_run_reservation("run1")
+
+    with store.connect() as conn:
+        row = conn.execute(
+            "SELECT result_json, reserved_units FROM run WHERE run_id = ?", ("run1",)
+        ).fetchone()
+    assert row["result_json"] is None
+    assert row["reserved_units"] == 0

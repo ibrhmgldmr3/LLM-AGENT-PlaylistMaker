@@ -134,3 +134,30 @@ def test_iso_duration_handles_days_and_weeks():
     assert _parse_iso_duration_seconds("PT0S") == 0
     assert _parse_iso_duration_seconds("garbage") is None
     assert _parse_iso_duration_seconds(None) is None
+
+
+def test_ideal_duration_band_stays_reachable_under_a_short_cap():
+    """Kisa sure tavaninda "ideal sure" sinyali sessizlesmemeli.
+
+    Taban sabit 480 sn yaziliyordu; tavan 8 dakikanin altina cekildiginde
+    `480 <= sure <= tavan` araligi BOSALIYOR ve hicbir video ideal puani
+    (2.0) alamiyordu. Yani "kisa videolar istiyorum" diyen kullanici icin
+    sure sinyali tumden kayboluyordu.
+    """
+    from src.services.metadata_ranker import _duration_fit_score
+
+    for cap_minutes in (3, 5, 7):
+        upper_bound = cap_minutes * 60
+        scores = [_duration_fit_score(d, cap_minutes) for d in range(30, upper_bound + 1, 10)]
+        assert 2.0 in scores, f"cap={cap_minutes}dk icin ideal bant erisilemez"
+
+
+def test_normal_duration_caps_keep_their_previous_scores():
+    """Tavan 8 dakika ve UZERINDEYSE davranis birebir korunmali."""
+    from src.services.metadata_ranker import _duration_fit_score
+
+    assert _duration_fit_score(500, 15) == 2.0
+    assert _duration_fit_score(479, 15) == 1.25
+    assert _duration_fit_score(200, 15) == 1.25
+    assert _duration_fit_score(100, 15) == 0.5
+    assert _duration_fit_score(1000, 10) == -3.0

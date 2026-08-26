@@ -198,6 +198,25 @@ def _pack(pieces: list[_Piece], *, max_chars: int, overlap_chars: int) -> list[C
         if current and length + addition > max_chars:
             flush()
             addition = len(piece.text) + (1 if current else 0)
+            # Ortusme kuyrugu tek basina buyuk olabilir: `_tail_for_overlap`
+            # ilk parcayi boyuna BAKMADAN aliyor (aksi halde hic kuyruk
+            # kalmazdi). Kuyruk + yeni parca tavani asiyorsa kuyrugu BIRAKIYORUZ.
+            #
+            # Eskiden bu kontrol yoktu ve flush sonrasi tavan bir daha hic
+            # bakilmadan asiliyordu: olculdu, `max_chars=200` iken 379
+            # karakterlik parca uretiliyordu (1.9x). Varsayilan 1.200'de bu
+            # ~2.280 karaktere denk geliyor -- gomme cagrisinin sinirina
+            # yaklasan ve erisim kesinligini seyrelten bir sapma.
+            #
+            # Bedeli o sinirdaki ortusmeyi kaybetmek; alternatifi ise modulun
+            # tek sert guvencesini (parca tavani) cignemek. Her parca
+            # `_hard_split` sonrasi tavanin altinda oldugu icin bu dal
+            # tavani KESIN kiliyor.
+            if current and length + addition > max_chars:
+                current = []
+                carried = 0
+                length = 0
+                addition = len(piece.text)
         current.append(piece)
         length += addition
 

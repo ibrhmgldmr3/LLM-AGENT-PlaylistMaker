@@ -958,6 +958,27 @@ class SQLiteStore:
                 (run_id, stage, video_id, json.dumps(payload, ensure_ascii=False)),
             )
 
+    def release_run_reservation(self, run_id: str) -> None:
+        """Basarisiz/iptal edilmis bir calistirmanin kota rezervasyonunu birakir.
+
+        `finalize_run` rezervasyonu YALNIZCA basari yolunda birakiyordu. Basarisiz
+        bir calistirmada `result_json` NULL ve `interrupted_at` NULL kaliyor, yani
+        satir `create_run_within_daily_limit`in "ucustaki rezervasyonlar"
+        toplamina SUREKLI giriyordu -- oysa is bitmisti ve hicbir sey harcamamis
+        olabilirdi.
+
+        Sonucu olculdu: 3.000 birimlik butcede ust uste basarisiz olan uc
+        calistirma, GERCEK harcama sifirken butcenin tamamini kilitledi ve o
+        gunku her istegi "servisin kapasitesi doldu" ile reddettirdi. Rezervasyon
+        ancak surec yeniden baslayip `mark_interrupted_runs` calisinca
+        cozuluyordu.
+
+        `result_json`a DOKUNULMUYOR: calistirmanin sonucu yok ve oyle kalmali.
+        Birakilan tek sey butce uzerindeki tutuş.
+        """
+        with self.connect() as conn:
+            conn.execute("UPDATE run SET reserved_units = 0 WHERE run_id = ?", (run_id,))
+
     def finalize_run(self, run_id: str, result: PlaylistResult) -> None:
         with self.connect() as conn:
             # Rezervasyon BURADA birakiliyor: calistirma bitti, artik gercek

@@ -8,6 +8,15 @@ from dotenv import dotenv_values, find_dotenv, load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
+# Vite gelistirme sunucusu. `CORS_ALLOW_ORIGINS` tanimsizken kullanilan
+# varsayilan; uretimde arayuz ayni surecten servis edildigi icin CORS'a gerek
+# kalmiyor (bkz. `api/main._mount_frontend`).
+DEV_CORS_ORIGINS: tuple[str, ...] = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+
+
 # Ortam degiskeni -> model alani eslemesi.
 # Varsayilan degerler SADECE modelde tanimlidir; burada tekrarlanmaz.
 ENV_TO_FIELD: dict[str, str] = {
@@ -47,6 +56,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "SQLITE_PATH": "sqlite_path",
     "SECRET_ENCRYPTION_KEY": "secret_encryption_key",
     "AUTH_MODE": "auth_mode",
+    "CORS_ALLOW_ORIGINS": "cors_allow_origins",
     "SESSION_TTL_SEC": "session_ttl_sec",
     "MAX_RUNS_PER_USER_PER_DAY": "max_runs_per_user_per_day",
     "ADMIN_USER_IDS": "admin_user_ids",
@@ -288,6 +298,19 @@ class ServerConfig(BaseModel):
     # izni); anahtar yonetimiyle ilgisi yok.
     auth_mode: Literal["single_user", "multi_user"] = Field(default="single_user")
 
+    # Tarayicidan cerezle istek atmasina izin verilen kokenler; virgulle ayrik.
+    #
+    # Tanimsizsa YALNIZCA Vite gelistirme sunucusu kabul edilir. Uretimde
+    # arayuz ayni surecten servis edildigi icin (bkz. `api/main._mount_frontend`)
+    # CORS'a hic gerek kalmaz ve bos birakmak DOGRU varsayilandir. Ayri bir
+    # alan adindan servis edilecekse burasi tek dugme -- eskiden kod icinde
+    # sabitti ve o kurulumun hicbir cikis yolu yoktu.
+    #
+    # `*` BILEREK desteklenmiyor: `allow_credentials=True` ile birlikte
+    # tarayicilar zaten reddediyor ve oturum cerezi tasiyan bu API'de joker
+    # koken, herhangi bir sitenin kullanici adina istek atmasi demek olurdu.
+    cors_allow_origins: str | None = Field(default=None)
+
     # OAuth ISTEMCISI kuruluma ait, kullaniciya degil: uygulamanin Google'a
     # kayitli kimligi bu. Kullanici basina olsaydi herkesin kendi Google Cloud
     # OAuth istemcisini acip kendi yonlendirme adresini eklemesi gerekirdi.
@@ -351,6 +374,25 @@ class ServerConfig(BaseModel):
         if not self.admin_user_ids:
             return set()
         return {part.strip() for part in self.admin_user_ids.split(",") if part.strip()}
+
+    def cors_origins(self) -> list[str]:
+        """CORS icin izin verilen kokenler. Tanimsizsa gelistirme kokenleri.
+
+        `*` ELENIYOR (sessizce degil -- `cors_wildcard_rejected` ile bildiriliyor):
+        `allow_credentials=True` ile joker koken tarayicilarca zaten reddedilir,
+        ama daha onemlisi oturum cerezi tasiyan bu API'de o ayar herhangi bir
+        sitenin kullanici adina istek atmasi anlamina gelirdi.
+        """
+        if not self.cors_allow_origins:
+            return list(DEV_CORS_ORIGINS)
+        origins = [part.strip() for part in self.cors_allow_origins.split(",") if part.strip()]
+        return [origin for origin in origins if origin != "*"]
+
+    def cors_wildcard_rejected(self) -> bool:
+        """`*` yazilmis ve elenmis mi. Cagiran taraf bunu gorunur kilmali."""
+        if not self.cors_allow_origins:
+            return False
+        return any(part.strip() == "*" for part in self.cors_allow_origins.split(","))
 
     # ----------------------------------------------------------------- RAG
     #
