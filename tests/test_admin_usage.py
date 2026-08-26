@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from src.config import settings
 from src.config import AppConfig
 from src.storage import SQLiteStore
 from src.storage.sqlite_store import quota_day
@@ -16,7 +17,6 @@ KEY = "k" * 44
 
 
 def _client(monkeypatch, tmp_path, **overrides):
-    from api import deps
 
     config = AppConfig(
         gemini_api_key="k",
@@ -26,7 +26,7 @@ def _client(monkeypatch, tmp_path, **overrides):
         **overrides,
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
 
     from api.main import app
 

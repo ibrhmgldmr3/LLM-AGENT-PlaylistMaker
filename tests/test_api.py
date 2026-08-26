@@ -14,7 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api import deps
-from api.routers import runs as runs_router
+from src.config import settings
+from src.jobs import playlist_task
 from src.config import AppConfig
 from src.models import ExportArtifacts, PlaylistResult, ProgressEvent
 
@@ -29,7 +30,7 @@ def client(tmp_path, monkeypatch):
         sqlite_path=str(tmp_path / "cache" / "app.db"),
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
 
     from api.main import app
 
@@ -146,7 +147,7 @@ def test_openapi_schema_is_generated(client):
 
 def test_create_run_returns_immediately(client, monkeypatch):
     """202 + is numarasi; istek uzun islemi BEKLEMEZ."""
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(delay=0.15))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(delay=0.15))
 
     start = time.perf_counter()
     response = client.post("/api/runs", json={"topic": "Kalman filtresi"})
@@ -165,7 +166,7 @@ def test_empty_topic_is_rejected(client):
 
 
 def test_run_result_is_available_after_completion(client, monkeypatch):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build())
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build())
 
     run_id = client.post("/api/runs", json={"topic": "Zaman serisi"}).json()["run_id"]
     _wait_for(client, run_id)
@@ -181,7 +182,7 @@ def test_unknown_run_is_404(client):
 
 
 def test_failed_run_surfaces_the_error(client, monkeypatch):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(fail_with=RuntimeError("patladi")))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(fail_with=RuntimeError("patladi")))
 
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     status_body = _wait_for(client, run_id)
@@ -209,7 +210,7 @@ def _parse_sse(text):
 
 
 def test_event_stream_delivers_progress_then_done(client, monkeypatch):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(0.25, 0.5, 1.0)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(0.25, 0.5, 1.0)))
 
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     with client.stream("GET", f"/api/runs/{run_id}/events") as response:
@@ -235,7 +236,7 @@ def test_done_event_body_matches_the_published_contract(client, monkeypatch):
     hatadir, cunku `web/src/api/contract.ts` bu govdeyi OpenAPI'den uretilen
     `RunSnapshotBody` ile derleme zamaninda esitliyor.
     """
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(1.0,)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(1.0,)))
 
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     with client.stream("GET", f"/api/runs/{run_id}/events") as response:
@@ -262,7 +263,7 @@ def test_event_stream_closes_for_finished_run(client, monkeypatch):
     Bitmis bir isin akisi birikmis olaylari tekrar oynatip `done` ile kapanir —
     imlecsiz baglanan istemci de tam gecmisi gorur.
     """
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(0.5, 1.0)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(0.5, 1.0)))
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     _wait_for(client, run_id)
 
@@ -277,7 +278,7 @@ def test_event_stream_closes_for_finished_run(client, monkeypatch):
 
 def test_events_carry_ids_for_resume(client, monkeypatch):
     """Her olay bir `id:` tasimali; `Last-Event-ID` bunun uzerine kurulu."""
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(0.5, 1.0)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(0.5, 1.0)))
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
 
     with client.stream("GET", f"/api/runs/{run_id}/events") as response:
@@ -289,7 +290,7 @@ def test_events_carry_ids_for_resume(client, monkeypatch):
 
 def test_last_event_id_resumes_the_stream(client, monkeypatch):
     """Regresyon: baglanti kopunca kacirilan ilerleme kayboluyordu."""
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(0.2, 0.4, 0.6, 0.8)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(0.2, 0.4, 0.6, 0.8)))
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     _wait_for(client, run_id)
 
@@ -304,7 +305,7 @@ def test_last_event_id_resumes_the_stream(client, monkeypatch):
 
 
 def test_invalid_last_event_id_restarts_from_scratch(client, monkeypatch):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(0.5, 1.0)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(0.5, 1.0)))
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     _wait_for(client, run_id)
 
@@ -319,7 +320,7 @@ def test_invalid_last_event_id_restarts_from_scratch(client, monkeypatch):
 
 def test_two_clients_both_receive_all_events(client, monkeypatch):
     """Iki sekme ayni calistirmayi izleyebilmeli."""
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(0.3, 0.6, 1.0)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(0.3, 0.6, 1.0)))
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     _wait_for(client, run_id)
 
@@ -342,7 +343,7 @@ def test_event_stream_for_unknown_run_reports_error(client):
 # ------------------------------------------------------------------- gecmis
 
 def test_history_lists_runs_newest_first(client, monkeypatch):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build())
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build())
     for topic in ("Bir", "Iki", "Uc"):
         run_id = client.post("/api/runs", json={"topic": topic}).json()["run_id"]
         _wait_for(client, run_id)
@@ -355,7 +356,7 @@ def test_history_lists_runs_newest_first(client, monkeypatch):
 
 
 def test_history_pagination(client, monkeypatch):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build())
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build())
     for index in range(4):
         run_id = client.post("/api/runs", json={"topic": f"K{index}"}).json()["run_id"]
         _wait_for(client, run_id)
@@ -367,7 +368,7 @@ def test_history_pagination(client, monkeypatch):
 
 
 def test_delete_removes_from_history(client, monkeypatch):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build())
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build())
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
     _wait_for(client, run_id)
 
@@ -391,7 +392,7 @@ def test_request_options_override_server_defaults(client, monkeypatch):
         return PlaylistResult(run_id=run_id, topic=request.topic, filters=request.filters,
                               subtopics=[], recommendations=[])
 
-    monkeypatch.setattr(runs_router, "build_playlist", spy)
+    monkeypatch.setattr(playlist_task, "build_playlist", spy)
 
     run_id = client.post(
         "/api/runs",
@@ -452,7 +453,7 @@ def test_capabilities_never_leak_secrets(client):
 
 
 def test_event_stream_hides_another_users_run(client, monkeypatch, as_other_user):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(1.0,)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(1.0,)))
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
 
     as_other_user()
@@ -467,7 +468,7 @@ def test_event_stream_hides_another_users_run(client, monkeypatch, as_other_user
 
 
 def test_status_hides_another_users_run(client, monkeypatch, as_other_user):
-    monkeypatch.setattr(runs_router, "build_playlist", _fake_build(events=(1.0,)))
+    monkeypatch.setattr(playlist_task, "build_playlist", _fake_build(events=(1.0,)))
     run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
 
     assert client.get(f"/api/runs/{run_id}/status").status_code == 200
@@ -488,7 +489,7 @@ def test_another_user_cannot_cancel_a_running_job(client, monkeypatch, as_other_
     `runner.cancel(run_id)` yalnizca kimlige bakiyordu.
     """
     release = threading.Event()
-    monkeypatch.setattr(runs_router, "build_playlist", _blocking_build(release))
+    monkeypatch.setattr(playlist_task, "build_playlist", _blocking_build(release))
     try:
         run_id = client.post("/api/runs", json={"topic": "Konu"}).json()["run_id"]
         _wait_for_state(client, run_id, "running")

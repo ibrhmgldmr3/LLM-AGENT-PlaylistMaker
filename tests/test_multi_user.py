@@ -11,6 +11,8 @@ import sqlite3
 
 import pytest
 
+from src.config import settings
+from src.jobs import playlist_task
 from src.storage import SQLiteStore
 from src.storage.sqlite_store import SERVER_SCOPE
 
@@ -75,7 +77,6 @@ def multi_user_client(tmp_path, monkeypatch):
     """`auth_mode="multi_user"` ile ayaga kalkan uygulama."""
     from fastapi.testclient import TestClient
 
-    from api import deps
     from src.config import AppConfig
 
     config = AppConfig(
@@ -87,7 +88,7 @@ def multi_user_client(tmp_path, monkeypatch):
         auth_mode="multi_user",
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
 
     from api.main import app
 
@@ -122,10 +123,9 @@ def test_signed_in_user_can_start_a_run_with_no_key_of_their_own(multi_user_clie
     kullanici, hicbir anahtar kaydetmeden, sunucunun `.env` anahtariyla
     calistirma baslatabilmeli.
     """
-    from api.routers import runs as runs_router
 
     monkeypatch.setattr(
-        runs_router, "build_playlist", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("dur"))
+        playlist_task, "build_playlist", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("dur"))
     )
     multi_user_client.store.create_session("jeton", "google:123", None, ttl_sec=3600)
     multi_user_client.cookies.set("map_session", "jeton")
@@ -144,7 +144,6 @@ def test_server_not_configured_gives_a_clear_503_not_a_silent_failure(tmp_path, 
     """
     from fastapi.testclient import TestClient
 
-    from api import deps
     from src.config import AppConfig
 
     config = AppConfig(
@@ -154,7 +153,7 @@ def test_server_not_configured_gives_a_clear_503_not_a_silent_failure(tmp_path, 
         auth_mode="multi_user",
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
 
     from api.main import app
 
@@ -443,8 +442,6 @@ def test_daily_run_limit_is_enforced_per_user(tmp_path, monkeypatch):
     """
     from fastapi.testclient import TestClient
 
-    from api import deps
-    from api.routers import runs as runs_router
     from src.config import AppConfig
 
     config = AppConfig(
@@ -456,8 +453,8 @@ def test_daily_run_limit_is_enforced_per_user(tmp_path, monkeypatch):
         max_runs_per_user_per_day=2,
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
-    monkeypatch.setattr(runs_router, "build_playlist", lambda *a, **k: None)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    monkeypatch.setattr(playlist_task, "build_playlist", lambda *a, **k: None)
 
     from api.main import app
 
@@ -501,7 +498,6 @@ def test_interrupted_run_is_not_reported_as_pending(tmp_path, monkeypatch):
     """
     from fastapi.testclient import TestClient
 
-    from api import deps
     from src.config import AppConfig
 
     config = AppConfig(
@@ -512,7 +508,7 @@ def test_interrupted_run_is_not_reported_as_pending(tmp_path, monkeypatch):
         auth_mode="multi_user",
     )
     config.ensure_directories()
-    monkeypatch.setattr(deps, "_base_config", lambda: config)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
 
     from api.main import app
 

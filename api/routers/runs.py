@@ -30,10 +30,10 @@ from api.schemas import (
 )
 from src.config import RunOptions, ServerConfig, UserCredentials
 from src.jobs import JobRunner, JobState, new_job_id
+from src.jobs.playlist_task import BUILD_PLAYLIST, build_payload
 from src.models import PlaylistRequest
 from src.services.playlist_publish_service import create_youtube_playlist
 from src.providers.youtube_data_api_provider import estimate_run_units
-from src.services.playlist_service import build_playlist
 from src.services.run_retention import delete_run as delete_run_everywhere
 from src.storage import SQLiteStore
 from src.storage.sqlite_store import seconds_until_next_quota_day
@@ -84,9 +84,11 @@ def create_run(
         raise HTTPException(422, "Konu boş olamaz")
 
     # Istek govdesindeki ezmeler sunucu varsayilanlarinin uzerine biner.
+    # Burada YALNIZCA kota tahmini icin birlestiriliyor (`options.max_subtopics`);
+    # calistirmanin kendi `AppConfig`ini artik isin kendisi ortamdan kuruyor
+    # (bkz. `playlist_task._config_for`).
     overrides = payload.options.model_dump(exclude_none=True)
     options = defaults.model_copy(update=overrides) if overrides else defaults
-    config = build_run_config(credentials, options, server)
 
     run_id = new_job_id()
     request = PlaylistRequest(
@@ -95,28 +97,22 @@ def create_run(
         create_youtube_playlist=payload.create_youtube_playlist,
     )
 
-    def work(emit):
-        try:
-            return build_playlist(
-                config, request, progress_callback=emit, run_id=run_id, user_id=user_id
-            )
-        except BaseException:
-            # Kota rezervasyonunu BIRAK. Basari yolunda bunu `finalize_run`
-            # yapiyor; hata ve iptal yolunda ise satir `result_json IS NULL`
-            # kaldigi icin "ucustaki rezervasyon" toplamina SURESIZ giriyordu.
-            # Olculdu: ust uste basarisiz uc calistirma, gercek harcama sifirken
-            # gunluk servis butcesinin tamamini kilitliyor ve o gunku her istegi
-            # "servisin kapasitesi doldu" ile reddettiriyordu. Ancak surec
-            # yeniden baslayip `mark_interrupted_runs` calisinca cozuluyordu.
-            #
-            # `BaseException`: `JobCancelled` de bu yoldan geciyor ve iptal
-            # edilen bir calistirma da kotayi tutmamali.
-            try:
-                store.release_run_reservation(run_id)
-            except Exception:
-                # Temizlik, isin GERCEK hatasini golgelemesin.
-                logger.warning("Kota rezervasyonu bırakılamadı: %s", run_id, exc_info=True)
-            raise
+    # Isi tanimlayan sey VERI, kod degil: `submit` bir closure yerine is adi ve
+    # JSON'a cevrilebilir bir govde aliyor (bkz. `src/jobs/tasks.py`). Kota
+    # rezervasyonunu birakma sorumlulugu da isin KENDISINE tasindi
+    # (`playlist_task.run_build_playlist`), cunku isi calistiran taraf ayri bir
+    # surec olabilir ve burada kalsaydi worker patladiginda rezervasyon hic
+    # serbest kalmazdi.
+    #
+    # Ad `payload` DEGIL: istek govdesi parametresi de oyle adlaniyor ve onu
+    # ezmek, bu satirdan sonra eklenecek her `payload.<alan>` okumasini sessizce
+    # bozardi.
+    task_payload = build_payload(
+        topic=request.topic,
+        filters=request.filters.model_dump(),
+        create_youtube_playlist=request.create_youtube_playlist,
+        options=overrides,
+    )
 
     # Satir KABUL ANINDA yaziliyor, isi baslatan is parcaciginda degil.
     #
@@ -170,7 +166,7 @@ def create_run(
             headers={"Retry-After": str(retry_after)},
         )
 
-    handle = runner.submit(run_id, user_id, work)
+    handle = runner.submit(run_id, user_id, BUILD_PLAYLIST, task_payload)
     return RunAccepted(
         run_id=run_id,
         state=handle.state.value,

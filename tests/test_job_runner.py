@@ -24,7 +24,7 @@ def _event(progress: float, stage: str = "test") -> ProgressEvent:
     return ProgressEvent(stage=stage, message=f"adim {progress}", progress=progress)
 
 
-def test_submit_returns_immediately(runner):
+def test_submit_returns_immediately(runner, task):
     """Bu isin butun amaci: cagiran beklemeyecek."""
     job_id = new_job_id()
 
@@ -33,7 +33,7 @@ def test_submit_returns_immediately(runner):
         return "bitti"
 
     start = time.perf_counter()
-    handle = runner.submit(job_id, "local", slow)
+    handle = runner.submit(job_id, "local", task(slow))
     elapsed = time.perf_counter() - start
 
     assert elapsed < 0.1, "submit bloklamamali"
@@ -41,7 +41,7 @@ def test_submit_returns_immediately(runner):
     assert runner.result(job_id, timeout=5) == "bitti"
 
 
-def test_events_stream_in_order(runner):
+def test_events_stream_in_order(runner, task):
     job_id = new_job_id()
 
     def work(emit):
@@ -49,30 +49,30 @@ def test_events_stream_in_order(runner):
             emit(_event(value))
         return "ok"
 
-    runner.submit(job_id, "local", work)
+    runner.submit(job_id, "local", task(work))
     received = [event.progress for event in runner.events(job_id, timeout=5)]
 
     assert received == [0.25, 0.5, 0.75, 1.0]
 
 
-def test_event_stream_terminates_when_work_finishes(runner):
+def test_event_stream_terminates_when_work_finishes(runner, task):
     """Akis kendiliginden bitmeli; SSE ucu sonsuza kadar beklememeli."""
     job_id = new_job_id()
-    runner.submit(job_id, "local", lambda emit: emit(_event(1.0)))
+    runner.submit(job_id, "local", task(lambda emit: emit(_event(1.0))))
 
     events = list(runner.events(job_id, timeout=5))
 
     assert len(events) == 1
 
 
-def test_failure_is_recorded_and_stream_closes(runner):
+def test_failure_is_recorded_and_stream_closes(runner, task):
     job_id = new_job_id()
 
     def broken(emit):
         emit(_event(0.5))
         raise RuntimeError("patladi")
 
-    runner.submit(job_id, "local", broken)
+    runner.submit(job_id, "local", task(broken))
     events = list(runner.events(job_id, timeout=5))
 
     assert len(events) == 1
@@ -83,7 +83,7 @@ def test_failure_is_recorded_and_stream_closes(runner):
     assert "patladi" in handle.error
 
 
-def test_cancel_stops_a_running_job(runner):
+def test_cancel_stops_a_running_job(runner, task):
     """Calisan is iptali bir sonraki ilerleme bildiriminde ogrenir."""
     job_id = new_job_id()
     started = []
@@ -95,7 +95,7 @@ def test_cancel_stops_a_running_job(runner):
             time.sleep(0.02)
         return "hic bitmemeli"
 
-    runner.submit(job_id, "local", long_work)
+    runner.submit(job_id, "local", task(long_work))
     while not started:
         time.sleep(0.01)
     assert runner.cancel(job_id) is True
@@ -110,14 +110,14 @@ def test_cancel_unknown_job_is_false(runner):
     assert runner.cancel("olmayan-is") is False
 
 
-def test_handle_snapshot_tracks_progress(runner):
+def test_handle_snapshot_tracks_progress(runner, task):
     job_id = new_job_id()
 
     def work(emit):
         emit(ProgressEvent(stage="arama", message="adaylar", progress=0.4))
         return "ok"
 
-    runner.submit(job_id, "local", work)
+    runner.submit(job_id, "local", task(work))
     runner.result(job_id, timeout=5)
 
     snapshot = runner.get(job_id).snapshot()
@@ -129,7 +129,7 @@ def test_handle_snapshot_tracks_progress(runner):
     assert snapshot["error"] is None
 
 
-def test_jobs_run_concurrently(runner):
+def test_jobs_run_concurrently(runner, task):
     """2 worker ile iki is paralel ilerlemeli."""
     ids = [new_job_id() for _ in range(2)]
 
@@ -139,7 +139,7 @@ def test_jobs_run_concurrently(runner):
 
     start = time.perf_counter()
     for job_id in ids:
-        runner.submit(job_id, "local", work)
+        runner.submit(job_id, "local", task(work))
     for job_id in ids:
         runner.result(job_id, timeout=5)
     elapsed = time.perf_counter() - start
@@ -147,7 +147,7 @@ def test_jobs_run_concurrently(runner):
     assert elapsed < 0.55, f"isler seri calisti ({elapsed:.2f} sn)"
 
 
-def test_every_subscriber_receives_every_event(runner):
+def test_every_subscriber_receives_every_event(runner, task):
     """Regresyon: olaylar tek bir `queue.Queue`'dan YIKICI okunuyordu.
 
     Iki tarayici sekmesi ayni calistirmayi izlediginde olaylar aralarinda
@@ -163,7 +163,7 @@ def test_every_subscriber_receives_every_event(runner):
             time.sleep(0.02)
         return "ok"
 
-    runner.submit(job_id, "local", work)
+    runner.submit(job_id, "local", task(work))
 
     first: list[float] = []
     second: list[float] = []
@@ -184,10 +184,10 @@ def test_every_subscriber_receives_every_event(runner):
     assert second == expected, f"2. abone eksik aldi: {second}"
 
 
-def test_late_subscriber_replays_from_the_beginning(runner):
+def test_late_subscriber_replays_from_the_beginning(runner, task):
     """Gec baglanan abone kacirdigi olaylari gunlukten alabilmeli."""
     job_id = new_job_id()
-    runner.submit(job_id, "local", lambda emit: [emit(_event(v)) for v in (0.5, 1.0)])
+    runner.submit(job_id, "local", task(lambda emit: [emit(_event(v)) for v in (0.5, 1.0)]))
     runner.result(job_id, timeout=5)
 
     replayed = [event.progress for event in runner.events(job_id, timeout=2)]
@@ -195,10 +195,10 @@ def test_late_subscriber_replays_from_the_beginning(runner):
     assert replayed == [0.5, 1.0]
 
 
-def test_events_since_supports_resume(runner):
+def test_events_since_supports_resume(runner, task):
     """`Last-Event-ID` bunun uzerine kurulu: imlecten sonrasini ver."""
     job_id = new_job_id()
-    runner.submit(job_id, "local", lambda emit: [emit(_event(v)) for v in (0.25, 0.5, 0.75, 1.0)])
+    runner.submit(job_id, "local", task(lambda emit: [emit(_event(v)) for v in (0.25, 0.5, 0.75, 1.0)]))
     runner.result(job_id, timeout=5)
 
     tail = runner.events_since(job_id, cursor=2)
@@ -207,21 +207,21 @@ def test_events_since_supports_resume(runner):
     assert [event.progress for _, event in tail] == [0.75, 1.0]
 
 
-def test_stream_closes_after_completion(runner):
+def test_stream_closes_after_completion(runner, task):
     job_id = new_job_id()
     assert runner.is_stream_closed(job_id) is True  # bilinmeyen is
-    runner.submit(job_id, "local", lambda emit: emit(_event(1.0)))
+    runner.submit(job_id, "local", task(lambda emit: emit(_event(1.0))))
     runner.result(job_id, timeout=5)
     assert runner.is_stream_closed(job_id) is True
 
 
-def test_old_jobs_are_pruned():
+def test_old_jobs_are_pruned(task):
     """Bellekte sinirsiz is birikmemeli."""
     runner = InProcessJobRunner(max_workers=1, keep_last=5)
     try:
         for _ in range(20):
             job_id = new_job_id()
-            runner.submit(job_id, "local", lambda emit: "ok")
+            runner.submit(job_id, "local", task(lambda emit: "ok"))
             runner.result(job_id, timeout=5)
         assert len(runner._handles) <= 10
     finally:
