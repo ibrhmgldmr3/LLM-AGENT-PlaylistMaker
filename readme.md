@@ -29,7 +29,65 @@ docker run -p 8000:8000 --env-file .env -v playlist-data:/app/data make-a-playli
 In development Vite proxies `/api` to port 8000, so start the API first. In production
 the API serves the built frontend from `web/dist`, so a single process is enough.
 
-> **Run exactly one process — never `--workers`, never multiple replicas.**
+### Scaling out (optional)
+
+The single-process limit below applies to the **default** `JOB_BACKEND=memory`.
+Set `JOB_BACKEND=redis` and jobs move to a shared queue, so the web tier and the
+job tier scale independently:
+
+```bash
+JOB_BACKEND=redis python -m uvicorn api.main:app --port 8000   # web (may be replicated)
+JOB_BACKEND=redis python -m src.jobs.worker                     # jobs (scale separately)
+```
+
+Requires `pip install redis`. Worth knowing before you invest in this:
+
+- **It does not buy more playlist runs.** The binding constraint is the YouTube
+  Data API quota — ~8–16 runs per day for *all* users, tied to the Google Cloud
+  project, not to process count. Scaling out helps RAG chat, document ingest,
+  ASR throughput and availability; it does not raise that ceiling.
+- **One blocker remains: SQLite is a single file.** Replicating the web tier
+  across *processes on one machine* works today. Across *machines* it does not —
+  they would need Postgres. A shared network filesystem is not a substitute:
+  SQLite's own documentation warns that WAL depends on locking that network
+  filesystems do not implement reliably.
+
+  The Postgres port is *underway, not finished*. `src/storage/dialect.py` holds
+  the whole database-specific surface (placeholders, generated keys, upserts,
+  full-text search, transaction serialisation), and the store's contract suite
+  passes against a real Postgres 16 — but **nothing in the app constructs
+  `PostgresDialect` yet**, so there is no setting that switches the database
+  over. What is left is wiring (six `SQLiteStore(...)` call sites and a DSN
+  setting) and a one-time SQLite→Postgres data transfer.
+
+Everything else that used to be process-local has been moved to shared storage:
+job state and the SSE event log (Redis), pending OAuth PKCE states, and export
+downloads — those are now regenerated from the stored result rather than read
+from the local run directory.
+
+To verify the Redis backend against a real server:
+
+```bash
+docker run -d -p 6399:6379 redis:7-alpine
+REDIS_TEST_URL=redis://localhost:6399/0 python -m pytest tests/test_redis_runner.py
+```
+
+Without a server those tests skip, so CI stays green without Redis.
+
+The same applies to the storage layer. `tests/test_space_storage.py` — the
+store's most database-dependent surface: generated keys, the full-text index
+and the delete cascade — runs against **both** dialects:
+
+```bash
+docker run -d --name map-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=maptest -p 55432:5432 postgres:16-alpine
+MAP_TEST_POSTGRES_DSN=postgresql://postgres:test@localhost:55432/maptest python -m pytest tests/test_space_storage.py
+```
+
+Without that variable the Postgres half skips. The target database is **wiped**
+(`DROP SCHEMA public CASCADE`) before each test, so the fixture refuses any DSN
+whose database name does not contain `test`.
+
+> **With the default `memory` backend, run exactly one process — never `--workers`, never multiple replicas.**
 > Job state lives in memory (`InProcessJobRunner` holds the handles, SSE event
 > channels and futures). A request that lands on a second process does not know
 > the run: the progress stream breaks and `/status` returns "unknown run" while

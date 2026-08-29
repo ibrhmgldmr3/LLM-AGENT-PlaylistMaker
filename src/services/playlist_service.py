@@ -21,6 +21,7 @@ from src.models import (
     VideoCandidate,
 )
 from src.providers import create_llm_provider
+from src.services.playlist_export import render_markdown
 from src.services.metadata_ranker import rank_candidates
 from src.services.playlist_publish_service import create_youtube_playlist
 from src.services.recommendation_service import assign_recommendations
@@ -667,50 +668,5 @@ def export_playlist_artifacts(run_dir: Path, result: PlaylistResult) -> ExportAr
     json_path = run_dir / "result.json"
     markdown_path = run_dir / "study_plan.md"
     json_path.write_text(json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
-    markdown_path.write_text(_render_markdown(result), encoding="utf-8")
+    markdown_path.write_text(render_markdown(result), encoding="utf-8")
     return ExportArtifacts(json_path=str(json_path), markdown_path=str(markdown_path))
-
-
-def _render_markdown(result: PlaylistResult) -> str:
-    lines = [
-        f"# Study Plan: {result.topic}",
-        "",
-        f"Generated at: {result.created_at}",
-        "",
-        "## Playlist",
-        "",
-    ]
-    if not result.recommendations:
-        lines.extend(["_No recommendations were produced._", ""])
-    for recommendation in result.recommendations:
-        lines.extend(
-            [
-                f"{recommendation.position}. [{recommendation.video.title}]({recommendation.video.url})",
-                f"   - Subtopic: {recommendation.subtopic}",
-                f"   - Why: {recommendation.why_selected}",
-                f"   - Confidence: {recommendation.confidence_score}",
-                f"   - Transcript: {recommendation.transcript_status}",
-                "",
-            ]
-        )
-    if result.study_notes:
-        lines.extend(["## Study Notes", ""])
-        for note in result.study_notes:
-            lines.append(f"### {note.subtopic}")
-            lines.append("")
-            if note.status == "available":
-                if note.transcript_source == "asr":
-                    backend_label = f" ({note.transcript_backend})" if note.transcript_backend else ""
-                    lines.append(f"> _Source: ASR transcript{backend_label}_\n")
-                lines.append(note.content or "")
-            elif note.status == "no_transcript":
-                lines.append("_No transcript was available for this video; no note was generated._")
-            else:
-                lines.append(f"_Study note generation failed: {note.error}_")
-            lines.append("")
-    if result.warnings:
-        lines.extend(["## Warnings", ""])
-        lines.extend([f"- {warning}" for warning in result.warnings])
-        lines.append("")
-    return "\n".join(lines)
-

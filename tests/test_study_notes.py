@@ -289,7 +289,7 @@ def test_markdown_export_shows_all_three_statuses_distinctly():
     orada olup olmadigini anlamasini zorlastirirdi.
     """
     from src.models import PlaylistResult, StudyNote
-    from src.services.playlist_service import _render_markdown
+    from src.services.playlist_export import render_markdown
 
     result = PlaylistResult(
         run_id="r1",
@@ -304,7 +304,7 @@ def test_markdown_export_shows_all_three_statuses_distinctly():
         ],
     )
 
-    markdown = _render_markdown(result)
+    markdown = render_markdown(result)
 
     assert "## Study Notes" in markdown
     assert "ozet metni" in markdown
