@@ -6,6 +6,9 @@ Bu testler yeni uc adimli akisi ve jetonun kullanici basina saklanmasini kilitle
 
 from __future__ import annotations
 
+import base64
+import hashlib
+
 import json
 
 import pytest
@@ -32,7 +35,6 @@ def client(tmp_path, monkeypatch):
     )
     config.ensure_directories()
     monkeypatch.setattr(settings, "base_config", lambda: config)
-    auth_router._pending_states.clear()
 
     from api.main import app
 
@@ -105,7 +107,8 @@ def test_start_returns_google_consent_url(client, monkeypatch):
 def test_start_registers_a_state_for_csrf(client, monkeypatch):
     monkeypatch.setattr(auth_router, "build_authorization_url", lambda c, r, s, **kw: ("https://x", "v"))
     state = client.get("/api/auth/youtube/start").json()["state"]
-    assert state in auth_router._pending_states
+    # Tuketmek ayni zamanda kaydin VAR oldugunu dogruluyor.
+    assert client.store.consume_oauth_state(state) is not None
 
 
 def test_pending_states_are_capped(client, monkeypatch):
@@ -121,7 +124,7 @@ def test_pending_states_are_capped(client, monkeypatch):
     for _ in range(5):
         client.get("/api/auth/youtube/start")
 
-    assert len(auth_router._pending_states) == 3
+    assert client.store.count_oauth_states() == 3
 
 
 def test_capacity_eviction_keeps_the_newest_states(client, monkeypatch):
@@ -136,7 +139,7 @@ def test_capacity_eviction_keeps_the_newest_states(client, monkeypatch):
 
     states = [client.get("/api/auth/youtube/start").json()["state"] for _ in range(5)]
 
-    assert [state in auth_router._pending_states for state in states] == [
+    assert [client.store.consume_oauth_state(state) is not None for state in states] == [
         False, False, True, True, True
     ]
 
@@ -188,8 +191,8 @@ def test_real_authorization_url_carries_pkce(client):
 
     assert params.get("code_challenge_method") == "S256"
     assert params.get("code_challenge")
-    # Dogrulayici sunucu tarafinda saklanmis olmali, URL'de DEGIL.
-    _user, verifier, _expiry = auth_router._pending_states[body["state"]]
+    # Dogrulayici SUNUCUDA saklanmis olmali, URL'de DEGIL.
+    _user, verifier = client.store.consume_oauth_state(body["state"])
     assert verifier
     assert verifier not in body["authorization_url"]
 
@@ -209,15 +212,20 @@ def test_code_verifier_reaches_the_token_exchange(client, monkeypatch):
 
     monkeypatch.setattr(auth_router, "exchange_code_for_token", spy)
 
+    from urllib.parse import parse_qsl, urlparse
+
     body = client.get("/api/auth/youtube/start").json()
     state = body["state"]
-    expected_verifier = auth_router._pending_states[state][1]
+    challenge = dict(parse_qsl(urlparse(body["authorization_url"]).query))["code_challenge"]
 
     client.get(f"/api/auth/youtube/callback?code=kod&state={state}", follow_redirects=False)
 
     assert seen["code"] == "kod"
-    assert seen["verifier"] == expected_verifier, "dogrulayici callback'e tasinmali"
-    assert seen["verifier"] is not None
+    assert seen["verifier"] is not None, "dogrulayici callback'e tasinmali"
+    # Depoyu KURCALAMADAN, dogrulayicinin Google'in gordugu challenge'i
+    # urettigini kanitliyoruz -- saklanan degerle karsilastirmaktan daha guclu.
+    digest = hashlib.sha256(seen["verifier"].encode("ascii")).digest()
+    assert base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii") == challenge
 
 
 # ------------------------------------------------------------------ callback
@@ -362,3 +370,53 @@ def test_tokens_are_scoped_per_user(client):
     client.store.save_oauth_token("veli", "youtube", '{"v": 1}')
     assert client.store.get_oauth_token("ali", "youtube") == '{"a": 1}'
     assert client.store.get_oauth_token("veli", "youtube") == '{"v": 1}'
+
+
+# ------------------------------------------------- replikalar arasi paylasim
+
+
+def test_state_started_on_one_replica_is_usable_on_another(client):
+    """Bu degisikligin ASIL amaci.
+
+    Bekleyen state surec icinde bir sozlukteydi: kullanici A replikasinda akisi
+    baslatiyor, Google B replikasina donuyor ve state bulunamadigi icin giris
+    basarisiz oluyordu -- iki replikayla kabaca yari yariya.
+
+    Ayni veritabanina bakan IKINCI bir store ornegi, ikinci bir sureci temsil
+    ediyor.
+    """
+    started_on_a = client.get("/api/auth/youtube/start").json()["state"]
+
+    replica_b = SQLiteStore(client.store.db_path)
+    consumed = replica_b.consume_oauth_state(started_on_a)
+
+    assert consumed is not None, "diger replika state'i gormeli"
+    _user, verifier = consumed
+    assert verifier
+
+
+def test_only_one_of_two_concurrent_callbacks_wins(client):
+    """Tek kullanimlik olmak CSRF korumasinin KENDISI.
+
+    Okuma ile silme ayri islemler olsaydi ayni state ile gelen iki es zamanli
+    callback de kaydi okuyup IKISI de gecerdi.
+    """
+    import threading
+
+    state = client.get("/api/auth/youtube/start").json()["state"]
+    results: list[object] = []
+    barrier = threading.Barrier(8)
+
+    def consume():
+        store = SQLiteStore(client.store.db_path)
+        barrier.wait()
+        results.append(store.consume_oauth_state(state))
+
+    threads = [threading.Thread(target=consume) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    winners = [item for item in results if item is not None]
+    assert len(winners) == 1, f"tam olarak bir cagri kazanmali, {len(winners)} kazandi"

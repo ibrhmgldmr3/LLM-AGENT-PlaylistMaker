@@ -26,7 +26,7 @@ from api.routers import auth as auth_router
 from api.routers import config as config_router
 from api.routers import runs as runs_router
 from api.routers import spaces as spaces_router
-from src.jobs import InProcessJobRunner
+from src.jobs.factory import create_job_runner
 from src.providers.errors import (
     ProviderPermanentError,
     ProviderRateLimitedError,
@@ -144,6 +144,18 @@ def _warn_on_multi_process() -> None:
     Onu gorursek acikca uyariyoruz; goremezsek de kisiti bir kez yaziyoruz ki
     kurulum yapan kisi bunu belgelerde aramak zorunda kalmasin.
     """
+    # `redis` backend'inde is durumu PAYLASIMLI depoda; coklu surec/replika
+    # tam olarak desteklenen kurulum ve burada uyarmak yaniltici olurdu.
+    try:
+        if get_server_config().job_backend == "redis":
+            logger.info(
+                "İş kosucusu: redis. Çoklu süreç/replika destekleniyor; işleri "
+                "`python -m src.jobs.worker` ile ayrı bir süreçte çalıştırın."
+            )
+            return
+    except Exception:
+        pass
+
     concurrency = os.getenv("WEB_CONCURRENCY") or os.getenv("UVICORN_WORKERS")
     try:
         workers = int(concurrency) if concurrency else 1
@@ -210,10 +222,10 @@ async def lifespan(app: FastAPI):
     _warn_on_unbounded_shared_quota()
     _mark_interrupted_runs()
     _purge_orphan_run_dirs()
-    # Es zamanli calistirma sayisi bilerek dusuk: her is zaten kendi icinde
-    # arama/transkript icin thread havuzu aciyor ve YouTube hiz sinirlari
-    # sunucu IP'sine bagli.
-    app.state.job_runner = InProcessJobRunner(max_workers=2)
+    # Backend `JOB_BACKEND` ile seciliyor (varsayilan: bellek ici, tek surec).
+    # Secim `create_job_runner` icinde TEK YERDE; worker giris noktasi da ayni
+    # fonksiyonu cagiriyor, boylece web ile worker farkli backend kullanamiyor.
+    app.state.job_runner = create_job_runner(_base_config())
     try:
         yield
     finally:

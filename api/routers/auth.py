@@ -11,7 +11,6 @@ bu imkansiz. Standart uc adimli akis:
 from __future__ import annotations
 
 import secrets
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi import Response
@@ -56,46 +55,18 @@ STATE_TTL_SECONDS = 600
 # icinde sozlugu istedigi kadar buyutebilen kimliksiz bir yol kalirdi.
 MAX_PENDING_STATES = 10_000
 
-# Bekleyen yetkilendirmeler: state -> (user_id, code_verifier, son kullanma).
-# `code_verifier` PKCE icin ZORUNLU olarak burada tutuluyor; yalnizca URL'i
-# ureten `Flow` nesnesinde yasadigi icin callback'e baska turlu tasinamiyor.
-# Surec-ici: tek instance icin yeterli, cok kullanicili dagitimda paylasimli
-# bir depoya (Redis) tasinmali.
-_pending_states: dict[str, tuple[str | None, str | None, float]] = {}
-
-
-def _consume_state(state: str) -> tuple[str | None, str | None] | None:
-    """State'i TEK KULLANIMLIK olarak tuketir; (user_id, code_verifier) doner."""
-    _expire_states()
-    entry = _pending_states.pop(state, None)
-    return (entry[0], entry[1]) if entry else None
-
-
-def _expire_states() -> None:
-    now = time.monotonic()
-    expired = [key for key, (_user, _verifier, expiry) in _pending_states.items() if expiry < now]
-    for key in expired:
-        _pending_states.pop(key, None)
-
-
-def _enforce_capacity() -> None:
-    """Tavan asilirsa EN ESKI bekleyenleri atar.
-
-    Yeni istegi reddetmek de bir secenekti; atmak tercih edildi. Reddetmek,
-    sozlugu doldurmayi basaran birinin TUM yeni girisleri kilitlemesi demek
-    olurdu. En eskiyi atarken kaybedilen state, ya suresi dolmak uzere olan ya
-    da hic tamamlanmayacak bir akisa ait; az once tiklamis gercek kullanicinin
-    kaydi en TAZE olan, yani en son atilacak olan.
-
-    Kaybedilen state'in bedeli de sinirli: kullanici callback'te "gecersiz veya
-    suresi dolmus state" gorup akisi bastan baslatir.
-    """
-    excess = len(_pending_states) - MAX_PENDING_STATES
-    if excess <= 0:
-        return
-    oldest = sorted(_pending_states, key=lambda key: _pending_states[key][2])[:excess]
-    for key in oldest:
-        _pending_states.pop(key, None)
+# Bekleyen yetkilendirmeler ARTIK PAYLASIMLI DEPODA (bkz.
+# `SQLiteStore.put_oauth_state` / `consume_oauth_state`).
+#
+# Onceden surec icinde bir sozlukteydi ve bu, web tarafini cogaltmanin
+# onundeki somut engellerden biriydi: kullanici A replikasinda akisi
+# baslatiyor, Google B replikasina donuyor ve state bulunamadigi icin giris
+# basarisiz oluyordu. Tek kullanimlik tuketme, TTL ve kapasite tavani ayni
+# semantikle depoya tasindi; tek fark durumun nerede yasadigi.
+#
+# `code_verifier` PKCE icin ZORUNLU olarak saklaniyor: yalnizca URL'i ureten
+# `Flow` nesnesinde yasadigi icin callback'e baska turlu tasinamiyor. Depoda
+# `oauth_token` ile ayni sekilde SIFRELENIYOR.
 
 
 def _redirect_uri(request: Request) -> str:
@@ -132,6 +103,7 @@ def get_status(
 def start_authorization(
     request: Request,
     server: ServerConfig = Depends(get_server_config),
+    store: SQLiteStore = Depends(get_store),
 ) -> dict:
     """Google onay URL'ini uretir. Tarayici bu adrese YONLENDIRILIR.
 
@@ -149,15 +121,16 @@ def start_authorization(
     except Exception as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, redact_secrets(str(exc))) from exc
 
-    _expire_states()
     # Kullanici kimligi burada BILINMIYOR ve bilinmesi de gerekmiyor; callback
-    # onu ID token'dan cikaracak.
-    _pending_states[placeholder] = (
+    # onu ID token'dan cikaracak. Suresi dolmuslarin temizligi ve kapasite
+    # tavani depoda uygulaniyor.
+    store.put_oauth_state(
+        placeholder,
         None,
         code_verifier,
-        time.monotonic() + STATE_TTL_SECONDS,
+        ttl_sec=STATE_TTL_SECONDS,
+        max_pending=MAX_PENDING_STATES,
     )
-    _enforce_capacity()
     return {"authorization_url": url, "state": placeholder}
 
 
@@ -182,7 +155,8 @@ def youtube_callback(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Eksik `code` veya `state`")
 
     # `state` dogrulamasi CSRF korumasi: bu akisi biz baslatmis olmaliyiz.
-    pending = _consume_state(state)
+    # TEK KULLANIMLIK tuketim ve TTL kontrolu depoda, tek islem icinde.
+    pending = store.consume_oauth_state(state)
     if pending is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Geçersiz veya süresi dolmuş `state`")
     _unused, code_verifier = pending

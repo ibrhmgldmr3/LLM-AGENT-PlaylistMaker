@@ -1,5 +1,10 @@
 """Ogrenme alani deposu: sahiplik, arama indeksi ve silme kaskadi.
 
+Bu suit IKI lehceye karsi da kosuyor (`store` fixture'i, bkz.
+`tests/conftest.py`): store'un veritabanina en cok bagimli yuzeyi burasi --
+uretilen anahtar okumasi, tam metin indeksi ve silme kaskadi. Postgres
+parametresi `MAP_TEST_POSTGRES_DSN` tanimli degilse ATLANIYOR.
+
 Uc sey kilitleniyor:
 
 1. **Sahiplik.** Baska bir kullanicinin alani hicbir okuma/yazma yolundan
@@ -20,10 +25,6 @@ from src.storage import SQLiteStore
 from src.utils.text_utils import build_fts_query
 
 
-def _store(tmp_path) -> SQLiteStore:
-    return SQLiteStore(str(tmp_path / "app.db"))
-
-
 def _seed(store: SQLiteStore, space_id="sp", user_id="local", text="Bir metin."):
     store.create_space(space_id, user_id, "Alan")
     store.add_source(
@@ -42,15 +43,16 @@ def _seed(store: SQLiteStore, space_id="sp", user_id="local", text="Bir metin.")
 
 
 def _rowcount(store: SQLiteStore, table: str) -> int:
+    # Sutun ADIYLA okunuyor: Postgres tarafinda satirlar sozluk (`RealDictRow`)
+    # ve konum indeksi (`[0]`) orada calismiyor.
     with store.connect() as conn:
-        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        return conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
 
 
 # ------------------------------------------------------------------ sahiplik
 
 
-def test_space_is_invisible_to_another_user(tmp_path):
-    store = _store(tmp_path)
+def test_space_is_invisible_to_another_user(store):
     store.create_space("sp", "ali", "Ali'nin alani")
 
     assert store.get_space("sp", "ali") is not None
@@ -59,8 +61,7 @@ def test_space_is_invisible_to_another_user(tmp_path):
     assert store.count_spaces("veli") == 0
 
 
-def test_another_user_cannot_delete_the_space(tmp_path):
-    store = _store(tmp_path)
+def test_another_user_cannot_delete_the_space(store):
     _seed(store, user_id="ali")
 
     assert store.delete_space("sp", "veli") is False
@@ -69,8 +70,7 @@ def test_another_user_cannot_delete_the_space(tmp_path):
     assert store.count_chunks("sp") == 1
 
 
-def test_list_spaces_reports_source_and_chunk_counts(tmp_path):
-    store = _store(tmp_path)
+def test_list_spaces_reports_source_and_chunk_counts(store):
     _seed(store, text="Bir cumle. Iki cumle.")
 
     rows = store.list_spaces("local")
@@ -83,43 +83,39 @@ def test_list_spaces_reports_source_and_chunk_counts(tmp_path):
 # ------------------------------------------------------------- arama indeksi
 
 
-def test_turkish_letters_match_across_normalisation(tmp_path):
+def test_turkish_letters_match_across_normalisation(store):
     """`search_key`in tum varlik sebebi.
 
     FTS5'in `unicode61` tokenizer'i Turkce i/g/s harflerini indirgemedigi icin
     "olcum" yazan bir sorgu, metinde "olcum" gectigi halde eslesmiyordu. Iki
     taraf da AYNI donusumden gectigi surece eslesiyorlar.
     """
-    store = _store(tmp_path)
     _seed(store, text="Ölçüm güncellemesi sırasında kovaryans küçülür.")
 
     for question in ("ölçüm", "olcum", "ÖLÇÜM", "kovaryans"):
         assert store.search_chunks_fts("sp", build_fts_query(question)), question
 
 
-def test_turkish_suffix_is_matched_by_prefix_query(tmp_path):
+def test_turkish_suffix_is_matched_by_prefix_query(store):
     """Ekli bicimler leksik yolu sessizce devre disi birakiyordu.
 
     Metinde "guncellemesi" geciyor; kullanici "guncelleme" yaziyor. FTS5 tam
     esler, dolayisiyla onek (`*`) olmadan sonuc BOS donuyordu.
     """
-    store = _store(tmp_path)
     _seed(store, text="Ölçüm güncellemesi kovaryans matrisini küçültür.")
 
     assert store.search_chunks_fts("sp", build_fts_query("güncelleme"))
     assert store.search_chunks_fts("sp", build_fts_query("matris"))
 
 
-def test_unrelated_question_finds_nothing(tmp_path):
+def test_unrelated_question_finds_nothing(store):
     """Kacinma (abstention) kapisinin dayandigi davranis."""
-    store = _store(tmp_path)
     _seed(store, text="Ölçüm güncellemesi kovaryans matrisini küçültür.")
 
     assert store.search_chunks_fts("sp", build_fts_query("bugün hava nasıl")) == []
 
 
-def test_search_is_scoped_to_one_space(tmp_path):
-    store = _store(tmp_path)
+def test_search_is_scoped_to_one_space(store):
     _seed(store, text="Kalman filtresi durum kestirimi yapar.")
     store.create_space("other", "local", "Digeri")
     store.add_source("other", "doc:1", kind="document", ref_id="1", title="X")
@@ -136,24 +132,57 @@ def test_search_is_scoped_to_one_space(tmp_path):
     assert found["space_id"] == "sp"
 
 
-def test_empty_query_returns_nothing(tmp_path):
-    store = _store(tmp_path)
+def test_best_match_comes_first_and_scores_descend(store):
+    """SKOR SOZLESMESI: buyuk olan daha iyi, liste en iyiden kotuye.
+
+    Iki lehcenin ham skoru bu sozu KENDILIGINDEN vermiyor -- FTS5 `bm25()`
+    negatif ve daha negatif olani daha iyi, Postgres `ts_rank` pozitif ve daha
+    buyugu daha iyi. Isaret karisikligi sessizce TERS siralama uretirdi.
+
+    Siralama, skorun DEGERINDEN daha onemli: birlestirme (RRF) skorlari degil
+    SIRALARI kullaniyor (bkz. `rag_service._reciprocal_rank_fusion`), yani
+    leksik yolun davranisi tamamen bu siraya bagli.
+    """
+    store.create_space("sp", "local", "Alan")
+    store.add_source("sp", "doc:1", kind="document", ref_id="1", title="Not")
+    store.replace_chunks(
+        "sp",
+        "doc:1",
+        chunk_document(
+            [
+                (1, "Kalman filtresi durum kestirimi yapar."),
+                (2, "Filtre tasarimi ayri bir konudur."),
+                (3, "Bugun hava yagmurlu gorunuyor."),
+            ],
+            max_chars=60,
+            overlap_chars=0,
+        ),
+    )
+
+    hits = store.search_chunks_fts("sp", build_fts_query("kalman filtre"))
+
+    assert len(hits) == 2, hits  # ucuncu parca hicbir tokenla eslesmiyor
+    scores = [score for _chunk_id, score in hits]
+    assert scores == sorted(scores, reverse=True), scores
+    # Iki tokenu da iceren parca once gelmeli.
+    assert store.get_chunks([hits[0][0]])[0]["ordinal"] == 0
+
+
+def test_empty_query_returns_nothing(store):
     _seed(store)
 
     assert store.search_chunks_fts("sp", "") == []
     assert store.search_chunks_fts("sp", "   ") == []
 
 
-def test_malformed_fts_query_is_not_an_error(tmp_path):
+def test_malformed_fts_query_is_not_an_error(store):
     """Sorgu metnini kullanici yaziyor; bir soru yuzunden 500 donmek yanlis."""
-    store = _store(tmp_path)
     _seed(store)
 
     assert store.search_chunks_fts("sp", 'dengesiz " tirnak') == []
 
 
-def test_reindexing_replaces_chunks_and_keeps_fts_in_sync(tmp_path):
-    store = _store(tmp_path)
+def test_reindexing_replaces_chunks_and_keeps_fts_in_sync(store):
     _seed(store, text="Eski metin kovaryans hakkinda.")
 
     store.replace_chunks(
@@ -169,8 +198,7 @@ def test_reindexing_replaces_chunks_and_keeps_fts_in_sync(tmp_path):
     assert store.search_chunks_fts("sp", build_fts_query("entropi"))
 
 
-def test_get_chunks_joins_source_metadata(tmp_path):
-    store = _store(tmp_path)
+def test_get_chunks_joins_source_metadata(store):
     store.create_space("sp", "local", "Alan")
     store.add_source(
         "sp",
@@ -201,13 +229,12 @@ def _vector(values):
     return struct.pack(f"<{len(values)}f", *values)
 
 
-def test_embeddings_are_scoped_by_model(tmp_path):
+def test_embeddings_are_scoped_by_model(store):
     """Farkli modellerin vektorleri arasinda kosinus anlamsizdir.
 
     Model degisince eski satirlar "gomulmemis" sayilmali ki tembel yeniden
     uretim devreye girsin.
     """
-    store = _store(tmp_path)
     _seed(store)
     (chunk_id, _text) = store.chunks_missing_embeddings("sp", "model-a")[0]
     store.put_embeddings([(chunk_id, "model-a", 3, _vector([1.0, 0.0, 0.0]))])
@@ -221,8 +248,7 @@ def test_embeddings_are_scoped_by_model(tmp_path):
 # --------------------------------------------------------------------- silme
 
 
-def test_deleting_space_removes_chunks_fts_and_vectors(tmp_path):
-    store = _store(tmp_path)
+def test_deleting_space_removes_chunks_fts_and_vectors(store):
     _seed(store)
     chunk_id = store.chunks_missing_embeddings("sp", "m")[0][0]
     store.put_embeddings([(chunk_id, "m", 3, _vector([1.0, 0.0, 0.0]))])
@@ -236,8 +262,7 @@ def test_deleting_space_removes_chunks_fts_and_vectors(tmp_path):
     assert store.get_space("sp", "local") is None
 
 
-def test_deleting_one_source_leaves_the_others(tmp_path):
-    store = _store(tmp_path)
+def test_deleting_one_source_leaves_the_others(store):
     _seed(store, text="Birinci kaynak kovaryans.")
     store.add_source("sp", "doc:2", kind="document", ref_id="2", title="Ikinci")
     store.replace_chunks(
@@ -255,16 +280,14 @@ def test_deleting_one_source_leaves_the_others(tmp_path):
     assert [s["source_id"] for s in store.list_sources("sp")] == ["doc:2"]
 
 
-def test_deleting_unknown_source_reports_false(tmp_path):
-    store = _store(tmp_path)
+def test_deleting_unknown_source_reports_false(store):
     _seed(store)
 
     assert store.delete_source("sp", "doc:yok") is False
 
 
-def test_adding_the_same_source_twice_refreshes_instead_of_duplicating(tmp_path):
+def test_adding_the_same_source_twice_refreshes_instead_of_duplicating(store):
     """Ayni videoyu iceren ikinci bir calistirma alana eklenebilmeli."""
-    store = _store(tmp_path)
     _seed(store)
 
     store.add_source(

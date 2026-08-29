@@ -56,6 +56,10 @@ ENV_TO_FIELD: dict[str, str] = {
     "DATA_DIR": "data_dir",
     "SQLITE_PATH": "sqlite_path",
     "SECRET_ENCRYPTION_KEY": "secret_encryption_key",
+    "JOB_BACKEND": "job_backend",
+    "REDIS_URL": "redis_url",
+    "JOB_KEY_PREFIX": "job_key_prefix",
+    "JOB_TTL_SEC": "job_ttl_sec",
     "AUTH_MODE": "auth_mode",
     "CORS_ALLOW_ORIGINS": "cors_allow_origins",
     "SESSION_TTL_SEC": "session_ttl_sec",
@@ -297,6 +301,22 @@ class ServerConfig(BaseModel):
     # okunur -- kullanici hicbir anahtar girmiyor. `multi_user`'in tek farki
     # kim oldugunu bilmek (gunluk sinir + yayinlama icin kisisel YouTube OAuth
     # izni); anahtar yonetimiyle ilgisi yok.
+    # Isleri nerede yurutecegimiz.
+    #
+    # `memory` (VARSAYILAN): `InProcessJobRunner`. Is durumu bellekte, yani
+    # uygulama TEK SUREC calismak zorunda -- ikinci surece dusen istek isi
+    # tanimaz. Tek instance icin yeterli ve hicbir altyapi gerektirmiyor.
+    #
+    # `redis`: is web surecinde degil ayri bir worker'da calisir
+    # (`python -m src.jobs.worker`). Web tarafi coklu replika olabilir ve ASR
+    # gibi islemci yogun isler web CPU'sunu yemez.
+    job_backend: Literal["memory", "redis"] = Field(default="memory")
+    redis_url: str = Field(default="redis://localhost:6379/0")
+    job_key_prefix: str = Field(default="map")
+    # Bitmis islerin okunabilir kalma suresi. `InProcessJobRunner` son 100 isi
+    # tutuyordu; paylasimli depoda sayiya gore budamak yaris uretir.
+    job_ttl_sec: int = Field(default=24 * 3600, ge=60)
+
     auth_mode: Literal["single_user", "multi_user"] = Field(default="single_user")
 
     # Tarayicidan cerezle istek atmasina izin verilen kokenler; virgulle ayrik.

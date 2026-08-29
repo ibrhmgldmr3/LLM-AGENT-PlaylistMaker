@@ -12,13 +12,13 @@ from typing import Any
 
 from src.models import PlaylistResult, TranscriptResult, VideoCandidate
 from src.storage.crypto import SecretBox
+from src.storage.dialect import Dialect, SqliteDialect
 
 
 # Bir saglayicinin gecici olarak devre disi birakilmasi icin gereken ardisik hata sayisi.
 # Tek bir videonun altyazisi yoksa saglayicinin tamami cezalandirilmamalidir.
 DEFAULT_FAILURE_THRESHOLD = 3
 
-_BUSY_TIMEOUT_SEC = 30.0
 
 # `VideoCandidate` alanlari degistiginde arttirin. Onbellek anahtarina karistigi
 # icin eski kayitlar otomatik olarak gecersizlesir; aksi halde TTL dolana kadar
@@ -146,30 +146,20 @@ def _is_expired(expires_at: str | None) -> bool:
     return parsed <= _utc_now()
 
 
-def _enable_wal(conn: sqlite3.Connection) -> None:
-    """WAL'i acar; baska bir baglanti ayni anda aciyorsa sessizce gecer.
-
-    `journal_mode` degisimi dosya duzeyinde ozel kilit istiyor ve SQLite bu
-    islemde `busy_timeout`u BEKLEMEDEN `SQLITE_BUSY` dondurebiliyor. Es zamanli
-    acilislarda (her istek kendi store'unu kuruyor, is parcaciklari da) bu
-    "database is locked" olarak disari vuruyordu.
-
-    WAL dosyanin KALICI bir ozelligi: bir kez ayarlandiginda oyle kaliyor.
-    Dolayisiyla "su anda baskasi ayarliyor" durumunda baglantiyi dusurmek
-    yanlis -- sonuc yine WAL olacak. Yalnizca kilit/mesgul hatasi yutuluyor;
-    digerleri yukseliyor.
-    """
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-    except sqlite3.OperationalError as exc:
-        message = str(exc).lower()
-        if "locked" not in message and "busy" not in message:
-            raise
 
 
 class SQLiteStore:
-    def __init__(self, db_path: str, encryption_key: str | None = None):
+    def __init__(
+        self,
+        db_path: str,
+        encryption_key: str | None = None,
+        dialect: Dialect | None = None,
+    ):
+        # Imza DEGISMEDI: `SQLiteStore(path)` cagrilari oldugu gibi calisiyor.
+        # `dialect` verilmezse SQLite kuruluyor -- Postgres yalnizca ACIKCA
+        # istendiginde devreye giriyor.
         self.db_path = db_path
+        self._dialect = dialect or SqliteDialect(db_path)
         # Sirlar (OAuth jetonlari) bu kutu ile sifrelenir. Anahtar yoksa duz
         # metin yazilir ve eski davranis korunur.
         self._secrets = SecretBox(encryption_key)
@@ -178,21 +168,9 @@ class SQLiteStore:
 
     @contextmanager
     def connect(self):
-        conn = sqlite3.connect(self.db_path, timeout=_BUSY_TIMEOUT_SEC)
-        conn.row_factory = sqlite3.Row
-        try:
-            # SIRA ONEMLI: once `busy_timeout`, sonra `journal_mode`. Ikincisi
-            # kilit bekleyebiliyor ve zaman asimi once kurulmus olmali.
-            conn.execute("PRAGMA busy_timeout=%d" % int(_BUSY_TIMEOUT_SEC * 1000))
-            _enable_wal(conn)
-            conn.execute("PRAGMA synchronous=NORMAL")
+        """Baglanti acar. Islem yonetimi ve lehce farklari `dialect` icinde."""
+        with self._dialect.connect() as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def _ensure_schema(self) -> None:
         with self.connect() as conn:
@@ -287,6 +265,22 @@ class SQLiteStore:
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
                 );
+                -- Bekleyen OAuth yetkilendirmeleri (PKCE).
+                --
+                -- SUREC ICINDE bir sozlukte tutuluyordu ve bu, web tarafini
+                -- cogaltmanin onundeki somut engellerden biriydi: kullanici A
+                -- replikasinda akisi baslatiyor, Google B replikasina donuyor
+                -- ve state bulunamadigi icin giris basarisiz oluyordu.
+                --
+                -- `code_verifier` bir SIR (PKCE) ve `oauth_token` ile ayni
+                -- sekilde sifrelenerek yaziliyor.
+                CREATE TABLE IF NOT EXISTS oauth_state (
+                    state TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    code_verifier TEXT,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 -- ------------------------------------------------- ogrenme alani
                 -- Bir "alan" (space) kullanicinin kalici bilgi havuzu: birden
                 -- cok calistirmanin videolari + yukledigi dokumanlar. Calistirma
@@ -355,7 +349,7 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_transcript_cache_expires ON transcript_cache (expires_at);
                 """
             )
-            self._migrate(conn)
+            self._migrate(conn, self._dialect)
 
     @staticmethod
     def _add_column_if_missing(
@@ -411,10 +405,17 @@ class SQLiteStore:
         failure = "COALESCE(failure_count, 0)" if "failure_count" in columns else "0"
         conn.execute(
             f"""
-            INSERT OR IGNORE INTO provider_cooldown
+            INSERT INTO provider_cooldown
                 (user_id, provider, cooldown_until, last_error, failure_count, updated_at)
             SELECT 'local', provider, cooldown_until, last_error, {failure}, updated_at
             FROM provider_health
+            -- `WHERE true` GEREKLI, sussuz degil: SQLite'ta `INSERT ... SELECT`
+            -- ile birlikte yazilan upsert cumlesi ayristirilamiyor -- `ON`un
+            -- SELECT'in JOIN'ine mi yoksa `ON CONFLICT`e mi ait oldugu belirsiz
+            -- kaliyor ve `near "DO": syntax error` veriyor. Bos bir WHERE
+            -- belirsizligi kaldiriyor. Postgres de ayni yazimi kabul ediyor.
+            WHERE true
+            ON CONFLICT(user_id, provider) DO NOTHING
             """
         )
 
@@ -453,7 +454,22 @@ class SQLiteStore:
         conn.execute("DELETE FROM provider_cooldown WHERE user_id != ?", (SERVER_SCOPE,))
 
     @classmethod
-    def _migrate(cls, conn: sqlite3.Connection) -> None:
+    def _migrate(cls, conn: sqlite3.Connection, dialect: Dialect) -> None:
+        # Eski sema onarimlari YALNIZCA gecmisi olan veritabaninda
+        # (bkz. `supports_legacy_migration`); Postgres semasi zaten eksiksiz.
+        if dialect.supports_legacy_migration:
+            cls._legacy_repairs(conn)
+
+        # Indeks EN SONDA: dayandigi `user_id` sutununu eski veritabanlarina
+        # yukaridaki onarim ekliyor. Basa alindiginda "no such column: user_id"
+        # veriyordu -- sema kurulumunu tumden dusuren bir sira hatasi.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)"
+        )
+
+    @classmethod
+    def _legacy_repairs(cls, conn: sqlite3.Connection) -> None:
+        """Onceki surumlerin biraktigi SQLite dosyalarini bugunku semaya getirir."""
         cls._add_column_if_missing(
             conn, "run", "user_id", f"user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER_ID}'"
         )
@@ -469,7 +485,6 @@ class SQLiteStore:
         )
         cls._copy_legacy_provider_health(conn)
         cls._collapse_cooldowns_to_server_scope(conn)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_run_user_created ON run (user_id, created_at DESC)")
 
     @staticmethod
     def build_search_cache_key(provider: str, query: str, filters: dict[str, Any]) -> str:
@@ -509,9 +524,16 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO search_cache (
+                INSERT INTO search_cache (
                     cache_key, provider, query, filters_json, payload_json, expires_at, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        provider = excluded.provider,
+                        query = excluded.query,
+                        filters_json = excluded.filters_json,
+                        payload_json = excluded.payload_json,
+                        expires_at = excluded.expires_at,
+                        created_at = excluded.created_at
                 """,
                 (
                     cache_key,
@@ -563,9 +585,15 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO transcript_cache
+                INSERT INTO transcript_cache
                     (video_id, provider, language, status, payload_json, expires_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(video_id, provider) DO UPDATE SET
+                        language = excluded.language,
+                        status = excluded.status,
+                        payload_json = excluded.payload_json,
+                        expires_at = excluded.expires_at,
+                        updated_at = excluded.updated_at
                 """,
                 (
                     transcript.video_id,
@@ -603,7 +631,11 @@ class SQLiteStore:
             """
             INSERT INTO provider_event (day, provider, event, count)
             VALUES (?, ?, ?, 1)
-            ON CONFLICT(day, provider, event) DO UPDATE SET count = count + 1
+            -- `count` TABLO ADIYLA nitelenmis: niteliksiz hali Postgres'te
+            -- `column reference "count" is ambiguous` veriyor. SQLite de
+            -- nitelenmis yazimi kabul ediyor.
+            ON CONFLICT(day, provider, event)
+            DO UPDATE SET count = provider_event.count + 1
             """,
             (quota_day(), provider, event),
         )
@@ -885,7 +917,7 @@ class SQLiteStore:
         kaynak tutmak, birbirinden ayrilabilecek bir yer daha yaratirdi.
         """
         with self.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._dialect.lock(conn, "run_admission")
             if max_per_day:
                 cutoff = _to_iso(_utc_now() - timedelta(seconds=within_sec))
                 row = conn.execute(
@@ -923,9 +955,17 @@ class SQLiteStore:
                     return SERVICE_BUDGET
             conn.execute(
                 """
-                INSERT OR REPLACE INTO run
+                INSERT INTO run
                     (run_id, topic, filters_json, created_at, result_json, user_id, reserved_units)
                 VALUES (?, ?, ?, ?, NULL, ?, ?)
+                    ON CONFLICT(run_id) DO UPDATE SET
+                        topic = excluded.topic,
+                        filters_json = excluded.filters_json,
+                        created_at = excluded.created_at,
+                        result_json = excluded.result_json,
+                        user_id = excluded.user_id,
+                        reserved_units = excluded.reserved_units,
+                        interrupted_at = NULL
                 """,
                 (
                     run_id,
@@ -942,8 +982,10 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO run_subtopic (run_id, position, subtopic_json)
+                INSERT INTO run_subtopic (run_id, position, subtopic_json)
                 VALUES (?, ?, ?)
+                    ON CONFLICT(run_id, position) DO UPDATE SET
+                        subtopic_json = excluded.subtopic_json
                 """,
                 (run_id, position, json.dumps(payload, ensure_ascii=False)),
             )
@@ -952,8 +994,10 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO run_video (run_id, stage, video_id, payload_json)
+                INSERT INTO run_video (run_id, stage, video_id, payload_json)
                 VALUES (?, ?, ?, ?)
+                    ON CONFLICT(run_id, stage, video_id) DO UPDATE SET
+                        payload_json = excluded.payload_json
                 """,
                 (run_id, stage, video_id, json.dumps(payload, ensure_ascii=False)),
             )
@@ -1126,8 +1170,13 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO session (token_hash, user_id, email, created_at, expires_at)
+                INSERT INTO session (token_hash, user_id, email, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(token_hash) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        email = excluded.email,
+                        created_at = excluded.created_at,
+                        expires_at = excluded.expires_at
                 """,
                 (
                     self.hash_session_token(token),
@@ -1160,6 +1209,106 @@ class SQLiteStore:
             )
             return cursor.rowcount > 0
 
+    # ------------------------------------------------------- OAuth state (PKCE)
+    #
+    # Bekleyen yetkilendirmeler SUREC ICINDE bir sozlukte duruyordu. Bu, web
+    # tarafini cogaltmanin onundeki somut engellerden biriydi: kullanici A
+    # replikasinda akisi baslatiyor, Google B replikasina donuyor ve state
+    # bulunamadigi icin giris basarisiz oluyordu.
+
+    def put_oauth_state(
+        self,
+        state: str,
+        user_id: str | None,
+        code_verifier: str | None,
+        ttl_sec: int,
+        max_pending: int,
+    ) -> None:
+        """Bekleyen bir yetkilendirmeyi kaydeder; suresi dolmuslari toplar.
+
+        `max_pending` ust siniri ZORUNLU: bu ucu cagirmak oturum gerektirmiyor
+        (gerektiremez -- giris yapmak icin once giris yapmis olmak gerekirdi),
+        yani tek sinir TTL olsaydi kimliksiz biri 10 dakikalik pencerede
+        tabloyu istedigi kadar buyutebilirdi.
+
+        Tavan asilinca EN ESKI bekleyenler atiliyor, yeni istek REDDEDILMIYOR:
+        reddetmek, tabloyu doldurmayi basaran birinin TUM yeni girisleri
+        kilitlemesi demek olurdu. Az once tiklamis gercek kullanicinin kaydi en
+        TAZE olan, yani en son atilacak olan.
+        """
+        now = _utc_now()
+        with self.connect() as conn:
+            conn.execute("DELETE FROM oauth_state WHERE expires_at < ?", (_to_iso(now),))
+            conn.execute(
+                """
+                INSERT INTO oauth_state
+                    (state, user_id, code_verifier, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(state) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        code_verifier = excluded.code_verifier,
+                        expires_at = excluded.expires_at,
+                        created_at = excluded.created_at
+                """,
+                (
+                    state,
+                    user_id,
+                    self._secrets.encrypt(code_verifier) if code_verifier else None,
+                    _to_iso(now + timedelta(seconds=ttl_sec)),
+                    _to_iso(now),
+                ),
+            )
+            if max_pending > 0:
+                conn.execute(
+                    """
+                    -- "En TAZE `max_pending` disindakileri sil" biciminde
+                    -- yaziliyor. Once `LIMIT -1 OFFSET ?` kullaniliyordu:
+                    -- SQLite `-1`i "sinir yok" sayiyor, Postgres ise
+                    -- `LIMIT must not be negative` ile reddediyor. Bu yazim
+                    -- ayni sonucu iki lehcede de veriyor.
+                    DELETE FROM oauth_state WHERE state NOT IN (
+                        SELECT state FROM oauth_state
+                        ORDER BY created_at DESC, state DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (max_pending,),
+                )
+
+    def consume_oauth_state(self, state: str) -> tuple[str | None, str | None] | None:
+        """State'i TEK KULLANIMLIK olarak tuketir; `(user_id, code_verifier)`.
+
+        Okuma ve silme AYNI `BEGIN IMMEDIATE` islemi icinde: ayrildiklari anda
+        ayni state ile gelen iki es zamanli callback de kaydi okuyup ikisi de
+        gecerdi. Tek kullanimlik olmasi CSRF korumasinin kendisi.
+
+        Suresi dolmus kayit YOK sayiliyor (ve temizleniyor): TTL kontrolunu
+        cagiran tarafa birakmak, unutuldugu gun sessizce suresiz gecerli
+        state'ler demekti.
+        """
+        now = _utc_now()
+        with self.connect() as conn:
+            self._dialect.lock(conn, "oauth_state")
+            row = conn.execute(
+                "SELECT user_id, code_verifier, expires_at FROM oauth_state WHERE state = ?",
+                (state,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM oauth_state WHERE state = ?", (state,))
+            expires_at = _parse_iso(row["expires_at"])
+            if expires_at is not None and expires_at <= now:
+                return None
+            verifier = row["code_verifier"]
+            return (
+                row["user_id"],
+                self._decrypt_or_none(verifier, "PKCE doğrulayıcısı") if verifier else None,
+            )
+
+    def count_oauth_states(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) AS n FROM oauth_state").fetchone()["n"])
+
     # ---------------------------------------------------------- OAuth token
     # Token KULLANICI BASINA saklanir: dosya yolu tek kullanicili varsayimdi ve
     # cok kullanicili moda gecerken en cok direnc gosteren yerdi.
@@ -1172,8 +1321,11 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO oauth_token (user_id, provider, token_json, updated_at)
+                INSERT INTO oauth_token (user_id, provider, token_json, updated_at)
                 VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, provider) DO UPDATE SET
+                        token_json = excluded.token_json,
+                        updated_at = excluded.updated_at
                 """,
                 (user_id, provider, self._secrets.encrypt(token_json), _to_iso(_utc_now())),
             )
@@ -1394,10 +1546,21 @@ class SQLiteStore:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO space_source (
+                INSERT INTO space_source (
                     space_id, source_id, kind, ref_id, title, url, language,
                     status, chunk_count, byte_size, error, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?)
+                    ON CONFLICT(space_id, source_id) DO UPDATE SET
+                        kind = excluded.kind,
+                        ref_id = excluded.ref_id,
+                        title = excluded.title,
+                        url = excluded.url,
+                        language = excluded.language,
+                        status = excluded.status,
+                        chunk_count = excluded.chunk_count,
+                        byte_size = excluded.byte_size,
+                        error = excluded.error,
+                        created_at = excluded.created_at
                 """,
                 (
                     space_id,
@@ -1501,9 +1664,15 @@ class SQLiteStore:
             self._delete_source_chunks(conn, space_id, source_id)
             written = 0
             for draft in drafts:
+                # `RETURNING`, `cursor.lastrowid` DEGIL: ikincisi SQLite'a ozgu
+                # (psycopg2'de yok, Postgres uretilen anahtari `RETURNING` ile
+                # veriyor). SQLite 3.35+ da `RETURNING` destekliyor, yani tek
+                # yazim iki lehcede de calisiyor ve bu satir tasinabilirlik
+                # seam'inin disinda kaliyor.
                 cursor = conn.execute(
                     "INSERT INTO chunk (space_id, source_id, ordinal, text,"
-                    " start_sec, end_sec, page) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    " start_sec, end_sec, page) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                    " RETURNING chunk_id",
                     (
                         space_id,
                         source_id,
@@ -1514,10 +1683,11 @@ class SQLiteStore:
                         draft.page,
                     ),
                 )
+                chunk_id = cursor.fetchone()["chunk_id"]
                 conn.execute(
                     "INSERT INTO chunk_fts (search_text, chunk_id, space_id)"
                     " VALUES (?, ?, ?)",
-                    (search_key(draft.text), cursor.lastrowid, space_id),
+                    (search_key(draft.text), chunk_id, space_id),
                 )
                 written += 1
         return written
@@ -1573,30 +1743,36 @@ class SQLiteStore:
     ) -> list[tuple[int, float]]:
         """Leksik arama. `(chunk_id, skor)` listesi, EN IYIDEN kotuye.
 
-        `bm25()` FTS5'te NEGATIF doner (daha negatif = daha iyi eslesme).
-        Isaret burada cevriliyor ki cagiran "buyuk = iyi" varsayabilsin --
-        isaret karisikligi tam da sessizce TERS siralama uretecek turden bir
-        hata ve birlestirme katmaninda fark edilmesi zor olurdu.
+        Skor sozlesmesi: BUYUK olan daha iyi. Iki veritabaninin ham skoru bu
+        sozu kendiliginden vermiyor (FTS5 `bm25()` negatif, Postgres `ts_rank`
+        pozitif); isaret cevirisi lehcede yapiliyor, bkz. `Dialect.fts_search`.
 
         Gecersiz FTS sorgusu (dengesiz tirnak, yalniz basina `AND`) burada
         istisna DEGIL bos sonuc: sorgu metnini kullanici yaziyor ve bir soru
         yuzunden 500 donmek yanlis olurdu. Cagiran taraf zaten tokenlardan
         guvenli bir sorgu kuruyor; bu ikinci savunma hatti.
+
+        Ikinci hat iki asamali: lehce sorguyu kendi diline CEVIREMEZSE (`None`)
+        veritabanina hic gidilmiyor, gidilip de hata alinirsa da yutuluyor.
         """
         if not match_query.strip():
             return []
+        prepared = self._dialect.fts_search(space_id, match_query, max(1, limit))
+        if prepared is None:
+            _log.warning(
+                "FTS sorgusu %s lehcesine cevrilemedi: %r",
+                self._dialect.name,
+                match_query,
+            )
+            return []
+        statement, params = prepared
         try:
             with self.connect() as conn:
-                rows = conn.execute(
-                    "SELECT chunk_id, bm25(chunk_fts) AS score FROM chunk_fts"
-                    " WHERE space_id = ? AND chunk_fts MATCH ?"
-                    " ORDER BY score LIMIT ?",
-                    (space_id, match_query, max(1, limit)),
-                ).fetchall()
-        except sqlite3.OperationalError as exc:
+                rows = conn.execute(statement, params).fetchall()
+        except self._dialect.query_errors as exc:
             _log.warning("FTS sorgusu calistirilamadi (%s): %r", exc, match_query)
             return []
-        return [(int(row["chunk_id"]), -float(row["score"])) for row in rows]
+        return [(int(row["chunk_id"]), float(row["score"])) for row in rows]
 
     # --------------------------------------------------------------- vektorler
 
@@ -1626,8 +1802,10 @@ class SQLiteStore:
             return
         with self.connect() as conn:
             conn.executemany(
-                "INSERT OR REPLACE INTO chunk_embedding"
-                " (chunk_id, model, dim, vector) VALUES (?, ?, ?, ?)",
+                "INSERT INTO chunk_embedding"
+                " (chunk_id, model, dim, vector) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(chunk_id) DO UPDATE SET"
+                " model = excluded.model, dim = excluded.dim, vector = excluded.vector",
                 rows,
             )
 

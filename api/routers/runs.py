@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from api import sse
 from api.deps import (
@@ -32,6 +31,7 @@ from src.config import RunOptions, ServerConfig, UserCredentials
 from src.jobs import JobRunner, JobState, new_job_id
 from src.jobs.playlist_task import BUILD_PLAYLIST, build_payload
 from src.models import PlaylistRequest
+from src.services.playlist_export import UnknownExportKind, render_export
 from src.services.playlist_publish_service import create_youtube_playlist
 from src.providers.youtube_data_api_provider import estimate_run_units
 from src.services.run_retention import delete_run as delete_run_everywhere
@@ -367,22 +367,35 @@ def download_export(
     artifact: str,
     user_id: str = Depends(get_current_user),
     store: SQLiteStore = Depends(get_store),
-) -> FileResponse:
-    """Uretilen JSON / Markdown dosyasini indirir."""
-    names = {"json": ("result.json", "application/json"), "markdown": ("study_plan.md", "text/markdown")}
-    if artifact not in names:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen dosya türü")
+) -> Response:
+    """JSON / Markdown ciktisini uretip indirir.
 
+    Diskten OKUMUYOR. Ciktilarin ikisi de sonucun turetilmisi (bkz.
+    `src/services/playlist_export.py`) ve sonuc SQLite'ta duruyor, yani indirme
+    calisma dizinine hic bagli degil. Iki kazanci var:
+
+    * Indirmeyi karsilayan surecin, dosyayi ureten surec olmasi gerekmiyor --
+      coklu replika onunde duran engellerden biri buydu.
+    * Calistirma dizini silinmis olsa bile indirme calisiyor. Eskiden bu durum
+      "Dosya sunucudan silinmis" (410) donduruyordu, oysa veri yerindeydi.
+    """
     summary = store.get_run_summary(run_id)
     if summary is None or summary["user_id"] != user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
 
     result = store.get_run(run_id)
-    if result is None or result.exports is None:
+    if result is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Çalıştırma henüz tamamlanmadı")
 
-    filename, media_type = names[artifact]
-    path = Path(result.exports.json_path if artifact == "json" else result.exports.markdown_path)
-    if not path.exists():
-        raise HTTPException(status.HTTP_410_GONE, "Dosya sunucudan silinmiş")
-    return FileResponse(path, media_type=media_type, filename=filename)
+    try:
+        content, filename, media_type = render_export(result, artifact)
+    except UnknownExportKind:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen dosya türü") from None
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        # `FileResponse` bu basligi dosya adindan kendi kuruyordu; icerik artik
+        # bellekten geldigi icin acikca yazmak gerekiyor.
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

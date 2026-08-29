@@ -34,6 +34,12 @@ yt-dlp>=2025.11.12
 # 1.0 ile API degisti: YouTubeTranscriptApi().fetch(...) kullaniliyor.
 youtube-transcript-api>=1.0.0,<2.0.0
 
+# Optional: paylasimli is kuyrugu (JOB_BACKEND=redis)
+# VARSAYILAN KURULUMDA GEREKMEZ -- `memory` backend'i hicbir altyapi
+# istemiyor. Yalnizca web ve worker'i AYIRMAK istendiginde kuruluyor;
+# `src/jobs/factory.py` bu paketi sadece o dalda import ediyor.
+redis>=5.0.0,<8.0.0
+
 # Optional ASR
 faster-whisper>=1.1.0,<2.0.0
 
