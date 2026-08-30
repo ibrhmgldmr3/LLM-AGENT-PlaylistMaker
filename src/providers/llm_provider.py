@@ -96,6 +96,48 @@ STUDY_NOTE_SYSTEM_INSTRUCTION = (
     "with no preamble and no closing remarks."
 )
 
+# Calisma notu serbest metin -- SUBTOPIC_SCHEMA/RAG_ANSWER_SCHEMA'nin aksine
+# protokol seviyesinde zorlanan bir semasi YOK, "no preamble" talimati istem
+# seviyesinde bir rica. Zayif/degisken bir modelde (ornegin OpenRouter'in
+# `openrouter/free` otomatik yonlendiricisi) bu ricanin gormezden gelinip ham
+# akil yurutmenin ("Here's a thinking process...") oldugu gibi donmesi
+# gozlemlendi. Sema yazilamayacagi icin en bariz sizintiyi yakalayan bir
+# sezgisel: gercek sizinti orneginde metin 8000+ karakterdi ve bu ifadelerle
+# basliyordu; beklenen not (1 cumle + 4-8 madde + Terms) birkac yuz karakteri
+# gecmez.
+_REASONING_LEAK_MARKERS = (
+    "<think>",
+    "here's a thinking process",
+    "here is a thinking process",
+    "let me draft",
+    "let's draft the final",
+    "wait, i need to",
+    "let me re-read",
+    "let me analyze",
+)
+_STUDY_NOTE_LEAK_LENGTH_THRESHOLD = 6000
+
+STUDY_NOTE_LEAK_RETRY_SUFFIX = (
+    "\n\nIMPORTANT CORRECTION: your previous answer leaked internal reasoning "
+    "or planning text instead of the final deliverable. Reply with ONLY the "
+    "finished Markdown study note described above -- no meta-commentary, no "
+    "draft, no thinking-out-loud."
+)
+
+
+def _looks_like_reasoning_leak(text: str) -> bool:
+    """Modelin nihai cevap yerine kendi akil yurutmesini dokup dokmedigini kontrol eder.
+
+    Bu bir SEMA DEGIL, sezgisel -- serbest metinde protokol seviyesinde
+    zorlama mumkun degil. Amac mukemmel tespit degil, en bariz sizintiyi
+    (uzunluk + tipik ifadeler) yakalayip cagiran tarafin bunu SESSIZCE
+    kullaniciya gostermek yerine `ProviderTemporaryError`e cevirmesini saglamak.
+    """
+    lowered = text.lower()
+    if any(marker in lowered for marker in _REASONING_LEAK_MARKERS):
+        return True
+    return len(text) > _STUDY_NOTE_LEAK_LENGTH_THRESHOLD
+
 
 def build_study_note_prompt(
     topic: str, subtopic: str, video_title: str, transcript: str, language: str, max_chars: int
@@ -362,6 +404,15 @@ class GeminiLLMProvider:
         for model_name in self._candidate_models():
             try:
                 text = self._generate(model_name, prompt, self._study_note_generation_config)
+                if _looks_like_reasoning_leak(text):
+                    text = self._generate(
+                        model_name,
+                        prompt + STUDY_NOTE_LEAK_RETRY_SUFFIX,
+                        self._study_note_generation_config,
+                    )
+                if _looks_like_reasoning_leak(text):
+                    errors.append(f"{model_name}: reasoning leak in response")
+                    continue
             except ProviderPermanentError:
                 raise
             except Exception as exc:
@@ -642,7 +693,16 @@ class TogetherLLMProvider:
             self.config.study_note_transcript_char_limit,
         )
         # `response_format` verilmiyor: calisma notu SERBEST METIN, JSON degil.
-        return self._generate(prompt, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION)
+        text = self._generate(prompt, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION)
+        if _looks_like_reasoning_leak(text):
+            text = self._generate(
+                prompt + STUDY_NOTE_LEAK_RETRY_SUFFIX, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION
+            )
+        if _looks_like_reasoning_leak(text):
+            raise ProviderTemporaryError(
+                "Model calisma notu yerine akil yurutmesini dondurdu (reasoning leak)"
+            )
+        return text
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """OpenAI uyumlu `/v1/embeddings`. Sira KORUNUR.
@@ -782,7 +842,16 @@ class OpenRouterLLMProvider:
             topic, subtopic, video_title, transcript_text, language,
             self.config.study_note_transcript_char_limit,
         )
-        return self._generate(prompt, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION)
+        text = self._generate(prompt, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION)
+        if _looks_like_reasoning_leak(text):
+            text = self._generate(
+                prompt + STUDY_NOTE_LEAK_RETRY_SUFFIX, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION
+            )
+        if _looks_like_reasoning_leak(text):
+            raise ProviderTemporaryError(
+                "Model calisma notu yerine akil yurutmesini dondurdu (reasoning leak)"
+            )
+        return text
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         raise ProviderPermanentError(

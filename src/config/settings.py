@@ -103,6 +103,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "RAG_TOP_K": "rag_top_k",
     "RAG_MAX_CHUNKS_PER_SOURCE": "rag_max_chunks_per_source",
     "RAG_MIN_SIMILARITY": "rag_min_similarity",
+    "RAG_MIN_LEXICAL_COVERAGE": "rag_min_lexical_coverage",
     "RAG_CONTEXT_CHAR_LIMIT": "rag_context_char_limit",
     "MAX_SPACES_PER_USER": "max_spaces_per_user",
     "MAX_DOCUMENTS_PER_SPACE": "max_documents_per_space",
@@ -471,6 +472,20 @@ class ServerConfig(BaseModel):
     # sayi YENIDEN olculmeli; `rag_service` esigin altinda kalip reddedilen
     # sorgularin en iyi skorunu tam da bunun icin logluyor.
     rag_min_similarity: float = Field(default=0.70, ge=0.0, le=1.0)
+    # Leksik yolun KANIT sayilmasi icin gereken asgari token kapsami.
+    #
+    # 1. kapi eskiden "leksik eslesme VAR MI" diye soruyordu ve TEK bir zayif
+    # eslesme kapiyi aciyordu. OLCULDU (Kalman metni, `coverage_score`):
+    #   konuya ait sorular : 1.00
+    #   konu disi + tek ortak kelime ("filtre kahve nasil yapilir") : 0.33
+    #   konu disi          : 0.00
+    # Yani "filtre kahve" sorusu, metinde "filtresi" gectigi icin kapiyi
+    # aciyor ve LLM'e gidiyordu. 0.50 iki kumenin arasina oturuyor.
+    #
+    # Skora DEGIL kapsama bakiliyor: `bm25()` ile `ts_rank`in olcekleri farkli
+    # ve bir skor esigi lehceye gore baska anlama gelirdi. Kapsam Python'da,
+    # metinden hesaplaniyor -- iki veritabaninda da ayni.
+    rag_min_lexical_coverage: float = Field(default=0.50, ge=0.0, le=1.0)
     rag_context_char_limit: int = Field(default=12_000, ge=1_000)
 
     # Depolama ve embedding maliyeti sunucu sahibinde; tavanlar bu yuzden var.
