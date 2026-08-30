@@ -55,6 +55,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "ALLOW_UNSAFE_OPENMP_WORKAROUND": "allow_unsafe_openmp_workaround",
     "DATA_DIR": "data_dir",
     "SQLITE_PATH": "sqlite_path",
+    "DATABASE_URL": "database_url",
     "SECRET_ENCRYPTION_KEY": "secret_encryption_key",
     "JOB_BACKEND": "job_backend",
     "REDIS_URL": "redis_url",
@@ -289,6 +290,11 @@ class ServerConfig(BaseModel):
 
     data_dir: str = Field(default="data")
     sqlite_path: str = Field(default="data/cache/app.db")
+    # Tanimliysa depo SQLite yerine Postgres kullanir ve `sqlite_path`
+    # yoksayilir. Yatay olceklendirmenin son adimi: SQLite tek bir DOSYA ve
+    # makineler arasi paylasilamiyor (WAL, ag dosya sistemlerinin guvenilir
+    # bicimde saglamadigi kilitlemeye dayaniyor). Bkz. `src/storage/factory.py`.
+    database_url: str | None = Field(default=None)
     # Saklanan sirlari (OAuth jetonlari) sifrelemek icin kullanilir. Tanimsizsa
     # jetonlar duz metin yazilir. `python -m src.storage.crypto` ile uretilebilir.
     secret_encryption_key: str | None = Field(default=None)

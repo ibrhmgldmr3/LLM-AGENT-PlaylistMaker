@@ -7,7 +7,6 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from src.models import PlaylistResult, TranscriptResult, VideoCandidate
@@ -163,7 +162,6 @@ class SQLiteStore:
         # Sirlar (OAuth jetonlari) bu kutu ile sifrelenir. Anahtar yoksa duz
         # metin yazilir ve eski davranis korunur.
         self._secrets = SecretBox(encryption_key)
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
     @contextmanager
@@ -1810,7 +1808,15 @@ class SQLiteStore:
             )
 
     def load_embeddings(self, space_id: str, model: str) -> list[tuple[int, bytes]]:
-        """Alanin bu modele ait tum vektorleri."""
+        """Alanin bu modele ait tum vektorleri.
+
+        `bytes(...)` bir LEHCE SIZINTISINI kapatiyor: psycopg2 `BYTEA`yi
+        `memoryview` olarak veriyor, sqlite3 `bytes`. Bugunku tek okuyucu
+        (`embedding_service.unpack_vector`) ikisini de kabul ediyor -- yani
+        fark, ancak `.hex()` ya da bir karsilastirma yazan bir sonraki
+        okuyucuda ve TEK bir veritabaninda ortaya cikardi. Imza `bytes`
+        diyor; oyle olsun.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT e.chunk_id, e.vector FROM chunk_embedding e"
@@ -1819,7 +1825,7 @@ class SQLiteStore:
                 " ORDER BY e.chunk_id",
                 (space_id, model),
             ).fetchall()
-        return [(int(row["chunk_id"]), row["vector"]) for row in rows]
+        return [(int(row["chunk_id"]), bytes(row["vector"])) for row in rows]
 
 
 def _run_summary_row(row: sqlite3.Row) -> dict[str, Any]:

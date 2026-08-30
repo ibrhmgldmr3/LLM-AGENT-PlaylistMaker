@@ -27,6 +27,7 @@ from api.routers import config as config_router
 from api.routers import runs as runs_router
 from api.routers import spaces as spaces_router
 from src.jobs.factory import create_job_runner
+from src.storage import backend_name
 from src.providers.errors import (
     ProviderPermanentError,
     ProviderRateLimitedError,
@@ -146,12 +147,29 @@ def _warn_on_multi_process() -> None:
     """
     # `redis` backend'inde is durumu PAYLASIMLI depoda; coklu surec/replika
     # tam olarak desteklenen kurulum ve burada uyarmak yaniltici olurdu.
+    #
+    # AMA is durumunun paylasilmasi tek basina yetmiyor: SQLite tek bir DOSYA
+    # ve makineler arasi paylasilamiyor. `redis` + SQLite bilesimi TEK MAKINEDE
+    # coklu surec demek, coklu makine degil -- ve bu ayrimi yazmazsak "replika
+    # destekleniyor" satiri, ikinci makineyi acan kisi icin yanlis olurdu.
     try:
-        if get_server_config().job_backend == "redis":
-            logger.info(
-                "İş kosucusu: redis. Çoklu süreç/replika destekleniyor; işleri "
-                "`python -m src.jobs.worker` ile ayrı bir süreçte çalıştırın."
-            )
+        server = get_server_config()
+        if server.job_backend == "redis":
+            storage = backend_name(server)
+            if storage == "postgres":
+                logger.info(
+                    "İş koşucusu: redis, depo: postgres. Çoklu makine/replika "
+                    "destekleniyor; işleri `python -m src.jobs.worker` ile ayrı "
+                    "bir süreçte çalıştırın."
+                )
+            else:
+                logger.warning(
+                    "İş koşucusu: redis ama depo SQLite. Tek makinede çoklu "
+                    "süreç çalışır; ÇOKLU MAKİNE çalışmaz -- SQLite tek bir "
+                    "dosya ve ağ dosya sistemleri WAL'in dayandığı kilitlemeyi "
+                    "güvenilir biçimde sağlamıyor. Makineler arası ölçeklemek "
+                    "için DATABASE_URL tanımlayın."
+                )
             return
     except Exception:
         pass
@@ -181,10 +199,10 @@ def _mark_interrupted_runs() -> None:
     kaybetmemeli. Gecmiste "yarim kaldi" olarak gorunmeye devam ediyorlar.
     """
     try:
-        from src.storage import SQLiteStore
+        from src.storage import create_store
 
         server = get_server_config()
-        store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+        store = create_store(server)
         marked = store.mark_interrupted_runs()
         if marked:
             logger.info("Yarıda kalan %s çalıştırma işaretlendi (günlük hak iade edildi)", marked)
@@ -202,10 +220,10 @@ def _purge_orphan_run_dirs() -> None:
     """
     try:
         from src.services.run_retention import purge_orphan_run_dirs
-        from src.storage import SQLiteStore
+        from src.storage import create_store
 
         server = get_server_config()
-        store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+        store = create_store(server)
         removed = purge_orphan_run_dirs(_base_config(), store)
         if removed:
             logger.info("Sahipsiz %s çalıştırma dizini silindi", removed)

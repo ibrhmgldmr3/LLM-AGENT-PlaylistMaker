@@ -40,7 +40,17 @@ JOB_BACKEND=redis python -m uvicorn api.main:app --port 8000   # web (may be rep
 JOB_BACKEND=redis python -m src.jobs.worker                     # jobs (scale separately)
 ```
 
-Requires `pip install redis`. Worth knowing before you invest in this:
+`docker-compose.yml` is the runnable version of that topology — web, worker,
+Redis and Postgres wired together, with `JOB_BACKEND` and `DATABASE_URL`
+already set:
+
+```bash
+docker compose up -d --build
+```
+
+Requires `pip install redis` (and `psycopg2-binary` for Postgres; both are in
+`requirements.txt` and both are optional — the default setup needs neither).
+Worth knowing before you invest in this:
 
 - **It does not buy more playlist runs.** The binding constraint is the YouTube
   Data API quota — ~8–16 runs per day for *all* users, tied to the Google Cloud
@@ -52,18 +62,47 @@ Requires `pip install redis`. Worth knowing before you invest in this:
   SQLite's own documentation warns that WAL depends on locking that network
   filesystems do not implement reliably.
 
-  The Postgres port is *underway, not finished*. `src/storage/dialect.py` holds
-  the whole database-specific surface (placeholders, generated keys, upserts,
-  full-text search, transaction serialisation), and the store's contract suite
-  passes against a real Postgres 16 — but **nothing in the app constructs
-  `PostgresDialect` yet**, so there is no setting that switches the database
-  over. What is left is wiring (six `SQLiteStore(...)` call sites and a DSN
-  setting) and a one-time SQLite→Postgres data transfer.
+  **Postgres is wired up.** Set `DATABASE_URL` and the store switches over:
+
+  ```bash
+  DATABASE_URL=postgresql://user:pass@host:5432/dbname
+  ```
+
+  `src/storage/dialect.py` holds the whole database-specific surface
+  (placeholders, generated keys, upserts, full-text search, transaction
+  serialisation) and `src/storage/create_store` is the single construction
+  path — a test fails if any call site builds the store directly and so
+  misses the setting. Leaving `DATABASE_URL` empty keeps today's SQLite
+  behaviour exactly.
+
+  Moving existing data is a separate one-time step — flipping the setting
+  alone starts from an empty database:
+
+  ```bash
+  python -m src.storage.transfer --dry-run   # what would move
+  python -m src.storage.transfer             # move it
+  ```
+
+  Under Compose the same step is `docker compose run --rm transfer` (it sits
+  behind a profile, so `up` never runs it — a transfer on every boot would
+  fail the second time against a non-empty target).
+
+  Source and target come from `SQLITE_PATH` and `DATABASE_URL`; a non-empty
+  target is refused rather than merged (`--truncate` to overwrite). Keep the
+  same `SECRET_ENCRYPTION_KEY` — encrypted columns are copied as-is, so a
+  different key leaves the OAuth tokens unreadable.
 
 Everything else that used to be process-local has been moved to shared storage:
 job state and the SSE event log (Redis), pending OAuth PKCE states, and export
 downloads — those are now regenerated from the stored result rather than read
 from the local run directory.
+
+- **Uploaded documents still live on a filesystem, and web and worker must
+  share it.** Upload is synchronous — the web process writes the file to
+  `data/` and queues an ingest job; the worker reads that file back from disk.
+  Compose handles this with one shared volume. Spreading the two across
+  machines needs shared storage (or object storage, which does not exist here
+  yet) — this is the one remaining piece that is not shared-by-default.
 
 To verify the Redis backend against a real server:
 

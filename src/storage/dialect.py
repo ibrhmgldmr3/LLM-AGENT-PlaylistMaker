@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Iterator, Protocol
 
 # SQLite'in yazma kilidini bekleme suresi. Postgres'te karsiligi yok
@@ -95,6 +96,10 @@ class SqliteDialect:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # Veritabani DOSYASININ dizini: bu, SQLite'a ozgu bir hazirlik.
+        # Eskiden store yapiyordu ve Postgres kullanan bir kurulumda da bos
+        # bir `data/cache/` dizini aciliyordu.
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

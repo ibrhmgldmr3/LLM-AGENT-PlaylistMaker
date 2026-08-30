@@ -66,14 +66,23 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"
 
-# TEK SUREC -- `--workers` EKLEMEYIN.
+# VARSAYILAN KURULUMDA TEK SUREC -- `--workers` EKLEMEYIN.
 #
-# Is durumu (`InProcessJobRunner`) bellekte tutuluyor: tutamaclar, SSE olay
-# kanallari ve future'lar surece ait. Ikinci bir surece dusen istek
-# calistirmayi TANIMAZ; ilerleme akisi kopar ve `/status` "bilinmeyen
-# calistirma" doner -- is aslinda saglikli calisiyorken. Ayni sebeple bu imaj
-# birden fazla replika ile olceklenemez.
+# `JOB_BACKEND` tanimsizken is durumu (`InProcessJobRunner`) bellekte
+# tutuluyor: tutamaclar, SSE olay kanallari ve future'lar surece ait. Ikinci
+# bir surece dusen istek calistirmayi TANIMAZ; ilerleme akisi kopar ve
+# `/status` "bilinmeyen calistirma" doner -- is aslinda saglikli calisiyorken.
 #
 # Uygulama `WEB_CONCURRENCY > 1` gorurse acilista bunu hata seviyesinde
 # bildiriyor (bkz. `api/main._warn_on_multi_process`).
+#
+# Bu kisit yalnizca varsayilan yola ait. `JOB_BACKEND=redis` + `DATABASE_URL`
+# ile is durumu ve depo PAYLASIMLI hale geliyor ve AYNI imaj cogaltilabiliyor;
+# isler ayri bir surecte kosuyor:
+#
+#     docker compose up -d --build          # web + worker + redis + postgres
+#     docker run ... python -m src.jobs.worker
+#
+# Yalnizca `redis` yetmiyor: depo SQLite kalirsa cogaltma TEK MAKINEYLE sinirli
+# (SQLite tek bir dosya). Bkz. `docker-compose.yml`.
 CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -22,7 +22,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from src.config import AppConfig, RunOptions, ServerConfig, UserCredentials, settings
 from src.jobs import JobRunner
-from src.storage import DEFAULT_USER_ID, SQLiteStore
+from src.storage import DEFAULT_USER_ID, SQLiteStore, create_store
 
 
 def _base_config() -> AppConfig:
@@ -62,7 +62,7 @@ def get_current_user_optional(request: Request) -> str | None:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    store = SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+    store = create_store(server)
     session = store.get_session(token)
     return session["user_id"] if session else None
 
@@ -122,7 +122,7 @@ def get_default_run_options() -> RunOptions:
 
 
 def get_store(server: ServerConfig = Depends(get_server_config)) -> SQLiteStore:
-    return SQLiteStore(server.sqlite_path, encryption_key=server.secret_encryption_key)
+    return create_store(server)
 
 
 def get_job_runner(request: Request) -> JobRunner:
