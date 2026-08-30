@@ -248,3 +248,76 @@ def test_semantic_failure_falls_back_to_lexical_search(space):
 
     assert answer.answered is True
     assert llm.answer_calls == 1
+
+
+# ------------------------------------------------- 1. KAPI: leksik kanit esigi
+
+
+def test_off_topic_question_sharing_one_word_is_still_refused(space):
+    """Tek bir ortak kelime kapiyi ACMAMALI.
+
+    Eskiden 1. kapi "leksik eslesme VAR MI" diye soruyordu. Kaynakta "filtresi"
+    gectigi icin "filtre kahve nasil yapilir" sorusu eslesme uretiyor, kapiyi
+    aciyor ve LLM'e gidiyordu: konu disi bir soru icin para ve gecikme, ustelik
+    dogruluk yalnizca 3. kapinin (alinti zorunlulugu) modelin durustluguna
+    bagli kalmasi demek.
+
+    OLCULDU (`coverage_score`): bu soru 0.33, konuya ait sorular 1.00.
+    """
+    config, store = space
+    llm = FakeLLM()
+
+    answer = rag_service.answer_question(
+        config, store, llm, "sp", "filtre kahve nasil yapilir"
+    )
+
+    assert answer.answered is False
+    assert llm.answer_calls == 0, "konu disi soru modele HIC gitmemeli"
+
+
+def test_a_relevant_question_still_passes_the_coverage_gate(space):
+    """Kapi sikilasti; konuya ait sorulari KESMEMELI."""
+    config, store = space
+    llm = FakeLLM()
+
+    answer = rag_service.answer_question(config, store, llm, "sp", "kovaryans nasıl küçülür")
+
+    assert llm.answer_calls == 1
+    assert answer.answered is True
+
+
+def test_the_semantic_path_still_admits_a_low_coverage_question(space):
+    """ANLAMSAL YOL KAPANMADI.
+
+    "Bu konunun ana fikri ne" gibi sorularin token kapsami 0.00 (olculdu):
+    icerik kelimesi paylasmiyorlar. Leksik kapi bunlari elemeli AMA benzerlik
+    esigini gecen bir gomme onlari yine de iceri almali -- yoksa kaynaklar
+    hakkindaki mesru ozet sorulari cevapsiz kalirdi.
+    """
+    config, store = space
+    llm = FakeLLM()
+    # Gomme yolu bu sorunun ilgili oldugunu soyluyor.
+    monkey = [(chunk_id, 0.95) for chunk_id, _ in store.search_chunks_fts("sp", "kovaryans*", limit=1)]
+
+    import src.services.embedding_service as embedding_service
+
+    original = embedding_service.similarity_search
+    embedding_service.similarity_search = lambda *a, **k: monkey
+    try:
+        answer = rag_service.answer_question(config, store, llm, "sp", "bu konunun ana fikri ne")
+    finally:
+        embedding_service.similarity_search = original
+
+    assert llm.answer_calls == 1, "benzerlik esigini gecen soru modele ULASMALI"
+    assert answer.answered is True
+
+
+def test_the_coverage_threshold_is_configurable(space):
+    """Esik `.env`den ayarlanabilmeli: 0 yazmak eski davranisa donduruyor."""
+    config, store = space
+    gevsek = config.model_copy(update={"rag_min_lexical_coverage": 0.0})
+    llm = FakeLLM()
+
+    rag_service.answer_question(gevsek, store, llm, "sp", "filtre kahve nasil yapilir")
+
+    assert llm.answer_calls == 1, "esik 0 iken eski (gevsek) davranis"

@@ -38,7 +38,7 @@ from src.services.document_parser import parse_document
 from src.services.transcript_service import RunTranscriptState, get_transcript
 from src.storage import DEFAULT_USER_ID, SQLiteStore
 from src.utils.logging_utils import redact_secrets
-from src.utils.text_utils import build_fts_query
+from src.utils.text_utils import build_fts_query, coverage_score
 
 _log = logging.getLogger(__name__)
 
@@ -86,16 +86,21 @@ def answer_question(
 
     # ------------------------------------------------------------- 1. KAPI
     best_similarity = semantic[0][1] if semantic else 0.0
-    if not lexical and best_similarity < config.rag_min_similarity:
+    if not _lexical_is_evidence(config, store, lexical, question) and (
+        best_similarity < config.rag_min_similarity
+    ):
         # Esigin altinda kalan sorgunun EN IYI skoru loglaniyor: `rag_min_similarity`
         # bir tahmin ve kalibrasyonu ancak bu sayilarla yapilabilir. Yanlis
         # "bulamadim" ile halusinasyona kapi acmak arasindaki dengeyi gorunur
         # kilan tek veri bu (bkz. `docs/rag-plan.md` §4).
         _log.info(
-            "RAG kacinma: space=%s en_iyi_benzerlik=%.3f esik=%.3f soru=%r",
+            "RAG kacinma: space=%s en_iyi_benzerlik=%.3f esik=%.3f"
+            " leksik_kapsam=%.2f kapsam_esigi=%.2f soru=%r",
             space_id,
             best_similarity,
             config.rag_min_similarity,
+            _best_lexical_coverage(store, lexical, question),
+            config.rag_min_lexical_coverage,
             redact_secrets(question[:120]),
         )
         return RagAnswer(
@@ -140,6 +145,44 @@ def answer_question(
         citations=[_to_citation(by_id[chunk_id]) for chunk_id in cited],
         searched_sources=source_count,
     )
+
+
+# 1. kapinin leksik tarafinda kac parcaya bakilacagi. En iyi eslesmeler zaten
+# basta; daha derine inmek kapiyi yalnizca gevsetirdi.
+_COVERAGE_PROBE = 3
+
+
+def _best_lexical_coverage(store, lexical: list[tuple[int, float]], question: str) -> float:
+    """En iyi leksik eslesmelerin sorguyu ne kadar KARSILADIGI (0..1)."""
+    if not lexical:
+        return 0.0
+    chunk_ids = [chunk_id for chunk_id, _score in lexical[:_COVERAGE_PROBE]]
+    rows = store.get_chunks(chunk_ids)
+    if not rows:
+        return 0.0
+    return max(coverage_score(row["text"], question) for row in rows)
+
+
+def _lexical_is_evidence(config: AppConfig, store, lexical, question: str) -> bool:
+    """Leksik eslesme 1. kapiyi acmaya YETECEK kadar guclu mu.
+
+    Eskiden kapi "leksik eslesme VAR MI" diye soruyordu ve tek bir zayif
+    eslesme yetiyordu. Olculdu: "filtre kahve nasil yapilir" sorusu, Kalman
+    metninde "filtresi" gectigi icin kapiyi aciyor ve LLM'e gidiyordu -- konu
+    disi bir soru icin para ve gecikme, ustelik dogruluk yalnizca 3. kapinin
+    (alinti zorunlulugu) modelin durustluguna bagli kalmasi demek.
+
+    Olcut SKOR degil KAPSAM: `bm25()` negatif ve korpusa gore degisiyor,
+    `ts_rank` pozitif ve baska olcekte. Bir skor esigi iki lehcede baska
+    anlama gelirdi. Kapsam ise metinden Python'da hesaplaniyor.
+
+    Anlamsal yol KAPANMIYOR: kapsami dusuk ama anlamca yakin sorular
+    ("bu konunun ana fikri ne") benzerlik esiginden gecmeye devam ediyor --
+    olculdu, o sorunun token kapsami 0.00.
+    """
+    if not lexical:
+        return False
+    return _best_lexical_coverage(store, lexical, question) >= config.rag_min_lexical_coverage
 
 
 def _not_found_reason(source_count: int) -> str:

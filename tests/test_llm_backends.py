@@ -17,11 +17,13 @@ from src.providers.errors import (
 from src.providers.llm_provider import (
     GeminiLLMProvider,
     OpenRouterLLMProvider,
+    STUDY_NOTE_LEAK_RETRY_SUFFIX,
     SUBTOPIC_JSON_SCHEMA,
     SUBTOPIC_SCHEMA,
     TogetherLLMProvider,
     _classify_openrouter_error,
     _classify_together_error,
+    _looks_like_reasoning_leak,
     _SplitLLMProvider,
     build_subtopic_prompt,
     create_llm_provider,
@@ -183,3 +185,89 @@ def test_rag_provider_does_not_wrap_when_same_provider():
 )
 def test_openrouter_errors_are_classified(status_code, expected):
     assert isinstance(_classify_openrouter_error(status_code, "govde"), expected)
+
+
+# --------------------------------------------------- reasoning leak guard
+#
+# Calisma notu serbest metin oldugu icin SUBTOPIC_SCHEMA gibi protokol
+# seviyesinde bir koruma yok. Gozlemlendi: OpenRouter'in `openrouter/free`
+# otomatik yonlendiricisi bazen zayif bir modele dusup "no preamble" istemini
+# gormezden geliyor ve ham akil yurutmesini ("Here's a thinking process...")
+# calisma notu diye donduruyordu. `_looks_like_reasoning_leak` bu en bariz
+# sizintiyi yakalar; her uc saglayici da yakalayinca bir kez daha, daha sert
+# bir talimatla dener ve hala sizintiyi gormeye devam ederse notu SESSIZCE
+# kullaniciya gostermek yerine hata yukseltir.
+
+def test_reasoning_leak_marker_is_detected():
+    assert _looks_like_reasoning_leak("Here's a thinking process: first I will...")
+    assert _looks_like_reasoning_leak("<think>uzun akil yurutme</think>Not metni")
+
+
+def test_reasoning_leak_length_heuristic_catches_marker_free_dumps():
+    assert _looks_like_reasoning_leak("x" * 6001)
+
+
+def test_normal_study_note_is_not_flagged():
+    note = "Bu video useState'i anlatiyor.\n\n- Madde 1\n- Madde 2\n\n**Terms**\nuseState"
+    assert not _looks_like_reasoning_leak(note)
+
+
+def test_gemini_study_note_retries_once_then_returns_clean_text(monkeypatch):
+    provider = GeminiLLMProvider.__new__(GeminiLLMProvider)
+    provider.config = AppConfig(gemini_api_key="g")
+    provider._thinking_unsupported = set()
+
+    calls = []
+
+    def fake_generate(model_name, prompt, config_factory):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "Here's a thinking process: blah " * 50
+        return "Temiz not."
+
+    monkeypatch.setattr(provider, "_generate", fake_generate)
+
+    result = provider.generate_study_note("Konu", "Alt", "Video", "transkript", "tr")
+
+    assert result == "Temiz not."
+    assert len(calls) == 2
+    assert calls[1].endswith(STUDY_NOTE_LEAK_RETRY_SUFFIX)
+
+
+def test_gemini_study_note_gives_up_after_persistent_leak(monkeypatch):
+    """Tum aday modeller de sizinti dondurunce not UYDURULMAZ, acik hata verilir."""
+    provider = GeminiLLMProvider.__new__(GeminiLLMProvider)
+    provider.config = AppConfig(gemini_api_key="g")
+    provider._thinking_unsupported = set()
+
+    monkeypatch.setattr(provider, "_generate", lambda *a, **k: "Here's a thinking process: " * 100)
+
+    with pytest.raises(ProviderPermanentError, match="reasoning leak"):
+        provider.generate_study_note("Konu", "Alt", "Video", "transkript", "tr")
+
+
+def test_together_study_note_raises_temporary_error_when_leak_persists(monkeypatch):
+    provider = TogetherLLMProvider(AppConfig(llm_provider="together", together_api_key="t"))
+    monkeypatch.setattr(provider, "_generate", lambda *a, **k: "Here's a thinking process: " * 100)
+
+    with pytest.raises(ProviderTemporaryError, match="reasoning leak"):
+        provider.generate_study_note("Konu", "Alt", "Video", "transkript", "tr")
+
+
+def test_openrouter_study_note_retries_once_then_returns_clean_text(monkeypatch):
+    provider = OpenRouterLLMProvider(AppConfig(llm_provider="openrouter", openrouter_api_key="o"))
+    calls = []
+
+    def fake_generate(prompt, system_instruction):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "Here's a thinking process: blah " * 50
+        return "Temiz not."
+
+    monkeypatch.setattr(provider, "_generate", fake_generate)
+
+    result = provider.generate_study_note("Konu", "Alt", "Video", "transkript", "tr")
+
+    assert result == "Temiz not."
+    assert len(calls) == 2
+    assert calls[1].endswith(STUDY_NOTE_LEAK_RETRY_SUFFIX)

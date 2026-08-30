@@ -1052,9 +1052,13 @@ class SQLiteStore:
                 """
                 INSERT INTO api_usage (day, user_id, provider, endpoint, calls, units)
                 VALUES (?, ?, ?, ?, 1, ?)
+                -- Sutunlar TABLO ADIYLA nitelikli. Niteliksiz `calls`,
+                -- Postgres'te hedef satirla `excluded` arasinda BELIRSIZ
+                -- (`AmbiguousColumn`); SQLite ise kabul ediyor, yani hata
+                -- yalnizca Postgres'te ve yalnizca CALISMA aninda cikiyor.
                 ON CONFLICT(day, user_id, provider, endpoint) DO UPDATE SET
-                    calls = calls + 1,
-                    units = units + excluded.units
+                    calls = api_usage.calls + 1,
+                    units = api_usage.units + excluded.units
                 """,
                 (day or quota_day(), user_id, provider, endpoint, int(units)),
             )
