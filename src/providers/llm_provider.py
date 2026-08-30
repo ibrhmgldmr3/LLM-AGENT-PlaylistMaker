@@ -125,18 +125,39 @@ STUDY_NOTE_LEAK_RETRY_SUFFIX = (
 )
 
 
-def _looks_like_reasoning_leak(text: str) -> bool:
-    """Modelin nihai cevap yerine kendi akil yurutmesini dokup dokmedigini kontrol eder.
+def _has_reasoning_marker(text: str) -> bool:
+    """Metin akil yurutme sizintisinin TIPIK ifadelerini tasiyor mu.
 
-    Bu bir SEMA DEGIL, sezgisel -- serbest metinde protokol seviyesinde
-    zorlama mumkun degil. Amac mukemmel tespit degil, en bariz sizintiyi
-    (uzunluk + tipik ifadeler) yakalayip cagiran tarafin bunu SESSIZCE
-    kullaniciya gostermek yerine `ProviderTemporaryError`e cevirmesini saglamak.
+    KESIN olcut budur: bu ifadeler nihai bir calisma notunda bulunmaz.
     """
     lowered = text.lower()
-    if any(marker in lowered for marker in _REASONING_LEAK_MARKERS):
-        return True
-    return len(text) > _STUDY_NOTE_LEAK_LENGTH_THRESHOLD
+    return any(marker in lowered for marker in _REASONING_LEAK_MARKERS)
+
+
+def _looks_like_reasoning_leak(text: str) -> bool:
+    """Yanit SUPHELI mi -- yani bir kez daha sorulmayi hak ediyor mu.
+
+    Bu bir SEMA DEGIL, sezgisel -- serbest metinde protokol seviyesinde
+    zorlama mumkun degil. Uzunluk BURADA yeterli, ama tek basina REDDETMEYE
+    yetmiyor (bkz. `_is_reasoning_leak`).
+    """
+    return _has_reasoning_marker(text) or len(text) > _STUDY_NOTE_LEAK_LENGTH_THRESHOLD
+
+
+def _is_reasoning_leak(text: str) -> bool:
+    """Yanit ATILMALI mi.
+
+    Yalnizca MARKER'a bakiyor, uzunluga DEGIL. Uzunluk tek basina reddetme
+    olcutuyken uzun ama gecerli bir not sessizce cope gidiyordu: sezgisel
+    once bir tekrar denemeyi tetikliyor, ikinci yanit da uzun oldugu icin
+    yine reddediliyor ve model ELENIYOR. Uc aday modelde bu, not basina alti
+    LLM cagrisi harcayip sonunda `status="failed"` yazmak demekti -- ustelik
+    elde gosterilebilir bir not VARKEN.
+
+    Cok uzun ama sizinti isareti tasimayan bir yanit fazla ayrintili bir
+    nottur; kullaniciya gostermek, hic gostermemekten iyi.
+    """
+    return _has_reasoning_marker(text)
 
 
 def build_study_note_prompt(
@@ -410,7 +431,7 @@ class GeminiLLMProvider:
                         prompt + STUDY_NOTE_LEAK_RETRY_SUFFIX,
                         self._study_note_generation_config,
                     )
-                if _looks_like_reasoning_leak(text):
+                if _is_reasoning_leak(text):
                     errors.append(f"{model_name}: reasoning leak in response")
                     continue
             except ProviderPermanentError:
@@ -698,7 +719,7 @@ class TogetherLLMProvider:
             text = self._generate(
                 prompt + STUDY_NOTE_LEAK_RETRY_SUFFIX, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION
             )
-        if _looks_like_reasoning_leak(text):
+        if _is_reasoning_leak(text):
             raise ProviderTemporaryError(
                 "Model calisma notu yerine akil yurutmesini dondurdu (reasoning leak)"
             )
@@ -847,7 +868,7 @@ class OpenRouterLLMProvider:
             text = self._generate(
                 prompt + STUDY_NOTE_LEAK_RETRY_SUFFIX, system_instruction=STUDY_NOTE_SYSTEM_INSTRUCTION
             )
-        if _looks_like_reasoning_leak(text):
+        if _is_reasoning_leak(text):
             raise ProviderTemporaryError(
                 "Model calisma notu yerine akil yurutmesini dondurdu (reasoning leak)"
             )

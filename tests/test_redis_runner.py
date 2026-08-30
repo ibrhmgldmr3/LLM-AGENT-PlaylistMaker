@@ -335,8 +335,43 @@ def test_corrupt_event_does_not_stall_the_cursor(runner, echo_task):
 
     events = runner.events_since("j1", 0)
 
-    # Bozuk satir atlaniyor ama SONRAKI olay yine okunuyor.
-    assert [e.progress for _, e in events] == [0.5, 1.0]
+    # Bozuk satir yer tutucuyla doner; SONRAKI olay yine okunuyor.
+    assert [e.progress for _, e in events] == [0.5, 0.5, 1.0]
+    assert [i for i, _ in events] == [0, 1, 2]
+
+
+def test_trailing_corrupt_event_still_advances_the_cursor(runner, echo_task):
+    """SONDAKI bozuk olay imleci ilerletmeli.
+
+    Atlandiginda imlec sabit kaliyor ama `_has_news` listede okunmamis eleman
+    gorup ANINDA True donuyor: `wait_for_events` hic beklemiyor ve `api/sse.py`
+    ureticisi is bitene kadar bos donen sikisik bir donguye giriyor.
+    """
+    runner.submit("j1", "ali", echo_task, {})
+    runner.append_event("j1", _event(0.5))
+    runner._redis.rpush(runner._events_key("j1"), "bu JSON degil")
+
+    cursor = 0
+    for index, _event_obj in runner.events_since("j1", cursor):
+        cursor = index + 1
+
+    assert cursor == 2, "imlec bozuk olayin OTESINE gecmeli"
+    # Asil sozlesme: okunacak yeni bir sey kalmadiginda bekleme GERCEKTEN beklemeli.
+    assert runner._has_news("j1", cursor) is False
+    started = time.monotonic()
+    assert runner.wait_for_events("j1", cursor, 0.2) is False
+    assert time.monotonic() - started >= 0.15, "bekleme aninda donduyse dongu sikisir"
+
+
+def test_corrupt_event_does_not_rewind_progress(runner, echo_task):
+    """Yer tutucu ilerlemeyi GERIYE sicratmamali."""
+    runner.submit("j1", "ali", echo_task, {})
+    runner.append_event("j1", _event(0.8))
+    runner._redis.rpush(runner._events_key("j1"), "bu JSON degil")
+
+    progresses = [e.progress for _, e in runner.events_since("j1", 0)]
+
+    assert progresses == [0.8, 0.8], "ilerleme cubugu bastan baslamis gibi gorunmemeli"
 
 
 # ------------------------------------------------------------------ kapanis
