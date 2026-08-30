@@ -28,7 +28,7 @@ from src.services.recommendation_service import assign_recommendations
 from src.services.topic_service import generate_subtopics
 from src.services.transcript_service import RunTranscriptState, get_transcript
 from src.services.youtube_search_service import search_candidates
-from src.storage import DEFAULT_USER_ID, SQLiteStore
+from src.storage import DEFAULT_USER_ID, SQLiteStore, create_store
 from src.providers.youtube_data_api_provider import DEFAULT_DAILY_QUOTA_UNITS
 from src.storage.sqlite_store import quota_day
 from src.utils.logging_utils import close_logger, redact_secrets, run_log_path, setup_logger
@@ -110,7 +110,7 @@ def build_playlist(
     run_dir = config.runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    store = SQLiteStore(config.sqlite_path)
+    store = create_store(config)
     log_file = run_log_path(str(run_dir))
     logger = setup_logger("playlist", log_file)
 

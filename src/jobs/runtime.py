@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.config import AppConfig, UserCredentials, settings
-from src.storage import SQLiteStore
+from src.storage import SQLiteStore, create_store
 
 
 def runtime_config(option_overrides: dict[str, Any] | None = None) -> AppConfig:
@@ -41,4 +41,4 @@ def runtime_config(option_overrides: dict[str, Any] | None = None) -> AppConfig:
 
 
 def runtime_store(config: AppConfig) -> SQLiteStore:
-    return SQLiteStore(config.sqlite_path, encryption_key=config.secret_encryption_key)
+    return create_store(config)

@@ -1,0 +1,121 @@
+# Coklu surecli kurulum: web + worker + redis + postgres.
+#
+# `Dockerfile` tek basina TEK SURECLI kurulumu veriyor (is durumu bellekte,
+# depo SQLite). Bu dosya, `JOB_BACKEND=redis` ve `DATABASE_URL` ile acilan
+# yolun CALISTIRILABILIR tarifi -- ayarlar koda girmis olsa da onlari birlikte
+# ayaga kaldiran bir tarif yoksa kimse kullanamaz.
+#
+#   docker compose up -d --build
+#   docker compose logs -f web worker
+#
+# Sirlar `.env`den geliyor (`.env.example`i kopyalayin). GEMINI_API_KEY
+# zorunlu; DATABASE_URL ve REDIS_URL burada ZORLANIYOR, cunku bu tarifin
+# tamami onlarin dolu olmasina dayaniyor.
+
+name: make-a-playlist
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `-U app -d app`: parametresiz `pg_isready` yalnizca portu dinliyor mu
+      # diye bakar ve giris yetkisi kurulmadan ONCE "hazir" diyebilir.
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Kalicilik ACIK. Is kuyrugu ve olay gunlugu Redis'te: kalicilik olmadan
+    # bir yeniden baslatma, kuyrukta bekleyen isleri sessizce yok ederdi.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    build: .
+    env_file: [.env]
+    environment: &shared_env
+      JOB_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:-app}@postgres:5432/app
+    volumes:
+      # PAYLASILAN DISK, istege bagli degil. Dokuman yukleme SENKRON: web
+      # dosyayi diske yaziyor ve indeksleme isini kuyruga atiyor; worker o
+      # dosyayi DISKTEN okuyor (bkz. `api/routers/spaces.add_document_source`).
+      # Ayri birimlerde worker "dosya yok" ile patlar.
+      - appdata:/app/data
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["python", "-m", "src.jobs.worker"]
+    env_file: [.env]
+    environment: *shared_env
+    volumes:
+      - appdata:/app/data
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    # Dockerfile'in saglik kontrolu DEVRE DISI. Devralinan kontrol
+    # `http://127.0.0.1:8000/api/health` cagiriyor; worker port DINLEMIYOR,
+    # yani saglikli bir worker sonsuza kadar "unhealthy" gorunurdu. Olculdu:
+    # devre disi birakilmadan konteyner `health: starting`ten hic cikmiyor.
+    #
+    # Yerine yeni bir kontrol yazilmadi: "canli mi" sorusunun ucuz bir yaniti
+    # yok ve asil gozlem kuyrugun uzunlugu, sureclerin sayisi degil. Cokerse
+    # `restart` geri getiriyor.
+    healthcheck: {disable: true}
+    restart: unless-stopped
+
+  # Bir kerelik veri aktarimi: SQLite -> Postgres.
+  #
+  #   docker compose run --rm transfer
+  #
+  # `profiles` altinda oldugu icin `up` ile BASLAMIYOR: her aciliste calisan
+  # bir aktarim, ikinci kez dolu hedefi gorup hata verirdi.
+  #
+  # Kaynak, `appdata` biriminin ICINDEKI SQLite dosyasi. Tasinacak veritabani
+  # ana makinede duruyorsa (Compose'a gecmeden once tek surec calistiysaniz)
+  # once onu baglayin:
+  #
+  #   docker compose run --rm -v /yol/app.db:/eski.db:ro transfer
+  #       python -m src.storage.transfer --source /eski.db
+  transfer:
+    build: .
+    profiles: [tools]
+    command: ["python", "-m", "src.storage.transfer"]
+    env_file: [.env]
+    environment: *shared_env
+    # Ayni sebeple: bu da bir web sunucusu degil.
+    healthcheck: {disable: true}
+    volumes:
+      - appdata:/app/data
+    depends_on:
+      postgres: {condition: service_healthy}
+
+volumes:
+  # Calistirma ciktilari, yuklenen dokumanlar, indirilen sesler. Veritabani
+  # ARTIK burada degil (Postgres'te) ama dosyalar hala disk uzerinde.
+  appdata:
+  pgdata:
+  redisdata:

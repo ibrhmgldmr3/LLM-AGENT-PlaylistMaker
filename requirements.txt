@@ -40,6 +40,15 @@ youtube-transcript-api>=1.0.0,<2.0.0
 # `src/jobs/factory.py` bu paketi sadece o dalda import ediyor.
 redis>=5.0.0,<8.0.0
 
+# Optional: paylasimli veritabani (DATABASE_URL)
+# VARSAYILAN KURULUMDA GEREKMEZ -- depo SQLite ve hicbir surucu istemiyor.
+# Yalnizca MAKINELER ARASI olceklendiginde kuruluyor; `src/storage/dialect.py`
+# bu paketi sadece Postgres dalinda import ediyor.
+#
+# `-binary`: onceden derlenmis tekerlek. Kaynaktan derleyen `psycopg2`,
+# imajda `libpq-dev` + derleyici isterdi.
+psycopg2-binary>=2.9.10,<3.0.0
+
 # Optional ASR
 faster-whisper>=1.1.0,<2.0.0
 
@@ -60,3 +69,6 @@ google-api-python-client>=2.140.0,<3.0.0
 # Testing
 pytest>=8.0.0,<9.0.0
 httpx>=0.27.0,<1.0.0
+# `docker-compose.yml`i okuyan testler icin (bkz. tests/test_compose_topology.py).
+# 6.0.2, Python 3.13 tekerleklerini tasiyan ilk surum.
+pyyaml>=6.0.2,<7.0.0

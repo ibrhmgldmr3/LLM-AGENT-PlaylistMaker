@@ -62,8 +62,8 @@ def _database_name(dsn: str) -> str:
     return psycopg2.extensions.parse_dsn(dsn).get("dbname", "")
 
 
-def _fresh_postgres_dialect() -> PostgresDialect:
-    """Bos bir Postgres semasi hazirlar ve lehceyi doner.
+def _fresh_postgres_dsn() -> str:
+    """Bos bir Postgres semasi hazirlar ve DSN'i doner.
 
     Sema her testte SIFIRLANIYOR. Alternatif her testte yeni bir veritabani
     yaratmakti; `DROP SCHEMA public CASCADE` ayni yalitimi veriyor ve
@@ -100,7 +100,13 @@ def _fresh_postgres_dialect() -> PostgresDialect:
             cursor.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public")
     finally:
         conn.close()
-    return PostgresDialect(dsn)
+    return dsn
+
+
+@pytest.fixture
+def postgres_dsn() -> str:
+    """Bos bir Postgres semasi; yoksa test ATLANIR."""
+    return _fresh_postgres_dsn()
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -113,5 +119,7 @@ def store(request, tmp_path) -> SQLiteStore:
     saklardi -- Redis'te ayni ders ODENDI: elle yazilmis bir taklit, gercek
     bagimliligin ortaya cikardigi hatayi bulamamisti.
     """
-    dialect = _fresh_postgres_dialect() if request.param == "postgres" else None
+    dialect = (
+        PostgresDialect(_fresh_postgres_dsn()) if request.param == "postgres" else None
+    )
     return SQLiteStore(str(tmp_path / "app.db"), dialect=dialect)

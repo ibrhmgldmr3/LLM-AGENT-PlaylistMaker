@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from api import deps
 from src.config import settings
 from src.jobs import space_tasks
+from src.jobs.runner import JobState
 from api.routers import spaces as spaces_router
 from src.config import AppConfig
 from src.models import (
@@ -93,6 +94,27 @@ def _create(client, name="Kalman") -> str:
     response = client.post("/api/spaces", json={"name": name})
     assert response.status_code == 201, response.text
     return response.json()["space_id"]
+
+
+def _wait_for_job(client, job_id: str, timeout: float = 10.0):
+    """Arka plan isinin BITMESINI bekler ve tutamacini doner.
+
+    202 alip testi bitirmek yetmiyor: is henuz BASLAMAMIS olabiliyor. Test
+    sonlaninca `monkeypatch` taklitleri geri aliyor ve is, GERCEK bagimliliga
+    dusuyor -- `test_adding_a_run_returns_a_job`de tam olarak bu oldu ve
+    `rag_service.ingest_run` arka planda YouTube'a gitti. Hata da testin
+    kendisinde degil, o sirada ne kosuyorsa onun ciktisinda goruluyordu.
+
+    Ayni ders `_upload`ta zaten yaziliydi; bu yardimci onu ISLERE genelliyor.
+    """
+    runner = client.app.state.job_runner
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        handle = runner.get(job_id)
+        if handle is not None and handle.state.is_terminal:
+            return handle
+        time.sleep(0.02)
+    raise AssertionError(f"{job_id} {timeout} saniye icinde bitmedi")
 
 
 def _upload(client, space_id, filename="ders.txt", content=b"Kovaryans matrisi kucultur."):
@@ -327,6 +349,10 @@ def test_adding_a_run_returns_a_job(client, monkeypatch):
 
     assert response.status_code == 202
     assert response.json()["space_id"] == space_id
+    # Is BITENE kadar bekleniyor: taklit yalnizca test suresince ayakta ve
+    # beklemeden cikmak, isin gercek `ingest_run`a dusmesi demekti.
+    handle = _wait_for_job(client, response.json()["job_id"])
+    assert handle.state is JobState.DONE, handle.error
 
 
 # --------------------------------------------------------------------- soru
