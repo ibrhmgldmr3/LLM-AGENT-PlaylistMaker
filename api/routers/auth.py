@@ -11,6 +11,7 @@ bu imkansiz. Standart uc adimli akis:
 from __future__ import annotations
 
 import secrets
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi import Response
@@ -150,7 +151,10 @@ def youtube_callback(
     icin Google hesabi bagliyor.
     """
     if error:
-        return RedirectResponse(f"/?youtube_auth=error&reason={error}")
+        # KODLANIYOR: `error` Google'in verdigi ham sorgu parametresi ve
+        # kodlanmadan yazildiginda icindeki `&` ya da `#` yonlendirme URL'ini
+        # bolup arayuze uydurma parametre gecirebiliyordu.
+        return RedirectResponse(f"/?youtube_auth=error&reason={quote(error, safe='')}")
     if not code or not state:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Eksik `code` veya `state`")
 

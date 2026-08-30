@@ -508,17 +508,3 @@ def ask(
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, redact_secrets(f"Yanıt üretilemedi: {exc}")
         ) from exc
-
-
-def _report_message(report) -> str:
-    """Iceri alma ozetini kullanicinin okuyabilecegi tek satira cevirir.
-
-    Kapsam DISI kalanlar acikca sayiliyor: kullanici neyin aranamayacagini
-    bilmeli, yoksa o konuda "bulamadim" yanitini alip sistemi bozuk sanir.
-    """
-    parts = [f"{report.indexed} kaynak indekslendi"]
-    if report.skipped_no_text:
-        parts.append(f"{len(report.skipped_no_text)} kaynakta metin yok")
-    if report.failed:
-        parts.append(f"{len(report.failed)} kaynak başarısız")
-    return ", ".join(parts)

@@ -86,7 +86,11 @@ def answer_question(
 
     # ------------------------------------------------------------- 1. KAPI
     best_similarity = semantic[0][1] if semantic else 0.0
-    if not _lexical_is_evidence(config, store, lexical, question) and (
+    # BIR KEZ hesaplaniyor: `_best_lexical_coverage` parcalari DEPODAN okuyor
+    # ve hem kapi kararinin hem asagidaki gunluk satirinin ayni sayiya ihtiyaci
+    # var. Ikisi ayri ayri cagirdiginda her kacinma iki ayni sorgu uretiyordu.
+    lexical_coverage = _best_lexical_coverage(store, lexical, question)
+    if not _lexical_is_evidence(config, lexical, lexical_coverage) and (
         best_similarity < config.rag_min_similarity
     ):
         # Esigin altinda kalan sorgunun EN IYI skoru loglaniyor: `rag_min_similarity`
@@ -99,7 +103,7 @@ def answer_question(
             space_id,
             best_similarity,
             config.rag_min_similarity,
-            _best_lexical_coverage(store, lexical, question),
+            lexical_coverage,
             config.rag_min_lexical_coverage,
             redact_secrets(question[:120]),
         )
@@ -163,7 +167,7 @@ def _best_lexical_coverage(store, lexical: list[tuple[int, float]], question: st
     return max(coverage_score(row["text"], question) for row in rows)
 
 
-def _lexical_is_evidence(config: AppConfig, store, lexical, question: str) -> bool:
+def _lexical_is_evidence(config: AppConfig, lexical, coverage: float) -> bool:
     """Leksik eslesme 1. kapiyi acmaya YETECEK kadar guclu mu.
 
     Eskiden kapi "leksik eslesme VAR MI" diye soruyordu ve tek bir zayif
@@ -179,10 +183,15 @@ def _lexical_is_evidence(config: AppConfig, store, lexical, question: str) -> bo
     Anlamsal yol KAPANMIYOR: kapsami dusuk ama anlamca yakin sorular
     ("bu konunun ana fikri ne") benzerlik esiginden gecmeye devam ediyor --
     olculdu, o sorunun token kapsami 0.00.
+
+    `lexical` BOSKEN kapsamdan bagimsiz olarak False: esik 0.00'a cekildiginde
+    (`.env.example`teki "eski gevsek davranis") aksi halde HIC eslesme
+    olmadigi halde kapi acilirdi -- gevsetmek "her eslesme yeter" demek,
+    "eslesme gerekmez" demek degil.
     """
     if not lexical:
         return False
-    return _best_lexical_coverage(store, lexical, question) >= config.rag_min_lexical_coverage
+    return coverage >= config.rag_min_lexical_coverage
 
 
 def _not_found_reason(source_count: int) -> str:

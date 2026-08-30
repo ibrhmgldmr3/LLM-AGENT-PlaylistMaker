@@ -23,6 +23,7 @@ from src.providers.llm_provider import (
     TogetherLLMProvider,
     _classify_openrouter_error,
     _classify_together_error,
+    _is_reasoning_leak,
     _looks_like_reasoning_leak,
     _SplitLLMProvider,
     build_subtopic_prompt,
@@ -210,6 +211,49 @@ def test_reasoning_leak_length_heuristic_catches_marker_free_dumps():
 def test_normal_study_note_is_not_flagged():
     note = "Bu video useState'i anlatiyor.\n\n- Madde 1\n- Madde 2\n\n**Terms**\nuseState"
     assert not _looks_like_reasoning_leak(note)
+
+
+# Uzunluk bir SUPHE olcutu, RET olcutu degil. Ikisi ayni sayilinca uzun ama
+# gecerli bir not sessizce cope gidiyordu: sezgisel once tekrar denemeyi
+# tetikliyor, ikinci yanit da uzun oldugu icin yine reddediliyor ve model
+# ELENIYOR. Uc aday modelde bu, not basina alti LLM cagrisi harcayip sonunda
+# `status="failed"` yazmak demekti -- elde gosterilebilir bir not VARKEN.
+
+def test_long_but_marker_free_note_is_suspicious_but_not_rejected():
+    long_note = "Bu video Kalman filtresini anlatiyor. " * 200
+
+    assert _looks_like_reasoning_leak(long_note), "tekrar denemeyi tetiklemeli"
+    assert not _is_reasoning_leak(long_note), "ama ATILMAMALI"
+
+
+def test_gemini_keeps_a_long_note_when_the_retry_is_also_long(monkeypatch):
+    """Fazla ayrintili bir not, hic not olmamasindan iyi."""
+    provider = GeminiLLMProvider.__new__(GeminiLLMProvider)
+    provider.config = AppConfig(gemini_api_key="g")
+    provider._thinking_unsupported = set()
+
+    long_note = "Kalman filtresi hakkinda uzun ama gecerli bir not. " * 150
+    calls = []
+
+    def fake_generate(model_name, prompt, config_factory):
+        calls.append(prompt)
+        return long_note
+
+    monkeypatch.setattr(provider, "_generate", fake_generate)
+
+    result = provider.generate_study_note("Konu", "Alt", "Video", "transkript", "tr")
+
+    assert result == long_note
+    # Bir kez daha denendi, ama uc modelde alti cagriya cikmadi.
+    assert len(calls) == 2
+
+
+def test_together_keeps_a_long_note_when_the_retry_is_also_long(monkeypatch):
+    provider = TogetherLLMProvider(AppConfig(llm_provider="together", together_api_key="t"))
+    long_note = "Uzun ama gecerli not. " * 400
+    monkeypatch.setattr(provider, "_generate", lambda *a, **k: long_note)
+
+    assert provider.generate_study_note("Konu", "Alt", "Video", "transkript", "tr") == long_note
 
 
 def test_gemini_study_note_retries_once_then_returns_clean_text(monkeypatch):

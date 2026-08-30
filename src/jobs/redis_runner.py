@@ -154,15 +154,45 @@ class RedisJobRunner:
         )
 
     def events_since(self, job_id: str, cursor: int = 0) -> list[tuple[int, ProgressEvent]]:
+        """`cursor`dan itibaren olaylari dondurur. Indeks HER ZAMAN ilerler.
+
+        Okunamayan satir ATLANMIYOR, yer tutucuyla donuyor. Atlamak, sondaki
+        bozuk olayda tam da onlenmek istenen seyi yapiyordu: cagiran imleci
+        `index + 1` ile ilerletiyor, atlanan olay hic donmedigi icin imlec sabit
+        kaliyor, `_has_news` ise listede okunmamis eleman gorup ANINDA True
+        donuyordu. Yani `wait_for_events` hic beklemiyor ve `api/sse.py`deki
+        uretici, is bitene kadar bos donen SIKISIK bir donguye giriyordu
+        (%100 CPU, her turda birkac Redis cagrisi -- her acik akis icin ayri).
+
+        Sema degisen bir dagitimda tam olarak bu olusuyor: eski bicimde yazilmis
+        olaylar TTL boyunca (24 saat) Redis'te kaliyor.
+        """
         raw = self._redis.lrange(self._events_key(job_id), cursor, -1)
-        events: list[tuple[int, ProgressEvent]] = []
+        parsed: list[ProgressEvent | None] = []
         for offset, item in enumerate(raw or []):
             try:
-                events.append((cursor + offset, ProgressEvent.model_validate_json(_text(item))))
+                parsed.append(ProgressEvent.model_validate_json(_text(item)))
             except Exception:
-                # Bozuk tek bir satir AKISI KESMEMELI: imlec ilerlemezse
-                # istemci sonsuza kadar ayni noktada takilir.
                 _log.warning("Okunamayan ilerleme olayi atlandi: %s/%s", job_id, cursor + offset)
+                parsed.append(None)
+
+        # Yer tutucunun ilerlemesi KOMSUSUNDAN aliniyor. Sabit 0.0 vermek,
+        # istemcinin ilerleme cubugunu geriye sicratirdi -- kaybolan tek bir
+        # olay, calistirmanin bastan basladigi izlenimi vermemeli.
+        known = [event.progress for event in parsed if event is not None]
+        fallback = known[0] if known else 0.0
+        events: list[tuple[int, ProgressEvent]] = []
+        last_progress = fallback
+        for offset, event in enumerate(parsed):
+            if event is None:
+                event = ProgressEvent(
+                    stage="unknown",
+                    message="(okunamayan ilerleme olayı atlandı)",
+                    progress=last_progress,
+                )
+            else:
+                last_progress = event.progress
+            events.append((cursor + offset, event))
         return events
 
     def wait_for_events(self, job_id: str, cursor: int, timeout: float) -> bool:
