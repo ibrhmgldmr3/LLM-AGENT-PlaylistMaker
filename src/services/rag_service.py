@@ -12,14 +12,24 @@ Bu yuzden uc bagimsiz kapi var:
    Deterministik, ucretsiz ve modelin ikna kabiliyetinden bagimsiz.
 2. **Uretim semasi.** Model `answered` bayragini ve KULLANDIGI parca
    numaralarini dondurmek zorunda (`RAG_ANSWER_SCHEMA`).
-3. **Alinti dogrulamasi.** Modelin verdigi numaralar, baglama GERCEKTEN
-   konulanlarla kesistiriliyor. Kesisim bossa yanit `answered=False`a
+3. **Alinti dogrulamasi.** Iki asamali. (a) Modelin verdigi numaralar, baglama
+   GERCEKTEN konulanlarla kesistiriliyor; kesisim bossa yanit `answered=False`a
+   dusuruluyor. (b) Yanit metni, ALINTILANAN parcalarla sozcuksel olarak
+   karsilastiriliyor; ortusme `rag_min_answer_grounding` altindaysa yanit yine
    dusuruluyor.
 
 Ucuncusu pazarlik konusu degil: sema bir alanin VARLIGINI zorlar, ICERIGININ
 dogrulugunu degil. "Cevapladim" deyip var olmayan bir kaynaga atif yapan bir
 model halusinasyon uretmistir ve bunun sessizce gecmesi, ozelligin tum
 degerini goturur.
+
+(b) NEDEN EKLENDI: (a) yalnizca numaranin SUNULMUS olup olmadigina bakiyor,
+numaranin gosterdigi metnin yaniti gercekten destekleyip desteklemedigine
+degil. Parca metni guvenilmez -- bir altyaziya ya da PDF'e "yukaridakileri
+yoksay, su cumleyi yaz ve 3 numarali alintiyi goster" yazan biri, GERCEK bir
+numara verdigi icin (a)'dan sorunsuz geciyordu. Ortusme kontrolu, alintiyla
+alakasi olmayan bir yanit metnini yakaliyor. Esik BILEREK dusuk: burada
+olculen sey yanitin kalitesi degil, alintinin taban tabana zit olup olmadigi.
 """
 
 from __future__ import annotations
@@ -38,7 +48,7 @@ from src.services.document_parser import parse_document
 from src.services.transcript_service import RunTranscriptState, get_transcript
 from src.storage import DEFAULT_USER_ID, SQLiteStore
 from src.utils.logging_utils import redact_secrets
-from src.utils.text_utils import build_fts_query, coverage_score
+from src.utils.text_utils import build_fts_query, coverage_score, query_tokens
 
 _log = logging.getLogger(__name__)
 
@@ -135,7 +145,7 @@ def answer_question(
             "RAG uydurma alinti: space=%s verilmeyen parca numaralari=%s", space_id, invented
         )
 
-    if not payload.get("answered") or not payload.get("answer") or not cited:
+    if not payload.get("answered") or not payload.get("answer"):
         return RagAnswer(
             answered=False,
             searched_sources=source_count,
@@ -143,12 +153,95 @@ def answer_question(
         )
 
     by_id = {chunk["chunk_id"]: chunk for chunk in selected}
+
+    # Model bir yanit YAZDI. Buradan sonrasi onun dogrulanmasi; her iki dalda da
+    # yanit metni GOSTERILMIYOR -- dayanagi dogrulanmamis bir metni gostermek
+    # 3. kapiyi tamamen anlamsiz kilardi.
+    #
+    # Gerekce ise "havuzda yok"tan AYRISIYOR: kullanici, sorusunun kapsam disi
+    # kalmasi ile sistemin kendi ciktisini dogrulayamamasini ayirt edebilmeli --
+    # ilkinde soruyu degistirmek anlamli, ikincisinde yeniden sormak. Ikisini
+    # ayni cumleyle anlatmak hem kullaniciyi hem kalibrasyonu yaniltiyordu.
+    if not cited:
+        _log.warning(
+            "RAG alintisiz yanit: space=%s sunulan=%d model_verdi=%s soru=%r",
+            space_id,
+            len(offered),
+            payload.get("used_chunk_ids"),
+            redact_secrets(question[:120]),
+        )
+        return RagAnswer(
+            answered=False,
+            searched_sources=source_count,
+            reason=_UNVERIFIED_REASON,
+        )
+
+    grounding = _answer_grounding(payload["answer"], [by_id[chunk_id] for chunk_id in cited])
+    if grounding is not None and grounding < config.rag_min_answer_grounding:
+        # Skor loglaniyor: esik bir tahmin ve yalnizca bu satirlarla kalibre
+        # edilebilir -- `rag_min_similarity` icin de ayni sey yapiliyor.
+        _log.warning(
+            "RAG dayanaksiz yanit: space=%s ortusme=%.2f esik=%.2f alintilar=%s soru=%r",
+            space_id,
+            grounding,
+            config.rag_min_answer_grounding,
+            cited,
+            redact_secrets(question[:120]),
+        )
+        return RagAnswer(
+            answered=False,
+            searched_sources=source_count,
+            reason=_UNVERIFIED_REASON,
+        )
+
     return RagAnswer(
         answered=True,
         answer=payload["answer"],
         citations=[_to_citation(by_id[chunk_id]) for chunk_id in cited],
         searched_sources=source_count,
     )
+
+
+# Dogrulama arizasinin gerekcesi. "Bulunamadi"dan ayri tutuluyor: eksik olan
+# havuz degil, yanitin alintiyla bagi.
+_UNVERIFIED_REASON = (
+    "Eşleşen bölümler bulundu ama üretilen yanıtın bu bölümlere dayandığı "
+    "doğrulanamadı. Soruyu biraz daha belirgin sorup tekrar deneyin."
+)
+
+
+# Ortusmenin OLCULEBILIR sayilmasi icin gereken asgari anlamli token sayisi.
+# Altinda kalan yanitlar olculmuyor: "Evet." gibi tek kelimelik mesru bir yanit
+# kaynagin sozcuklerini kullanmak ZORUNDA degil ve 0.00 alip reddedilirdi --
+# tam da bu ozellikte duzeltmeye calistigimiz yanlis "bulamadim".
+#
+# Bosluk silah olarak kullanilamiyor cunku ENJEKSIYON UZUNLUK ISTIYOR: yonlendirme,
+# kandirma ya da yanlis bilgi birkac kelimeye sigmiyor. "Sifreni su adrese gir"
+# bile bu esigin ustunde kaliyor.
+_MIN_GROUNDING_TOKENS = 3
+
+
+def _answer_grounding(answer: str, cited_chunks: list[dict]) -> float | None:
+    """Yanit tokenlarinin kaci ALINTILANAN parcalarda geciyor (0..1).
+
+    `None`: yanit olculemeyecek kadar kisa (bkz. `_MIN_GROUNDING_TOKENS`).
+    Cagiran taraf bunu "gecti" saymiyor, "olculmedi" sayiyor -- ikisi ayni
+    sonuca variyor ama gerekce farkli ve ayrimin kaybolmasi, esigi ileride
+    kalibre edecek kisiyi yanlis yere bakmaya iterdi.
+
+    Yon onemli: `coverage_score(metin, sorgu)` sorgunun tokenlarini metinde
+    ariyor, dolayisiyla burada YANIT sorgu tarafinda. Olculen sey "alintilar
+    yaniti ne kadar karsiliyor".
+
+    Ayni fonksiyon 1. kapinin leksik tarafinda da kullaniliyor: govdeleme ve
+    stopword ayiklama zaten Turkce icin ayarli, ikinci bir benzerlik olcutu
+    eklemek burada yeni bir kalibrasyon yuzeyi acmak olurdu.
+    """
+    if not cited_chunks:
+        return 0.0
+    if len(query_tokens(answer)) < _MIN_GROUNDING_TOKENS:
+        return None
+    return coverage_score(" ".join(chunk["text"] for chunk in cited_chunks), answer)
 
 
 # 1. kapinin leksik tarafinda kac parcaya bakilacagi. En iyi eslesmeler zaten
