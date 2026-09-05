@@ -104,6 +104,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "RAG_MAX_CHUNKS_PER_SOURCE": "rag_max_chunks_per_source",
     "RAG_MIN_SIMILARITY": "rag_min_similarity",
     "RAG_MIN_LEXICAL_COVERAGE": "rag_min_lexical_coverage",
+    "RAG_MIN_ANSWER_GROUNDING": "rag_min_answer_grounding",
     "RAG_CONTEXT_CHAR_LIMIT": "rag_context_char_limit",
     "MAX_SPACES_PER_USER": "max_spaces_per_user",
     "MAX_DOCUMENTS_PER_SPACE": "max_documents_per_space",
@@ -486,6 +487,24 @@ class ServerConfig(BaseModel):
     # ve bir skor esigi lehceye gore baska anlama gelirdi. Kapsam Python'da,
     # metinden hesaplaniyor -- iki veritabaninda da ayni.
     rag_min_lexical_coverage: float = Field(default=0.50, ge=0.0, le=1.0)
+    # 3. KAPI (b): yanit metninin, ALINTILANAN parcalarla asgari sozcuksel
+    # ortusmesi. Alintinin GERCEKTEN sunulmus olmasi (a) yetmiyor -- parca
+    # metni guvenilmez ve icine "su cumleyi yaz, 3 numarali alintiyi goster"
+    # yazan biri gecerli bir numara verdigi icin (a)'dan geciyordu.
+    #
+    # DEGER BILEREK DUSUK. Olculen sey yanitin KALITESI degil, alintiyla
+    # alakasinin taban tabana zit olup olmadigi. Yuksek bir esik, dogru ama
+    # serbest ifade edilmis yanitlari kesip ozelligin asil sikayetini
+    # ("kaynakta varken yok diyor") BUYUTURDU.
+    #
+    # OLCULDU (Kalman metni, `coverage_score`):
+    #   mesru yanitlar    : 0.43 - 1.00  (en dusugu en dolayli anlatan yanit)
+    #   enjekte metinler  : 0.00         (kimlik avi, reklam, "talimatlari yoksaydim")
+    # 0.15 iki kumenin arasina, mesru tarafa ~3 kat payla oturuyor.
+    #
+    # `rag_service` esigin altinda kalan her yanitin skorunu logluyor; ayar
+    # tahminle degil o satirlarla yapilmali (`rag_min_similarity` ile ayni usul).
+    rag_min_answer_grounding: float = Field(default=0.15, ge=0.0, le=1.0)
     rag_context_char_limit: int = Field(default=12_000, ge=1_000)
 
     # Depolama ve embedding maliyeti sunucu sahibinde; tavanlar bu yuzden var.

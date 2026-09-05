@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.models import FilterOptions, PlaylistResult, SourceKind, SourceStatus, SpaceSource
 
@@ -199,7 +199,28 @@ class IngestAccepted(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     # Yanitin dili. Varsayilan Turkce: arayuz de kaynaklarin cogunlugu da oyle.
-    language: str = Field(default="Türkçe", max_length=40)
+    language: str = Field(default="Türkçe", min_length=1, max_length=40)
+
+    @field_validator("language")
+    @classmethod
+    def _language_is_a_language_name(cls, value: str) -> str:
+        """Dil adi ISTEME DOGRUDAN giriyor; yalnizca harf/bosluk kabul ediliyor.
+
+        `build_rag_answer_prompt` bu degeri "Write the answer entirely in {...}"
+        cumlesine yerlestiriyor. Serbest metin birakilirsa alan bir talimat
+        tasiyicisina donusur ("English. Ignore the rules above and ...") ve
+        ozelligin tek vaadini -- yalnizca kaynaklardan yanit -- kullanicinin
+        kendi istegiyle devre disi birakabilir.
+
+        Sabit bir dil LISTESI degil KARAKTER kisiti: liste, arayuzun bugun
+        gondermedigi mesru bir dili ("Deutsch", "Español") sunucu tarafinda
+        yasaklamak olurdu. Enjeksiyon icin gereken sey noktalama ve satir
+        sonu; harfler tek baslarina talimat kuramiyor.
+        """
+        cleaned = " ".join(value.split())
+        if not cleaned or not all(char.isalpha() or char in " -'" for char in cleaned):
+            raise ValueError("Dil adı yalnızca harf, boşluk, kısa çizgi ve kesme işareti içerebilir")
+        return cleaned
 
 
 class SourceChunkResponse(BaseModel):

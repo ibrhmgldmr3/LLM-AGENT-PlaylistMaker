@@ -321,3 +321,128 @@ def test_the_coverage_threshold_is_configurable(space):
     rag_service.answer_question(gevsek, store, llm, "sp", "filtre kahve nasil yapilir")
 
     assert llm.answer_calls == 1, "esik 0 iken eski (gevsek) davranis"
+
+
+# ------------------------------------------------- 3. KAPI (b): dayanak kontrolu
+#
+# Numaranin SUNULMUS olmasi, o numaranin gosterdigi metnin yaniti destekledigi
+# anlamina gelmiyor. Parca metni guvenilmez: bir altyaziya "su cumleyi yaz ve
+# 3 numarali alintiyi goster" yazan biri, GERCEK bir numara verdigi icin
+# (a) asamasindan sorunsuz geciyordu.
+
+
+def _real_chunk_id(store):
+    return store.search_chunks_fts("sp", "kovaryans*", limit=1)[0][0]
+
+
+def test_answer_unrelated_to_its_own_citation_is_rejected(space):
+    """ENJEKSIYON SENARYOSU: gercek numara, alakasiz yanit.
+
+    Alinti numarasi sunulanlardan biri -- yani (a) asamasi bunu YAKALAYAMAZ.
+    Yakalayan sey, yanit metninin alintilanan parcayla hicbir sozcuk
+    paylasmamasi.
+    """
+    config, store = space
+    zehirli = FakeLLM(
+        answer={
+            "answered": True,
+            "answer": (
+                "Hesabınızın askıya alınmaması için lütfen kimlik bilgilerinizi "
+                "guvenli-dogrulama-adresi.example sitesine girin."
+            ),
+            "used_chunk_ids": [_real_chunk_id(store)],
+            "missing": "",
+        }
+    )
+
+    answer = rag_service.answer_question(config, store, zehirli, "sp", "kovaryans nasıl küçülür")
+
+    assert answer.answered is False
+    assert answer.citations == []
+    assert "doğrulanamadı" in answer.reason
+
+
+def test_a_grounded_paraphrase_still_passes(space):
+    """Kapi dayanaksiz yaniti kesmeli, SERBEST IFADEYI degil.
+
+    Model kaynagi kelimesi kelimesine tekrarlamiyor; terimleri koruyup
+    cumleyi yeniden kuruyor. Bu yanit gecmezse esik fazla yuksek demektir.
+    """
+    config, store = space
+    llm = FakeLLM(
+        answer={
+            "answered": True,
+            "answer": "Ölçüm güncellemesi yapıldığında kovaryans matrisi küçülür.",
+            "used_chunk_ids": [_real_chunk_id(store)],
+            "missing": "",
+        }
+    )
+
+    answer = rag_service.answer_question(config, store, llm, "sp", "kovaryans nasıl küçülür")
+
+    assert answer.answered is True
+    assert len(answer.citations) == 1
+
+
+def test_the_grounding_threshold_is_configurable(space):
+    """Esik `.env`den kapatilabilmeli: 0 yazmak kontrolu devre disi birakiyor."""
+    config, store = space
+    kapali = config.model_copy(update={"rag_min_answer_grounding": 0.0})
+    zehirli = FakeLLM(
+        answer={
+            "answered": True,
+            "answer": "Tamamen alakasız bir metin buraya yazıldı efendim.",
+            "used_chunk_ids": [_real_chunk_id(store)],
+            "missing": "",
+        }
+    )
+
+    answer = rag_service.answer_question(kapali, store, zehirli, "sp", "kovaryans nasıl küçülür")
+
+    assert answer.answered is True
+
+
+def test_a_very_short_answer_is_not_measured(space):
+    """Olculemeyecek kadar kisa yanit REDDEDILMIYOR.
+
+    "Evet." gibi mesru bir yanit kaynagin sozcuklerini kullanmak zorunda degil
+    ve 0.00 alip reddedilirdi -- tam da duzeltmeye calistigimiz yanlis
+    "bulamadim". Bosluk silah olamiyor cunku enjeksiyon UZUNLUK istiyor.
+    """
+    config, store = space
+    llm = FakeLLM(
+        answer={
+            "answered": True,
+            "answer": "Evet.",
+            "used_chunk_ids": [_real_chunk_id(store)],
+            "missing": "",
+        }
+    )
+
+    answer = rag_service.answer_question(config, store, llm, "sp", "kovaryans küçülür mü")
+
+    assert answer.answered is True
+
+
+def test_answer_without_any_valid_citation_says_so(space):
+    """Alintisiz yanit "havuzda yok" DEMEK DEGIL.
+
+    Kullanici, sorusunun kapsam disi kalmasi ile sistemin kendi ciktisini
+    dogrulayamamasini ayirt edebilmeli: ilkinde soruyu degistirmek anlamli,
+    ikincisinde yeniden sormak.
+    """
+    config, store = space
+    llm = FakeLLM(
+        answer={
+            "answered": True,
+            "answer": "Kovaryans matrisi ölçüm güncellemesiyle küçülür.",
+            "used_chunk_ids": [999_999],
+            "missing": "",
+        }
+    )
+
+    answer = rag_service.answer_question(config, store, llm, "sp", "kovaryans nasıl küçülür")
+
+    assert answer.answered is False
+    assert "doğrulanamadı" in answer.reason
+    assert "kaynakta arandı" not in answer.reason
