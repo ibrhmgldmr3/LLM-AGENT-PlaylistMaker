@@ -293,3 +293,35 @@ def coverage_score(
 def keyword_overlap_score(text: str, query: str) -> float:
     """Geriye donuk ad; `coverage_score` ile ayni."""
     return coverage_score(text, query)
+
+
+# DEFTER DUZEYINDE sorular: cevaplari tek bir parcada DEGIL, defterin
+# butununde. "Bu defterde neler var", "ana fikir ne", "ozetle".
+#
+# Neden ayri bir kavram: erisim soruya EN YAKIN parcalari getiriyor, oysa bu
+# sorularin en yakin parcasi YOK -- soru korpusun KENDISI hakkinda. Olculdu:
+# "bu konunun ana fikri ne" 0.601 benzerlik ve 0.00 leksik kapsam aliyor, yani
+# kacinma kapisinda kesiliyordu; kapi gecilse bile modele farkli videolarin
+# ortasindan rastgele parcalar gidiyor ve model hakli olarak "tek bir ortak
+# aciklama yok" diyordu.
+#
+# BURADA DURUYOR cunku IKI katman birden kullaniyor: `rag_service` kapi ve
+# baglam kararlari icin, `llm_provider` istemdeki yonergeyi degistirmek icin.
+# Tespit iki yerde ayri ayri yazilsaydi sessizce ayrisirlardi.
+#
+# Kaliplar GENIS: yanlis pozitif burada ZARARSIZ, cunku defter duzeyi baglam
+# normal erisim sonuclarini DA iceriyor -- "Zustand'i ozetle" her iki baglami
+# birden aliyor.
+_OVERVIEW_PATTERNS = re.compile(
+    r"\b(ne var|neler var|neler bulunuyor|hangi konular|konular neler"
+    r"|nelerden bahs|ne anlatiliyor|neler ogren|icerik ne|icerigi ne"
+    r"|ozetle|ozeti|ozet ver|genel bakis|genel olarak|ana fikir|ana fikri"
+    r"|bu defterde|defterde ne|notlarimda ne"
+    r"|what.{0,12}in this (notebook|space)|what topics|main idea|overview"
+    r"|summari[sz]e|summary|what can i learn)"
+)
+
+
+def is_overview_question(question: str) -> bool:
+    """Soru defterin KENDISI hakkinda mi (icindeki bir olgu yerine)."""
+    return bool(_OVERVIEW_PATTERNS.search(transliterate(question or "").lower()))

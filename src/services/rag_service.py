@@ -47,8 +47,15 @@ from src.services.chunking import chunk_document, chunk_transcript
 from src.services.document_parser import parse_document
 from src.services.transcript_service import RunTranscriptState, get_transcript
 from src.storage import DEFAULT_USER_ID, SQLiteStore
+from src.utils import prompt_injection
 from src.utils.logging_utils import redact_secrets
-from src.utils.text_utils import build_fts_query, coverage_score, query_tokens
+from src.utils.text_utils import (
+    build_fts_query,
+    coverage_score,
+    is_overview_question,
+    query_tokens,
+    tokenize,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -94,14 +101,26 @@ def answer_question(
 
     lexical, semantic = _retrieve(config, store, llm, space_id, question, user_id)
 
+    # DEFTER DUZEYINDE bir soru 1. kapiya TABI DEGIL. Kapinin sordugu sey
+    # "cevap kaynaklarda var mi"; oysa buradaki soru kaynaklarin KENDISI
+    # hakkinda ve defterin ne icerdigi her zaman yanitlanabilir bir sorudur --
+    # `count_chunks` yukarida zaten bos defteri elemis durumda.
+    #
+    # "Yoksa yok de" vaadi ZEDELENMIYOR: 2. ve 3. kapilar aynen isliyor, yani
+    # model yine yalnizca kendisine VERILEN parcalardan konusabiliyor ve
+    # alintilayamadigi bir yaniti gosteremiyor.
+    overview = is_overview_question(question)
+
     # ------------------------------------------------------------- 1. KAPI
     best_similarity = semantic[0][1] if semantic else 0.0
     # BIR KEZ hesaplaniyor: `_best_lexical_coverage` parcalari DEPODAN okuyor
     # ve hem kapi kararinin hem asagidaki gunluk satirinin ayni sayiya ihtiyaci
     # var. Ikisi ayri ayri cagirdiginda her kacinma iki ayni sorgu uretiyordu.
     lexical_coverage = _best_lexical_coverage(store, lexical, question)
-    if not _lexical_is_evidence(config, lexical, lexical_coverage) and (
-        best_similarity < config.rag_min_similarity
+    if (
+        not overview
+        and not _lexical_is_evidence(config, lexical, lexical_coverage)
+        and best_similarity < config.rag_min_similarity
     ):
         # Esigin altinda kalan sorgunun EN IYI skoru loglaniyor: `rag_min_similarity`
         # bir tahmin ve kalibrasyonu ancak bu sayilarla yapilabilir. Yanlis
@@ -123,13 +142,19 @@ def answer_question(
             reason=_not_found_reason(source_count),
         )
 
-    selected = _select_context(config, store, lexical, semantic)
+    selected = (
+        _select_overview_context(config, store, space_id, lexical, semantic)
+        if overview
+        else _select_context(config, store, lexical, semantic)
+    )
     if not selected:
         return RagAnswer(
             answered=False,
             searched_sources=source_count,
             reason=_not_found_reason(source_count),
         )
+
+    _log_injection_markers(space_id, selected)
 
     # ------------------------------------------------------------- 2. KAPI
     payload = llm.answer_from_context(question, selected, language)
@@ -202,6 +227,28 @@ def answer_question(
     )
 
 
+def _log_injection_markers(space_id: str, selected: list[dict]) -> None:
+    """Baglama giren parcalarda yonerge benzeri kalip VAR MI -- yalnizca olcum.
+
+    Parca DUSURULMUYOR. Gerekcesi `src/utils/prompt_injection` modulunde
+    ayrintili: bu bir ogrenme araci ve prompt injection ANLATAN bir kaynak da
+    mesru bir kaynak. Enjeksiyonun ise yaramasini engelleyen katmanlar
+    deterministik olanlar (ayraclar ve 3b kapisi); buradaki sayim onlarin
+    kalibrasyonunu besliyor (`docs/rag-plan.md` §8).
+    """
+    flagged = {
+        chunk["chunk_id"]: markers
+        for chunk in selected
+        if (markers := prompt_injection.scan(chunk["text"]))
+    }
+    if flagged:
+        _log.warning(
+            "RAG yonerge benzeri icerik: space=%s parcalar=%s (engellenmedi, yalnizca olcum)",
+            space_id,
+            flagged,
+        )
+
+
 # Dogrulama arizasinin gerekcesi. "Bulunamadi"dan ayri tutuluyor: eksik olan
 # havuz degil, yanitin alintiyla bagi.
 _UNVERIFIED_REASON = (
@@ -220,28 +267,79 @@ _UNVERIFIED_REASON = (
 # bile bu esigin ustunde kaliyor.
 _MIN_GROUNDING_TOKENS = 3
 
+# Dil tespiti icin islev sozcukleri. Tam bir dil tanima degil; tek isi "bu iki
+# metin ayni dilde mi" sorusunu yanitlamak ve bunun icin en sik gecen bag
+# sozcukleri yetiyor. Yeni bir bagimlilik (langdetect vb.) eklemek, tek bir
+# evet/hayir icin fazla olurdu.
+_TR_FUNCTION_WORDS = frozenset(
+    {"ve", "bir", "biri", "bu", "bunu", "icin", "ile", "olarak", "daha", "cok",
+     "gibi", "ama", "ancak", "ise", "yani", "olan", "veya", "yada", "kadar",
+     "sonra", "her", "hem", "en", "cunku", "ayrica", "gerek", "uzere", "icinde"}
+)
+_EN_FUNCTION_WORDS = frozenset(
+    {"the", "and", "of", "to", "in", "is", "that", "it", "for", "you", "this",
+     "with", "are", "as", "on", "be", "have", "not", "a", "an", "or", "but",
+     "they", "we", "can", "will", "from", "by", "at", "which", "was"}
+)
+
+
+def _language_profile(text: str) -> str | None:
+    """Metnin dili: `"tr"`, `"en"` ya da KARARSIZ (`None`)."""
+    tokens = tokenize(text)
+    turkish = len(tokens & _TR_FUNCTION_WORDS)
+    english = len(tokens & _EN_FUNCTION_WORDS)
+    if turkish == english:
+        return None
+    return "tr" if turkish > english else "en"
+
 
 def _answer_grounding(answer: str, cited_chunks: list[dict]) -> float | None:
     """Yanit tokenlarinin kaci ALINTILANAN parcalarda geciyor (0..1).
 
-    `None`: yanit olculemeyecek kadar kisa (bkz. `_MIN_GROUNDING_TOKENS`).
-    Cagiran taraf bunu "gecti" saymiyor, "olculmedi" sayiyor -- ikisi ayni
-    sonuca variyor ama gerekce farkli ve ayrimin kaybolmasi, esigi ileride
-    kalibre edecek kisiyi yanlis yere bakmaya iterdi.
+    `None` = OLCULEMEDI. Cagiran taraf bunu "gecti" saymiyor, "olculmedi"
+    sayiyor -- ikisi ayni sonuca variyor ama gerekce farkli ve ayrimin
+    kaybolmasi, esigi ileride kalibre edecek kisiyi yanlis yere bakmaya iterdi.
+    Iki olculemez durum var:
+
+    1. **Yanit cok kisa** (`_MIN_GROUNDING_TOKENS`).
+    2. **Yanit ile kaynak AYNI DILDE DEGIL.** Sozcuksel ortusme diller arasinda
+       dayanagi olcemez: cevirilmis bir yanit kaynakla neredeyse hic token
+       paylasmaz.
+
+    (2) TEORIK DEGIL, OLCULDU. Kullanicinin gercek alaninda transkriptler
+    Ingilizce, arayuz ve yanitlar Turkce. Chunk'ta "one of the big problems
+    with Redux ... is that it was hugely boilerplate" yazarken model bunu
+    dogru bicimde "Redux'un en buyuk sorunlarindan biri asiri basmakalip kod
+    icermesidir" diye aktardi -- KUSURSUZ bir yanit, ortusmesi 0.07. Ayni
+    korpusta AYNI DILDE olcum 0.43-1.00 arasindaydi. Yani esik dogruydu, metrik
+    yanlis yerde uygulaniyordu ve mesru yanitlari kesiyordu.
+
+    SONUC, ACIKCA: diller arasi sorularda 3b kapisi KORUMA SAGLAMIYOR. O
+    durumda enjeksiyona karsi kalan katmanlar ayraclar, sistem talimati, istem
+    duzeni ve 3a (alintinin gercekten sunulmus olmasi) -- hepsi dilden
+    bagimsiz. Bunu bilerek kabul ediyoruz: olculen zarar (dogru yanitlarin
+    kesilmesi) kesin ve suregen, engellenen senaryo ise varsayimsal.
 
     Yon onemli: `coverage_score(metin, sorgu)` sorgunun tokenlarini metinde
     ariyor, dolayisiyla burada YANIT sorgu tarafinda. Olculen sey "alintilar
     yaniti ne kadar karsiliyor".
-
-    Ayni fonksiyon 1. kapinin leksik tarafinda da kullaniliyor: govdeleme ve
-    stopword ayiklama zaten Turkce icin ayarli, ikinci bir benzerlik olcutu
-    eklemek burada yeni bir kalibrasyon yuzeyi acmak olurdu.
     """
     if not cited_chunks:
         return 0.0
     if len(query_tokens(answer)) < _MIN_GROUNDING_TOKENS:
         return None
-    return coverage_score(" ".join(chunk["text"] for chunk in cited_chunks), answer)
+    cited_text = " ".join(chunk["text"] for chunk in cited_chunks)
+    # Yalnizca UYUSMAZLIK KANITI varken atlaniyor, kararsizlikta DEGIL. Kisa bir
+    # metinde islev sozcugu hic gecmeyebilir ("Kovaryans matrisi kuculur." icinde
+    # tek bir tane yok) ve kararsizligi "olculemez" saymak, kapiyi ayni dilde
+    # yazilmis kisa yanitlarin tamaminda sessizce kapatirdi. Iki taraf da BILINIR
+    # ve FARKLI ise atliyoruz; diller arasi vaka tam da boyle gorunuyor (uzun
+    # Ingilizce parca "en", uzun Turkce yanit "tr").
+    answer_language = _language_profile(answer)
+    cited_language = _language_profile(cited_text)
+    if answer_language and cited_language and answer_language != cited_language:
+        return None
+    return coverage_score(cited_text, answer)
 
 
 # 1. kapinin leksik tarafinda kac parcaya bakilacagi. En iyi eslesmeler zaten
@@ -361,18 +459,80 @@ def _select_context(
             continue
         per_source[source_id] = per_source.get(source_id, 0) + 1
         used_chars += len(row["text"])
-        selected.append(
-            {
-                "chunk_id": chunk_id,
-                "source_id": source_id,
-                "title": row["title"] or "Kaynak",
-                "text": row["text"],
-                "location": _location_label(row),
-                "url": row["url"],
-                "start_sec": row["start_sec"],
-                "page": row["page"],
-            }
-        )
+        selected.append(_chunk_payload(chunk_id, row))
+    return selected
+
+
+def _chunk_payload(chunk_id: int, row) -> dict:
+    """Depo satirini baglama ve alintiya giren bicime cevirir.
+
+    Iki secici de (`_select_context`, `_select_overview_context`) BUNU
+    kullaniyor: alanlar ayrisirsa `_to_citation` ile istem olusturucu sessizce
+    farkli seyler gorurdu.
+    """
+    return {
+        "chunk_id": chunk_id,
+        "source_id": row["source_id"],
+        "title": row["title"] or "Kaynak",
+        "text": row["text"],
+        "location": _location_label(row),
+        "url": row["url"],
+        "start_sec": row["start_sec"],
+        "page": row["page"],
+    }
+
+
+# Defter duzeyi baglamda kaynak basina kac temsilci. BIR: soru "bu defterde ne
+# var" oldugunda kaynagi TEMSIL eden sey basligi ve giris cumlesi; ikinci parca
+# ayni kaynagin ayrintisina girip butceyi baska bir KAYNAGIN yerinden yiyor.
+# Ayarlanabilir yapilmadi -- kalibre edilecek bir sey degil, bir tasarim karari.
+_OVERVIEW_CHUNKS_PER_SOURCE = 1
+
+
+def _select_overview_context(
+    config: AppConfig,
+    store: SQLiteStore,
+    space_id: str,
+    lexical: list[tuple[int, float]],
+    semantic: list[tuple[int, float]],
+) -> list[dict]:
+    """Defter duzeyi baglam: her kaynaktan bir TEMSILCI + normal erisim.
+
+    Iki parca birden veriliyor cunku iki soru tipi ic ice gecebiliyor.
+    "Zustand'i ozetle" hem defter duzeyi kalibina uyuyor hem de belirli bir
+    konuyu soruyor; yalnizca temsilciler verilseydi ayrintiyi kaybederdik,
+    yalnizca normal erisim verilseydi "defterde neler var" cevapsiz kalirdi.
+
+    ONCE TEMSILCILER: karakter butcesi dolarsa kirpilan sey normal erisim
+    olmali. Defter duzeyi bir soruda kapsam (her kaynaktan bir sey) derinlikten
+    (tek kaynaktan cok sey) onemli -- kirpma sirasi bu karari kodluyor.
+
+    `rag_top_k` BURADA UYGULANMIYOR: o sinir "kac parca yeter" sorusunun
+    derinlik yanitı ve defterde 6 kaynak varken 8'de kesmek keyfi olurdu.
+    Gercek sinir karakter butcesi, cunku baglam penceresini tuketen o.
+    """
+    opening_ids = store.opening_chunk_ids(space_id, _OVERVIEW_CHUNKS_PER_SOURCE)
+    rows = {row["chunk_id"]: row for row in store.get_chunks(opening_ids)}
+
+    selected: list[dict] = []
+    used_chars = 0
+    for chunk_id in opening_ids:
+        row = rows.get(chunk_id)
+        if row is None:
+            continue
+        if used_chars + len(row["text"]) > config.rag_context_char_limit and selected:
+            break
+        used_chars += len(row["text"])
+        selected.append(_chunk_payload(chunk_id, row))
+
+    seen = {chunk["chunk_id"] for chunk in selected}
+    for chunk in _select_context(config, store, lexical, semantic):
+        if chunk["chunk_id"] in seen:
+            continue
+        if used_chars + len(chunk["text"]) > config.rag_context_char_limit:
+            continue
+        used_chars += len(chunk["text"])
+        selected.append(chunk)
     return selected
 
 
@@ -460,6 +620,16 @@ class IngestReport:
     failed: list[str] = field(default_factory=list)
     chunks: int = 0
     embedded: int = 0
+    # Is bittikten sonra HALA vektoru olmayan parca sayisi. Ayri bir alan cunku
+    # `embedded` bunu soyleyemiyor: gomme yolu isi dusurmuyor (bkz.
+    # `_embed_space`) ve kismen basarili bir kosum, hicbir sey soylenmezse
+    # "tamam" gibi gorunuyor. OLCULDU (canli veritabani): 130 parcalik bir
+    # alanda yalnizca 64'u -- tam olarak BIR grup -- gomulmustu; kalan 66 parca
+    # icin anlamsal arama sessizce calismiyordu ve alandaki 6 kaynagin 3'unun
+    # HIC vektoru yoktu. Kullanici bunu yalnizca "bulamadim" yanitlarindan
+    # sezebiliyordu -- `embedding_service.embed_missing` docstring'inin tam da
+    # engellemek icin yazildigi durum.
+    embedding_pending: int = 0
 
 
 def ingest_run(
@@ -552,7 +722,9 @@ def ingest_run(
         report.indexed += 1
         report.chunks += written
 
-    report.embedded = _embed_space(config, store, llm, space_id, user_id, progress)
+    report.embedded, report.embedding_pending = _embed_space(
+        config, store, llm, space_id, user_id, progress
+    )
     store.touch_space(space_id)
     return report
 
@@ -609,27 +781,42 @@ def ingest_document(
 
     if progress:
         progress(2, 2, title)
-    report.embedded = _embed_space(config, store, llm, space_id, user_id, progress)
+    report.embedded, report.embedding_pending = _embed_space(
+        config, store, llm, space_id, user_id, progress
+    )
     store.touch_space(space_id)
     return report
 
 
 def _embed_space(
     config: AppConfig, store: SQLiteStore, llm, space_id: str, user_id: str, progress
-) -> int:
-    """Eksik vektorleri uretir. BASARISIZLIK ISI DUSURMUYOR.
+) -> tuple[int, int]:
+    """Eksik vektorleri uretir; `(uretilen, HALA EKSIK)` doner.
 
-    Parcalar zaten yazildi ve leksik arama onlarla CALISIYOR. Embedding
-    saglayicisi gecici olarak duserse alan "anlamsal arama olmadan" kullanilir
-    hale gelir; eksik vektorler bir sonraki iceri almada tembel bicimde
-    tamamlanir (`chunks_missing_embeddings` onlari zaten eksik goruyor).
+    BASARISIZLIK ISI DUSURMUYOR. Parcalar zaten yazildi ve leksik arama onlarla
+    CALISIYOR. Embedding saglayicisi gecici olarak duserse alan "anlamsal arama
+    olmadan" kullanilir hale gelir. Alternatifi tum isi basarisiz saymakti:
+    kullanicinin 20 videosu indekslenmis olurdu ama arayuz "basarisiz" derdi ve
+    elindeki calisir durumdaki alani gormezdi.
 
-    Alternatifi tum isi basarisiz saymakti: kullanicinin 20 videosu indekslenmis
-    olurdu ama arayuz "basarisiz" derdi ve elindeki calisir durumdaki alani
-    gormezdi.
+    EKSIK SAYISI DONUYOR CUNKU SESSIZLIK KABUL EDILEMEZ. Bu fonksiyon istisnayi
+    yutuyor, `embed_missing` ise onu bilerek YUKSELTIYOR -- iki katman ayni sey
+    konusunda anlasmiyordu ve sonuc, `embed_missing` docstring'inin tam da
+    uyardigi durumdu: "alanin yarisi aranabilir yarisi aranamaz halde kalmasi ve
+    kullanicinin bunu ancak 'bulamadim' yanitlarindan sezmesi". Canli
+    veritabaninda gercekten yasandi (bkz. `IngestReport.embedding_pending`).
+    Anlasmazlik boyle cozuluyor: is DUSMUYOR ama eksik SAYILIYOR ve
+    `space_tasks.report_message` uzerinden kullaniciya soyleniyor.
+
+    Sayim, `embed_missing`in dondurdugu degerden DEGIL depodan okunuyor: bir
+    grup yazilip sonraki patladiginda istisna yazilanlarin sayisini da
+    goturuyor, oysa o satirlar veritabaninda duruyor. Onceki/sonraki farki her
+    iki durumda da dogru.
     """
+    model = config.embedding_model()
+    missing_before = len(store.chunks_missing_embeddings(space_id, model))
     try:
-        return embedding_service.embed_missing(
+        embedding_service.embed_missing(
             config,
             store,
             llm,
@@ -642,7 +829,15 @@ def _embed_space(
             "Vektörler üretilemedi (leksik arama çalışmaya devam ediyor): %s",
             redact_secrets(str(exc)),
         )
-        return 0
+    missing_after = len(store.chunks_missing_embeddings(space_id, model))
+    if missing_after:
+        _log.warning(
+            "Anlamsal arama EKSIK: space=%s vektorsuz_parca=%d/%d",
+            space_id,
+            missing_after,
+            missing_before,
+        )
+    return missing_before - missing_after, missing_after
 
 
 def get_source_text(
@@ -783,7 +978,9 @@ def transcribe_space_source(
 
     if progress:
         progress(3, 3, "Vektörler üretiliyor")
-    report.embedded = _embed_space(config, store, llm, space_id, user_id, progress)
+    report.embedded, report.embedding_pending = _embed_space(
+        config, store, llm, space_id, user_id, progress
+    )
     store.touch_space(space_id)
     return report
 

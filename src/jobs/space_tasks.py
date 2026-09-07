@@ -37,6 +37,14 @@ def report_message(report) -> str:
         parts.append(f"{len(report.skipped_no_text)} kaynakta metin yok")
     if report.failed:
         parts.append(f"{len(report.failed)} kaynak başarısız")
+    if report.embedding_pending:
+        # Vektoru olmayan parca = o parcada ANLAMSAL arama yok. Kaynak yine
+        # "indekslendi" (leksik arama calisiyor), dolayisiyla hicbir sey
+        # soylenmezse is TAMAMEN basarili gorunuyor. Canli veritabaninda
+        # yasandi: 130 parcanin 66'si vektorsuz kaldi, 6 kaynagin 3'unde HIC
+        # vektor yoktu ve kullanici bunu yalnizca "bulamadim" yanitlarindan
+        # sezebildi (bkz. `rag_service.IngestReport.embedding_pending`).
+        parts.append(f"{report.embedding_pending} parça için anlamsal arama eksik")
     return ", ".join(parts)
 
 
