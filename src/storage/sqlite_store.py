@@ -1716,6 +1716,39 @@ class SQLiteStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def opening_chunk_ids(self, space_id: str, per_source: int = 1) -> list[int]:
+        """Her kaynagin ILK `per_source` parcasinin kimlikleri.
+
+        DEFTER DUZEYINDE sorular icin ("bu defterde neler var", "ozetle").
+        Benzerlik aramasi bu sorulari yanitlayamaz: cevap tek bir parcada degil,
+        defterin BUTUNUNDE. Aranan sey en yakin parca degil, her kaynaktan bir
+        TEMSILCI.
+
+        Neden ILK parca: transkriptlerde ve dokumanlarda giris bolumu kaynagin
+        ne hakkinda oldugunu soyleyen yerdir ("bugun size Zustand'i
+        anlatacagim"). Ortadan alinan bir parca konunun ayrintisina girer ve
+        kaynagi TEMSIL ETMEZ.
+
+        Pencere fonksiyonu iki lehcede de calisiyor (SQLite 3.25+, Postgres);
+        `ORDER BY ordinal` her kaynak icin bagimsiz.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT chunk_id FROM (
+                    SELECT chunk_id, source_id, ordinal,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY source_id ORDER BY ordinal
+                           ) AS rank_in_source
+                    FROM chunk WHERE space_id = ?
+                ) ranked
+                WHERE rank_in_source <= ?
+                ORDER BY source_id, ordinal
+                """,
+                (space_id, max(1, per_source)),
+            ).fetchall()
+        return [int(row["chunk_id"]) for row in rows]
+
     def get_chunks(self, chunk_ids: list[int]) -> list[dict[str, Any]]:
         """Verilen kimliklerdeki parcalari kaynak bilgisiyle birlikte dondurur.
 

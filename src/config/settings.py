@@ -459,20 +459,33 @@ class ServerConfig(BaseModel):
     # KACINMA ESIGI (bkz. `rag_service` 1. kapi). En iyi aday bunun altindaysa
     # ve leksik eslesme de yoksa LLM HIC CAGRILMIYOR, "bulamadim" donuyor.
     #
-    # OLCULDU (`gemini-embedding-001`, 3 parca x 7 soru):
-    #   ilgili sorular   : 0.804 - 0.852
-    #   alakasiz sorular : 0.496 - 0.542
-    # Ilk deger 0.55 idi ve alakasiz tavanina yalnizca 0.008 kaliyordu -- yani
-    # kapi pratikte hic kapanmiyordu. 0.70, iki kumenin arasindaki 0.26'lik
-    # bosluga her iki yandan paylı oturuyor.
+    # OLCULDU (`gemini-embedding-001`, GERCEK kullanici alanlari, 20 soru):
+    #   ilgili sorular   : 0.594 - 0.768
+    #   alakasiz sorular : 0.487 - 0.545
+    # 0.57 aradaki 0.049'luk bosluga oturuyor.
+    #
+    # ONCEKI DEGER 0.70 IDI VE YANLISTI. O sayi 7 soruluk sentetik bir
+    # olcumden geliyordu ve ilgili kume orada 0.804-0.852 cikmisti. Gercek
+    # kullanimda ilgili kume COK DAHA ASAGIDA: kullanici Turkce soruyor,
+    # transkriptler Ingilizce (diller arasi kosinus dusuyor) ve gercek sorular
+    # sentetik olanlardan daha belirsiz. Sonucta 0.70, ilgili kumenin TAM
+    # ORTASINDAN geciyordu -- olculdu: "durum yoneticileri neden kotu olabilir"
+    # 0.594 ve "bu konunun ana fikri ne" 0.601 ile, leksik kapsamlari da 0.00
+    # oldugu icin, hicbir zaman modele ULASMIYORDU.
+    #
+    # ALAKASIZ TABANI DEGISMEDI (0.487-0.545 vs onceki 0.496-0.542): o, modelin
+    # kendi tabani ve kararli. Degisen sey ILGILI kumenin nerede oldugu --
+    # yani hata sentetik sorularin gercegi temsil ettigi varsayimindaydi.
+    #
+    # BOSLUK DAR (0.049, onceki olcumde 0.26 saniliyordu): benzerlik bu korpusta
+    # tek basina zayif bir sinyal ve leksik kapsam kapisi gercek is yapiyor.
+    # Esigi buradan yukari cekmek once MESRU sorulari keser.
     #
     # DIKKAT, deger MODELE OZGU: Gemini embedding modellerinde iki alakasiz
     # metnin kosinusu bile ~0.5 tabaninda kaliyor (vektorler dar bir koni
-    # icinde). Bastan tahmin edilen "0.55 makul gorunuyor" degeri tam da bu
-    # yuzden yanlisti. Baska bir modele gecilirse (ornegin `BAAI/bge-m3`) bu
-    # sayi YENIDEN olculmeli; `rag_service` esigin altinda kalip reddedilen
-    # sorgularin en iyi skorunu tam da bunun icin logluyor.
-    rag_min_similarity: float = Field(default=0.70, ge=0.0, le=1.0)
+    # icinde). Baska bir modele gecilirse (ornegin `BAAI/bge-m3`) bu sayi
+    # YENIDEN olculmeli: `scripts/measure_rag_thresholds.py` tam da bunun icin.
+    rag_min_similarity: float = Field(default=0.57, ge=0.0, le=1.0)
     # Leksik yolun KANIT sayilmasi icin gereken asgari token kapsami.
     #
     # 1. kapi eskiden "leksik eslesme VAR MI" diye soruyordu ve TEK bir zayif

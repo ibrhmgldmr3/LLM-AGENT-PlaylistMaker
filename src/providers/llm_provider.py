@@ -11,6 +11,7 @@ from src.providers.errors import (
     ProviderRateLimitedError,
     ProviderTemporaryError,
 )
+from src.utils.text_utils import is_overview_question
 
 
 DEFAULT_SUBTOPIC_COUNT = 6
@@ -303,10 +304,37 @@ def build_rag_answer_prompt(
         lines.append(f"<excerpt {attributes}>\n{body}\n</excerpt>")
     excerpts = "\n\n".join(lines)
 
+    # DEFTER DUZEYINDE soru: cevap tek bir parcada degil, koleksiyonun
+    # kendisinde. Tespit `text_utils`te duruyor cunku `rag_service` de AYNI
+    # karari veriyor (kapiyi atlayip temsilci parcalari seciyor); iki yerde
+    # ayri yazilsaydi sessizce ayrisirlardi.
+    #
+    # YONERGE SART, OLCULDU: baglam dogru gelse bile bu satir olmadan model
+    # soruyu LITERAL aliyordu -- "Bu defterde neler var?" sorusuna "verilen
+    # metinlerde herhangi bir defterden bahsedilmemektedir" yaniti donuyordu.
+    # Model, "yalnizca alintilardan cevapla" kuralini "alintilarda 'defter'
+    # kelimesini ara" diye okuyor; koleksiyon hakkinda konusmasina ACIKCA izin
+    # verilmesi gerekiyor.
+    overview_instruction = (
+        (
+            "This question is about the learner's notebook AS A WHOLE, not a "
+            "single fact inside it. The excerpts are a representative sample: "
+            "one opening excerpt per source, plus anything that matched "
+            "directly. Answer by describing what this collection covers and "
+            "what the learner can find in it. The `source` attribute on each "
+            "excerpt is part of the evidence -- naming the sources is exactly "
+            "what is being asked for. Do not say the excerpts fail to mention "
+            "a 'notebook'; the notebook IS the excerpts.\n\n"
+        )
+        if is_overview_question(question)
+        else ""
+    )
+
     return (
         "Answer the learner's question using ONLY the excerpts below.\n"
         f"Write the answer entirely in {language}.\n\n"
-        "Return a JSON object with exactly four keys:\n"
+        + overview_instruction
+        + "Return a JSON object with exactly four keys:\n"
         '- "answered": true when the excerpts genuinely support an answer, '
         "including a partial one -- give what they do contain and stop there. "
         "Return false only when the excerpts do not address the question at "
