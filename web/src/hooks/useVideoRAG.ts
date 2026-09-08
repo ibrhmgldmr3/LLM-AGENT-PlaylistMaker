@@ -3,6 +3,7 @@ import { api, ApiError } from "../api/client";
 import type {
   Citation,
   RagAnswer,
+  RagRefusal,
   RunSummary,
   SourceTextResponse,
   SpaceDetail,
@@ -16,6 +17,15 @@ export interface RagMessage {
   content: string;
   citations: Citation[];
   streaming: boolean;
+  /**
+   * Reddin turu; yanit verildiyse `null`.
+   *
+   * Mesajda TASINIYOR cunku arayuz reddi bir cevap balonu gibi cizemez:
+   * "bu defterde yok" ile "kendi yanitimi dogrulayamadim" farkli seyler ve
+   * ikisi de bir cevap DEGIL. Sunucu ayrimi `refusal` alaninda yapiyor;
+   * burada onu mesajin omru boyunca sakliyoruz.
+   */
+  refusal: RagRefusal | null;
 }
 
 function messageId() {
@@ -28,6 +38,18 @@ function answerText(answer: RagAnswer): string {
     answer.reason ??
     `${answer.searched_sources} kaynak arandı ama bu soruyu karşılayan bir bölüm bulunamadı. Deftere ilgili bir video ya da döküman eklemeyi deneyebilirsin.`
   );
+}
+
+/**
+ * Reddin turu -- sunucu soylemediyse cikarilir.
+ *
+ * Geri duselim VAR cunku alan sonradan eklendi: alani bilmeyen bir sunucuyla
+ * (ya da onbellekten donen eski bir yanitla) karsilasildiginda arayuz reddi
+ * bir CEVAP gibi cizmemeli. Tur bilinmiyorsa en genel ret varsayiliyor.
+ */
+function refusalOf(answer: RagAnswer): RagRefusal | null {
+  if (answer.answered) return null;
+  return answer.refusal ?? "not_found";
 }
 
 export function useVideoRAG(spaceId: string | null) {
@@ -165,13 +187,43 @@ export function useVideoRAG(spaceId: string | null) {
       setError(null);
       setMessages((items) => [
         ...items,
-        { id: messageId(), role: "user", content: trimmed, citations: [], streaming: false },
-        { id: assistantId, role: "assistant", content: "", citations: [], streaming: true },
+        {
+          id: messageId(),
+          role: "user",
+          content: trimmed,
+          citations: [],
+          streaming: false,
+          refusal: null,
+        },
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          citations: [],
+          streaming: true,
+          refusal: null,
+        },
       ]);
 
       try {
         const answer = await api.ask(spaceId, trimmed);
         const text = answerText(answer);
+        const refusal = refusalOf(answer);
+
+        // Reddedilen yanit YAZILMIYOR, aninda konuyor. Harf harf akan bir
+        // "bulamadim" cumlesi, sistemin cevabi dusundugunu ima ederdi; oysa
+        // burada dusunulecek bir sey yok -- karar zaten verilmis.
+        if (refusal) {
+          setMessages((items) =>
+            items.map((item) =>
+              item.id === assistantId
+                ? { ...item, content: text, citations: [], streaming: false, refusal }
+                : item,
+            ),
+          );
+          return;
+        }
+
         for (let index = 0; index <= text.length; index += 10) {
           const partial = text.slice(0, index);
           setMessages((items) =>
@@ -186,7 +238,13 @@ export function useVideoRAG(spaceId: string | null) {
         setMessages((items) =>
           items.map((item) =>
             item.id === assistantId
-              ? { ...item, content: text, citations: answer.citations, streaming: false }
+              ? {
+                  ...item,
+                  content: text,
+                  citations: answer.citations,
+                  streaming: false,
+                  refusal: null,
+                }
               : item,
           ),
         );

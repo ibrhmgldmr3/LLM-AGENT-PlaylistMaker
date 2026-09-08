@@ -115,6 +115,7 @@ def test_abstention_reason_points_at_the_pool_not_the_question(space):
 
     assert answer.searched_sources == 1
     assert "kaynakta arandı" in answer.reason
+    assert answer.refusal == "not_found"
 
 
 def test_empty_space_answers_without_calling_the_model(space):
@@ -128,6 +129,7 @@ def test_empty_space_answers_without_calling_the_model(space):
     assert llm.answer_calls == 0
     assert llm.embed_calls == 0
     assert "henüz aranabilir içerik yok" in answer.reason
+    assert answer.refusal == "no_content"
 
 
 def test_blank_question_is_rejected_early(space):
@@ -360,6 +362,7 @@ def test_answer_unrelated_to_its_own_citation_is_rejected(space):
     assert answer.answered is False
     assert answer.citations == []
     assert "doğrulanamadı" in answer.reason
+    assert answer.refusal == "unverified"
 
 
 def test_a_grounded_paraphrase_still_passes(space):
@@ -446,6 +449,7 @@ def test_answer_without_any_valid_citation_says_so(space):
     assert answer.answered is False
     assert "doğrulanamadı" in answer.reason
     assert "kaynakta arandı" not in answer.reason
+    assert answer.refusal == "unverified"
 
 
 def test_a_flagged_chunk_is_measured_but_not_dropped(space, caplog):
@@ -574,3 +578,48 @@ def test_same_language_grounding_is_still_measured(space):
 def test_language_profile_detects_both_sides():
     assert rag_service._language_profile("bu bir deneme metnidir ve oldukça uzundur") == "tr"
     assert rag_service._language_profile("this is a test of the text and it is long") == "en"
+
+
+def test_the_two_refusals_are_told_apart_by_type_not_by_wording(space):
+    """Arayuz "kapsam disi" ile "dogrulanamadi"yi TURDEN ayirt edebilmeli.
+
+    Ayrimin kendisi zaten kilitli (yukaridaki testler gerekce METNINE bakiyor).
+    Burada kilitlenen sey arayuzun o ayrimi NASIL okudugu: gerekce cumlesinin
+    icinde "doğrulanamadı" kelimesini aramak calisiyordu ama cumle her yeniden
+    yazildiginda -- ya da bir gun Turkce disina cikildiginda -- sessizce
+    bozulurdu. Bu yuzden `refusal` bir TUR ve testi metinden bagimsiz.
+    """
+    config, store = space
+
+    kapsam_disi = rag_service.answer_question(config, store, FakeLLM(), "sp", "zebra göçü")
+
+    dogrulanamadi = rag_service.answer_question(
+        config,
+        store,
+        FakeLLM(
+            answer={
+                "answered": True,
+                "answer": "Kovaryans matrisi ölçüm güncellemesiyle küçülür.",
+                "used_chunk_ids": [],
+                "missing": "",
+            }
+        ),
+        "sp",
+        "kovaryans nasıl küçülür",
+    )
+
+    assert kapsam_disi.answered is False and dogrulanamadi.answered is False
+    assert kapsam_disi.refusal == "not_found"
+    assert dogrulanamadi.refusal == "unverified"
+    assert kapsam_disi.refusal != dogrulanamadi.refusal
+
+
+def test_an_answered_result_carries_no_refusal(space):
+    """`refusal` YALNIZCA reddedilen yanitta dolu; aksi halde arayuz her
+    basarili yanitin ustune de bir bildirim cizerdi."""
+    config, store = space
+
+    answer = rag_service.answer_question(config, store, FakeLLM(), "sp", "kovaryans nasıl küçülür")
+
+    assert answer.answered is True
+    assert answer.refusal is None

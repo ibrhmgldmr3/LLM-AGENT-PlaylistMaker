@@ -203,6 +203,20 @@ SourceKind = Literal["video", "document"]
 # hem daha dogru hem daha kullanisli.
 SourceStatus = Literal["pending", "indexed", "no_text", "failed"]
 
+# Yanit verilememesinin GEREKCE TURU. Metin degil TUR, cunku arayuz bunlari
+# birbirinden ayirt etmek zorunda ve gerekce metnini Turkce ifadesine gore
+# yoklamak (`"doğrulanamadı" in reason`) ilk yeniden yazimda sessizce kirilir.
+#
+# - `empty_question`  : soru bos.
+# - `no_content`      : defterde aranabilir hicbir metin yok.
+# - `not_found`       : arandi, karsilayan bolum cikmadi -- SORU kapsam disi.
+# - `unverified`      : bolum bulundu, model yazdi, ama yazdigi alintiyla
+#                       dogrulanamadi -- is SISTEMDE, kullanicida degil.
+#
+# Son ikisinin ayrimi urunun vaadi: ilkinde soruyu degistirmek, ikincisinde
+# tekrar sormak anlamli.
+RefusalKind = Literal["empty_question", "no_content", "not_found", "unverified"]
+
 
 class SpaceSource(BaseModel):
     """Bir ogrenme alanindaki tek bir kaynak (video ya da dokuman)."""
@@ -253,6 +267,10 @@ class RagAnswer(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     searched_sources: int = 0
     reason: str | None = None
+    # `reason` kullaniciya OKUNAN cumle; `refusal` arayuzun uzerine KARAR
+    # verdigi tur. Ikisi ayri tutuluyor cunku cumle her an yeniden yazilabilir
+    # ve arayuz davranisi bir cumlenin kelimelerine bagli olmamali.
+    refusal: RefusalKind | None = None
 
 class ProgressEvent(BaseModel):
     stage: str

@@ -87,6 +87,7 @@ def answer_question(
             answered=False,
             searched_sources=source_count,
             reason="Soru boş.",
+            refusal="empty_question",
         )
 
     if store.count_chunks(space_id) == 0:
@@ -97,6 +98,7 @@ def answer_question(
                 "Bu öğrenme alanında henüz aranabilir içerik yok. "
                 "Bir çalıştırma ekleyin ya da doküman yükleyin."
             ),
+            refusal="no_content",
         )
 
     lexical, semantic = _retrieve(config, store, llm, space_id, question, user_id)
@@ -140,6 +142,7 @@ def answer_question(
             answered=False,
             searched_sources=source_count,
             reason=_not_found_reason(source_count),
+            refusal="not_found",
         )
 
     selected = (
@@ -152,6 +155,7 @@ def answer_question(
             answered=False,
             searched_sources=source_count,
             reason=_not_found_reason(source_count),
+            refusal="not_found",
         )
 
     _log_injection_markers(space_id, selected)
@@ -175,6 +179,7 @@ def answer_question(
             answered=False,
             searched_sources=source_count,
             reason=payload.get("missing") or _not_found_reason(source_count),
+            refusal="not_found",
         )
 
     by_id = {chunk["chunk_id"]: chunk for chunk in selected}
@@ -199,6 +204,7 @@ def answer_question(
             answered=False,
             searched_sources=source_count,
             reason=_UNVERIFIED_REASON,
+            refusal="unverified",
         )
 
     grounding = _answer_grounding(payload["answer"], [by_id[chunk_id] for chunk_id in cited])
@@ -217,6 +223,7 @@ def answer_question(
             answered=False,
             searched_sources=source_count,
             reason=_UNVERIFIED_REASON,
+            refusal="unverified",
         )
 
     return RagAnswer(

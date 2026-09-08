@@ -293,12 +293,24 @@ export interface Citation {
  * bozuk sanardi. `searched_sources` eksik olanin kendi sorusu degil HAVUZU
  * oldugunu gorunur kiliyor.
  */
+export type RagRefusal = "empty_question" | "no_content" | "not_found" | "unverified";
+
 export interface RagAnswer {
   answered: boolean;
   answer: string | null;
   citations: Citation[];
   searched_sources: number;
   reason: string | null;
+  /**
+   * Reddin TURU. `reason` kullaniciya okunan cumle; bu ise arayuzun uzerine
+   * KARAR verdigi ayrim -- "sorun kapsam disi" ile "sistem kendi ciktisini
+   * dogrulayamadi" ayni kutuda gosterilemez: ilkinde soruyu degistirmek,
+   * ikincisinde tekrar sormak anlamli.
+   *
+   * Ayrimi gerekce cumlesinden okumak (`reason.includes("doğrulanamadı")`)
+   * cumle her yeniden yazildiginda sessizce bozulurdu; bu yuzden tur.
+   */
+  refusal: RagRefusal | null;
 }
 
 export interface SourceChunk {
