@@ -6,6 +6,7 @@ import {
   ArrowUpRight,
   AudioWaveform,
   BookMarked,
+  CircleSlash,
   Copy,
   FileText,
   ListVideo,
@@ -15,6 +16,7 @@ import {
   Plus,
   Quote,
   Send,
+  ShieldAlert,
   Trash2,
   Upload,
   Video,
@@ -22,7 +24,14 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatClock, formatDateTime } from "../../lib/format";
-import type { Citation, RunSummary, SpaceSource, SpaceSummary } from "../../api/types";
+import { roomStyle } from "../../lib/roomKey";
+import type {
+  Citation,
+  RagRefusal,
+  RunSummary,
+  SpaceSource,
+  SpaceSummary,
+} from "../../api/types";
 import { usePlaylist } from "../../hooks/usePlaylist";
 import { useVideoRAG } from "../../hooks/useVideoRAG";
 import { Empty, Meter, Note, Spinner } from "../../components/ui";
@@ -220,7 +229,10 @@ function NotebookList({
       ) : (
         <div className="courses">
           {spaces.map((space) => (
-            <article className="course-row" key={space.space_id}>
+            // Defterin SALON RENGI kimliginden turetiliyor: ayni renk bu
+            // satirda, defterin icinde ve alintilarinin kunyesinde. Kullanici
+            // rengi bir kez ogrenip sonra okumadan taniyor.
+            <article className="course-row" key={space.space_id} style={roomStyle(space.space_id)}>
               <span className="course-row__mark" aria-hidden>
                 <Notebook className="h-4 w-4" />
               </span>
@@ -352,6 +364,10 @@ function Moments({
               key={`${citation.source_id}-${index}`}
               type="button"
               className={cn("line", second !== null && second === activeSecond && "line--active")}
+              // TRANSKRIPT ISARETI. Bu liste birden cok kaynaktan an topluyor;
+              // renk olmadan hangi satirin hangi kaynaktan geldigi ancak
+              // metni okuyarak anlasiliyordu.
+              style={roomStyle(citation.source_id)}
               onClick={() => second !== null && onSeek(second)}
               disabled={second === null}
             >
@@ -493,7 +509,14 @@ function SourceTranscriptViewer({
           "{filterQuery}" ifadesini içeren bir bölüm bulunamadı.
         </p>
       ) : (
-        <div className="lines" style={{ maxHeight: "20rem", overflowY: "auto" }}>
+        // TRANSKRIPT ISARETI. Renk kabin ustunde bir kez veriliyor: bu
+        // listenin tamami TEK kaynagin metni, dolayisiyla anahtar satir
+        // basina degil kaynagin kendisi basina duser ve `--key` cocuklara
+        // kaskad uzerinden iner.
+        <div
+          className="lines"
+          style={{ maxHeight: "20rem", overflowY: "auto", ...roomStyle(source.source_id) }}
+        >
           {filteredChunks.map((chunk) => {
             const hasTime = chunk.start_sec !== null && chunk.start_sec !== undefined;
             const isActive =
@@ -528,6 +551,49 @@ function SourceTranscriptViewer({
 }
 
 /* ------------------------------------------------------------------- sohbet */
+
+/**
+ * Yanit VERILEMEDIGI durumlar. UC AYRI DIL, biri digerinin soluk hali degil.
+ *
+ * Bunlar bir cevap balonu DEGIL, cunku cevap degiller. Reddi `.msg--ai`
+ * icinde gostermek -- bu urunun eski hali -- kullaniciya "sistem sana bir sey
+ * anlatti" diyordu; oysa anlatilan sey sistemin KONUSMAYI reddettigi.
+ *
+ * Ayrim kullanici icin islevsel: "kapsam disi"nda soruyu ya da defteri
+ * degistirmek anlamli, "dogrulanamadi"da ayni soruyu tekrar sormak. Ikisini
+ * ayni cumleyle anlatmak kullaniciyi yanlis harekete yonlendiriyordu.
+ *
+ * Kirmizi YOK: reddetmek bu ozelligin VAADI, arizasi degil.
+ */
+function AbsenceNotice({ kind, text }: { kind: RagRefusal; text: string }) {
+  const unverified = kind === "unverified";
+  const tone =
+    kind === "unverified"
+      ? "notice--unverified"
+      : kind === "no_content"
+        ? "notice--outofscope"
+        : "notice--absent";
+  const what =
+    kind === "unverified"
+      ? "Doğrulanamadı"
+      : kind === "no_content"
+        ? "Kapsam dışı"
+        : "Bu defterde yok";
+
+  return (
+    <div className={cn("notice", tone)} role="status">
+      {unverified ? (
+        <ShieldAlert className="h-4 w-4" aria-hidden />
+      ) : (
+        <CircleSlash className="h-4 w-4" aria-hidden />
+      )}
+      <p className="notice__body">
+        <span className="notice__what">{what}</span>
+        {text}
+      </p>
+    </div>
+  );
+}
 
 function Chat({
   messages,
@@ -584,7 +650,10 @@ function Chat({
           </Empty>
         )}
 
-        {messages.map((message) => (
+        {messages.map((message) =>
+          message.refusal ? (
+            <AbsenceNotice key={message.id} kind={message.refusal} text={message.content} />
+          ) : (
           <article
             key={message.id}
             className={cn("msg", message.role === "user" ? "msg--me" : "msg--ai")}
@@ -617,6 +686,10 @@ function Chat({
                       key={`${citation.source_id}-${index}`}
                       type="button"
                       className="cite"
+                      // KUNYE. Salon rengi kaynagin kimliginden turuyor, yani
+                      // ayni kaynak asagidaki isaretli anlar listesinde ve
+                      // kaynak listesinde de AYNI rengi tasiyor.
+                      style={roomStyle(citation.source_id)}
                       onClick={() => onCitationClick(citation)}
                       title={citation.quote}
                     >
@@ -629,7 +702,8 @@ function Chat({
               </div>
             )}
           </article>
-        ))}
+          ),
+        )}
       </div>
 
       <form className="ask" onSubmit={submit}>
@@ -868,7 +942,14 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
                   const status = STATUS[source.status];
                   const active = source.source_id === rag.selectedSourceId;
                   return (
-                    <div key={source.source_id} className={cn("source", active && "source--active")}>
+                    // KENAR BANDI. Rengin OGRENILDIGI yer burasi: kullanici
+                    // kaynagi adiyla burada goruyor, sonra alintida ve
+                    // isaretli anlarda ayni rengi okumadan taniyor.
+                    <div
+                      key={source.source_id}
+                      className={cn("source", active && "source--active")}
+                      style={roomStyle(source.source_id)}
+                    >
                       <span className="source__icon" aria-hidden>
                         {source.kind === "video" ? (
                           <Video className="h-4 w-4" />

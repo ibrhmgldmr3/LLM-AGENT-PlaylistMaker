@@ -9,7 +9,7 @@
       content="Bir konu yaz, sıralı bir ders planı al. Videoları izle, işaretle, kaynaklı soru sor."
     />
     <meta name="theme-color" content="#1b3a31" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0e1512" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#121418" media="(prefers-color-scheme: dark)" />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -38,30 +38,39 @@
   </head>
   <body>
     <!--
-      THESIS: Kendi kendine ogrenen birinin DERSI; arama sonucu listesi degil.
-      Sirali unite dizisi nesnenin kendisi. Reddedilen kategori varsayilani:
-      alaka puanli, ayni boyda video kartlarindan olusan sonsuz akis.
+      THESIS: Defter bir KOLEKSIYON, her kaynak bir eser, her alinti bir KUNYE.
+      Reddedilen kategori varsayilani: krem kagit + serif "calisma defteri"
+      goruntusu (bu urunun kendi onceki dunyasi) ve onun karsiti olan siyah +
+      neon "yapay zeka araci" goruntusu.
 
-      OWN-WORLD: Dershanenin iki yuzeyi. Koyu tahta yesili (#1b3a31) gezinmeyi,
-      ders basligini ve "su an buradasin" isaretini tasir; sicak yulaf kagit
-      (#f0ede4) okunan her seyi. Tebesir kehribari (#c9861a) TEK sinyal:
-      aktif olan, sirada olan, ne kadar ilerledigin. Archivo = kurum konusuyor
-      (tabela register). Literata = okudugun malzeme (kitap register).
-      Golge degil cizgi; cam ve parlaklik yok.
+      OWN-WORLD: Markanin kendi yesili (#1b3a31) artik bir SALON DUVARI ve
+      butun bir bolgeye sahip -- gezinmeyi, bolum basligini ve "su an
+      buradasin"i tasir. Degisen sey rengin kendisi degil ne kadar YER
+      kapladigi: eskiden 248 piksellik bir seritti. Beyaz etiket kartonu (#ffffff)
+      okunan her seyi; galeri grisi zemin (#e8eae5) rengin gorunmesi icin
+      renksiz kalir. Alti SALON RENGI (--key-1..6) kaynaklari anahtarlar: bir
+      kaynagin rengi kunyesinde, kenar bandinda ve transkript isaretinde
+      AYNIDIR. Yonlendirme okrasi (#b4700f) tek sinyal. Archivo = kurum
+      konusuyor; Literata = duvar metni; mono = KUNYE (zaman kodu, sayfa).
+      Kose keskin (3-8px), golge degil cizgi.
 
-      STORY: Tek soru sorulur, plan bir GUZERGAH olarak kurulurken izlenir,
-      sonucta numarali unitelerden olusan isaretlenebilir bir ders cikar,
-      ve o derse soru sorulup videonun tam saniyesine gidilir.
+      STORY: Tek soru sorulur, plan bir guzergah olarak kurulurken izlenir,
+      numarali unitelerden olusan bir koleksiyon cikar, ve o koleksiyona soru
+      sorulup kunyeden videonun tam saniyesine gidilir.
 
-      FIRST VIEWPORT: Solda tahta yesili ray, uc durak. Kagit zeminde tek
-      buyuk soru, altinda tek genis alan, dort gercek ornek konu. Tercihler
-      katli. Birincil eylem alanin hemen altinda.
+      FIRST VIEWPORT: Solda ultramarin duvar, uc durak. Galeri grisi zeminde
+      tek buyuk soru, altinda tek genis alan, dort gercek ornek konu.
+      Birincil eylem alanin hemen altinda.
 
-      FORM: Muze sergi yonlendirmesi + ders izlencesi. Kullanici tarafindan
-      sabitlendi (zar atilmadi).
+      FORM: Muze etiketi ve galeri yonlendirmesi. Kendi siralamamda 4.;
+      zar atandi, kullanici kilitledi. Seed: e10af0da (re-roll 1).
+
+      SIGNATURE: Yanit geldiginde kunyeler SIRAYLA yerlesir -- galeride
+      etiketlerin asilmasi. Tek orkestre edilmis an, dagitilmis hover degil.
 
       FINISH: unreviewed and undocumented is unfinished; this build ends with
-      the finish review, the verdict, and DESIGN.md
+      the finish review, the verdict, DESIGN.md, and every shipping raster
+      carrying its provenance
     -->
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

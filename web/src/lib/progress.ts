@@ -68,10 +68,6 @@ export function completedIds(runId: string): string[] {
   return doneStore()[runId] ?? EMPTY;
 }
 
-export function isCompleted(runId: string, videoId: string): boolean {
-  return completedIds(runId).includes(videoId);
-}
-
 export function toggleCompleted(runId: string, videoId: string): void {
   const store = doneStore();
   const current = store[runId] ?? EMPTY;

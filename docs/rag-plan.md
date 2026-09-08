@@ -247,7 +247,7 @@ isteme giriyor, dolayısıyla saldırı yüzeyi gerçek.
 
 **Yarıçap sınırlı ve öyle kalmalı.** Yanıt yolunda hiçbir araç, dış istek ya da otomasyon
 bağlı değil (tek JSON çıktısı), ve yanıt arayüzde **düz metin** olarak basılıyor
-(`ChatPanel.tsx`, `dangerouslySetInnerHTML` yok) — yani XSS ve otomatik-yüklenen görselle
+(`SpaceWorkspace.tsx`, `dangerouslySetInnerHTML` yok) — yani XSS ve otomatik-yüklenen görselle
 sızdırma bugün kapalı. Enjeksiyonun yapabileceği şey **kullanıcıya kendi güvendiği
 kaynağından geliyormuş gibi görünen bir metin göstermek**; bu, ürünün tek vaadini
 hedeflediği için yine de ciddi.

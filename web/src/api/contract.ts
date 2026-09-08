@@ -19,6 +19,11 @@
  *              Sart: API'nin donebildigi her sey arayuz tipine sigmali.
  *
  * Kor bir esitlik kontrolu ilk yonu yanlis yere kirmizi yakardi.
+ *
+ * BU DOSYAYI HICBIR SEY IMPORT ETMEZ -- ve etmemeli. Iddialar `tsc`in dosyayi
+ * derlemesiyle kontrol ediliyor; calisma zamaninda uretilecek bir sey yok, o
+ * yuzden pakete de girmiyor. "Kimse kullanmiyor" diye silmeyin: silindiginde
+ * hicbir test kirilmaz, yalnizca kayma bekcisi sessizce ortadan kalkar.
  */
 
 import type { components } from "./schema";

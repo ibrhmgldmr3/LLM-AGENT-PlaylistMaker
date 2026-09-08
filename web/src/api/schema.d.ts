@@ -289,7 +289,16 @@ export interface paths {
         };
         /**
          * Download Export
-         * @description Uretilen JSON / Markdown dosyasini indirir.
+         * @description JSON / Markdown ciktisini uretip indirir.
+         *
+         *     Diskten OKUMUYOR. Ciktilarin ikisi de sonucun turetilmisi (bkz.
+         *     `src/services/playlist_export.py`) ve sonuc SQLite'ta duruyor, yani indirme
+         *     calisma dizinine hic bagli degil. Iki kazanci var:
+         *
+         *     * Indirmeyi karsilayan surecin, dosyayi ureten surec olmasi gerekmiyor --
+         *       coklu replika onunde duran engellerden biri buydu.
+         *     * Calistirma dizini silinmis olsa bile indirme calisiyor. Eskiden bu durum
+         *       "Dosya sunucudan silinmis" (410) donduruyordu, oysa veri yerindeydi.
          */
         get: operations["download_export_api_runs__run_id__export__artifact__get"];
         put?: never;
@@ -496,6 +505,46 @@ export interface paths {
          *     acikca belirtmek ileride ayrac degisirse kirilmayi onluyor.
          */
         delete: operations["delete_source_api_spaces__space_id__sources__source_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/sources/{source_id}/text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Source Text
+         * @description Kaynağın tam metnini ve zaman damgalı parçalarını döndürür.
+         */
+        get: operations["get_source_text_api_spaces__space_id__sources__source_id__text_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/sources/{source_id}/transcribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transcribe Source
+         * @description Çalışma odasındaki bir video için ASR (Whisper) ile transkript çıkarır ve indeksler.
+         */
+        post: operations["transcribe_source_api_spaces__space_id__sources__source_id__transcribe_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -765,6 +814,8 @@ export interface components {
             citations: components["schemas"]["Citation"][];
             /** Reason */
             reason: string | null;
+            /** Refusal */
+            refusal: ("empty_question" | "no_content" | "not_found" | "unverified") | null;
             /**
              * Searched Sources
              * @default 0
@@ -942,6 +993,60 @@ export interface components {
             /** Topic */
             topic: string;
         };
+        /** SourceChunkResponse */
+        SourceChunkResponse: {
+            /** Chunk Id */
+            chunk_id: number;
+            /** End Sec */
+            end_sec: number | null;
+            /** Ordinal */
+            ordinal: number;
+            /** Page */
+            page: number | null;
+            /** Start Sec */
+            start_sec: number | null;
+            /** Text */
+            text: string;
+        };
+        /** SourceTextResponse */
+        SourceTextResponse: {
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
+            /** Chunks */
+            chunks: components["schemas"]["SourceChunkResponse"][];
+            /** Error */
+            error: string | null;
+            /**
+             * Full Text
+             * @default
+             */
+            full_text: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "video" | "document";
+            /** Language */
+            language: string | null;
+            /** Source Id */
+            source_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "indexed" | "no_text" | "failed";
+            /** Title */
+            title: string;
+            /** Transcript Backend */
+            transcript_backend: string | null;
+            /** Transcript Source */
+            transcript_source: string | null;
+            /** Url */
+            url: string | null;
+        };
         /**
          * SpaceDetail
          * @description Alan + kaynaklari.
@@ -1058,6 +1163,10 @@ export interface components {
             status: "available" | "no_transcript" | "failed";
             /** Subtopic */
             subtopic: string;
+            /** Transcript Backend */
+            transcript_backend: string | null;
+            /** Transcript Source */
+            transcript_source: string | null;
             /** Video Id */
             video_id: string;
         };
@@ -1095,6 +1204,17 @@ export interface components {
              * @enum {string}
              */
             transcript_status: "available" | "unavailable" | "cooldown" | "failed_temporary" | "failed_permanent";
+        };
+        /** TranscribeSourceAccepted */
+        TranscribeSourceAccepted: {
+            /** Events Url */
+            events_url: string;
+            /** Job Id */
+            job_id: string;
+            /** Source Id */
+            source_id: string;
+            /** Space Id */
+            space_id: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -1885,6 +2005,70 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_source_text_api_spaces__space_id__sources__source_id__text_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceTextResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transcribe_source_api_spaces__space_id__sources__source_id__transcribe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                space_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscribeSourceAccepted"];
+                };
             };
             /** @description Validation Error */
             422: {

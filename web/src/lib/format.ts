@@ -7,7 +7,6 @@
  */
 
 const NUMBER = new Intl.NumberFormat("tr-TR", { notation: "compact", maximumFractionDigits: 1 });
-const DATE = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "long", year: "numeric" });
 const DATETIME = new Intl.DateTimeFormat("tr-TR", {
   day: "numeric",
   month: "short",
@@ -46,11 +45,6 @@ export function formatClock(seconds: number): string {
 export function formatCount(value: number | null | undefined): string | null {
   if (!value || value <= 0) return null;
   return NUMBER.format(value);
-}
-
-export function formatDate(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? "—" : DATE.format(date);
 }
 
 export function formatDateTime(iso: string): string {
