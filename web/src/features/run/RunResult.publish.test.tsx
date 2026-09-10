@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { renderWithLanguage as render } from "../../test/render";
 import { api } from "../../api/client";
 import type { PlaylistResult, Recommendation } from "../../api/types";
 import { RunResult } from "./RunResult";

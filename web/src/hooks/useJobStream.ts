@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProgressEvent, RunSnapshot, RunState } from "../api/types";
+import { useT } from "../i18n";
 
 interface JobState {
   jobId: string | null;
@@ -31,6 +32,8 @@ const IDLE: JobState = {
  * verse bile akis yeniden kurulmamali.
  */
 export function useJobStream(onDone?: () => void) {
+  const t = useT();
+
   const [state, setState] = useState<JobState>(IDLE);
   const sourceRef = useRef<EventSource | null>(null);
   const doneRef = useRef(onDone);
@@ -46,7 +49,7 @@ export function useJobStream(onDone?: () => void) {
   const watch = useCallback(
     (jobId: string, eventsUrl: string) => {
       close();
-      setState({ ...IDLE, jobId, state: "running", message: "Başlatılıyor…" });
+      setState({ ...IDLE, jobId, state: "running", message: t("stream.starting") });
 
       const source = new EventSource(eventsUrl);
       sourceRef.current = source;
@@ -89,7 +92,7 @@ export function useJobStream(onDone?: () => void) {
           setState((previous) => ({
             ...previous,
             state: "failed",
-            error: "İçeri alma akışıyla bağlantı kesildi. Sayfayı yenileyip durumu kontrol edin.",
+            error: t("stream.ingestLost"),
           }));
           doneRef.current?.();
         }

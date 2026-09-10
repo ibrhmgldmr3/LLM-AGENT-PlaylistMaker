@@ -1,4 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { LanguageProvider } from "../i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
@@ -6,9 +8,17 @@ import type { PlaylistResult } from "../api/types";
 import { FakeEventSource, installFakeEventSource } from "../test/fake-event-source";
 import { useRunStream } from "./useRunStream";
 
+// Hooklar hata mesajlarini ceviri katmanindan aliyor, dolayisiyla saglayici
+// SART. Dil TURKCE'ye sabitleniyor: asagidaki iddialar metnin KENDISINI
+// kontrol ediyor ve testin kosucunun tarayici diline gore degismesi, gecmesi
+// makineye bagli bir test olurdu.
+const wrapper = ({ children }: { children: ReactNode }) =>
+  createElement(LanguageProvider, null, children);
+
 let uninstall: () => void;
 
 beforeEach(() => {
+  window.localStorage.setItem("derslik:lang", "tr");
   uninstall = installFakeEventSource();
 });
 
@@ -33,7 +43,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 
 describe("useRunStream", () => {
   it("akisi calistirmanin ucuna baglar ve durumu 'running' yapar", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
 
     act(() => result.current.watch("kosu-1"));
 
@@ -43,7 +53,7 @@ describe("useRunStream", () => {
   });
 
   it("`progress` olaylarini duruma yansitir", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
 
     act(() =>
@@ -67,7 +77,7 @@ describe("useRunStream", () => {
       .spyOn(api, "getRun")
       .mockResolvedValue({ run_id: "kosu-1", state: "done", result: playlist });
 
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const source = FakeEventSource.last;
 
@@ -94,7 +104,7 @@ describe("useRunStream", () => {
     );
     vi.spyOn(api, "getRun").mockReturnValue(eskiYanit as never);
 
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     act(() => FakeEventSource.last.emit("done", snapshot()));
 
@@ -119,7 +129,7 @@ describe("useRunStream", () => {
     });
     vi.spyOn(api, "getRun").mockReturnValue(eskiYanit as never);
 
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     act(() => FakeEventSource.last.emit("done", snapshot()));
     act(() => result.current.watch("kosu-2"));
@@ -135,7 +145,7 @@ describe("useRunStream", () => {
 
   it("basarisiz biten calistirmada sunucunun hata metnini kullanir", () => {
     const getRun = vi.spyOn(api, "getRun");
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
 
     act(() =>
@@ -151,7 +161,7 @@ describe("useRunStream", () => {
     // Uctan uca denemede gorundu: kullanici "Iptal et"e bastiginda kirmizi hata
     // kutusunda "Çalıştırma tamamlanamadı" yaziyordu -- kendi karari bir ariza
     // gibi okunuyordu.
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
 
     act(() => FakeEventSource.last.emit("done", snapshot({ state: "cancelled", error: null })));
@@ -161,7 +171,7 @@ describe("useRunStream", () => {
   });
 
   it("iptal disinda hata metni yoksa genel mesaji korur", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
 
     act(() => FakeEventSource.last.emit("done", snapshot({ state: "failed", error: null })));
@@ -172,7 +182,7 @@ describe("useRunStream", () => {
   it("sonuc cekilemezse durumu 'failed' yapar", async () => {
     vi.spyOn(api, "getRun").mockRejectedValue(new Error("500 Internal Server Error"));
 
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     act(() => FakeEventSource.last.emit("done", snapshot()));
 
@@ -181,7 +191,7 @@ describe("useRunStream", () => {
   });
 
   it("govdeli `error` olayini hata olarak isler", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const source = FakeEventSource.last;
 
@@ -197,7 +207,7 @@ describe("useRunStream", () => {
     // kendisi yeniden baglanir. Hata sayilirsa gecici bir kesinti calisan bir
     // isi kullaniciya "basarisiz" gosterir ve akis da kapatilmis olur -- yani
     // is aslinda devam ederken arayuz onu bir daha hic gormez.
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const source = FakeEventSource.last;
 
@@ -209,7 +219,7 @@ describe("useRunStream", () => {
   });
 
   it("kesintiden sonra gelen ilerleme islenmeye devam eder", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const source = FakeEventSource.last;
 
@@ -222,7 +232,7 @@ describe("useRunStream", () => {
   });
 
   it("yeniden izlemede onceki akisi kapatir", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
 
     act(() => result.current.watch("kosu-1"));
     const first = FakeEventSource.last;
@@ -242,7 +252,7 @@ describe("useRunStream", () => {
     // bir `done` gelebilseydi YENI akisi kapatir ve durumu ele gecirirdi.
     // Sahte bu sozlesmeyi taklit ediyor, dolayisiyla test hem sizintiyi hem de
     // dayandigimiz varsayimi kayda geciriyor.
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const first = FakeEventSource.last;
     act(() => result.current.watch("kosu-2"));
@@ -256,7 +266,7 @@ describe("useRunStream", () => {
   });
 
   it("bilesen soekuldugunde akisi kapatir", () => {
-    const { result, unmount } = renderHook(() => useRunStream());
+    const { result, unmount } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const source = FakeEventSource.last;
 
@@ -271,7 +281,7 @@ describe("useRunStream", () => {
     // son durum hic gorulmez ve arayuz "calisiyor"da asili kalir.
     const cancelRun = vi.spyOn(api, "cancelRun").mockResolvedValue(undefined);
 
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const source = FakeEventSource.last;
 
@@ -288,7 +298,7 @@ describe("useRunStream", () => {
 
   it("izlenen calistirma yokken `cancel` istek atmaz", async () => {
     const cancelRun = vi.spyOn(api, "cancelRun");
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
 
     await act(() => result.current.cancel());
 
@@ -298,7 +308,7 @@ describe("useRunStream", () => {
   it("iptal istegi basarisiz olursa hatayi gosterir", async () => {
     vi.spyOn(api, "cancelRun").mockRejectedValue(new Error("404 Bilinmeyen çalıştırma"));
 
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
 
     await act(() => result.current.cancel());
@@ -311,7 +321,7 @@ describe("useRunStream", () => {
     // tarayici baglantiyi kalici kapatir ve BIR DAHA DENEMEZ. Eskiden bu durum
     // gecici kopmayla ayni sayilip sessizce yok sayiliyordu: ilerleme cubugu
     // sonsuza kadar donuyordu.
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
 
     act(() => FakeEventSource.last.failPermanently());
@@ -321,7 +331,7 @@ describe("useRunStream", () => {
   });
 
   it("GECICI kopmayi hata saymaz -- tarayici kendisi yeniden dener", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
 
     // `readyState` CONNECTING'de kaliyor: kopma gecici.
@@ -332,7 +342,7 @@ describe("useRunStream", () => {
   });
 
   it("`reset` durumu bosaltir ve akisi kapatir", () => {
-    const { result } = renderHook(() => useRunStream());
+    const { result } = renderHook(() => useRunStream(), { wrapper });
     act(() => result.current.watch("kosu-1"));
     const source = FakeEventSource.last;
 

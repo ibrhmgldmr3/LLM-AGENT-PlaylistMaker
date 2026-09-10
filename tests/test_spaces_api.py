@@ -254,6 +254,43 @@ def test_document_upload_is_accepted_and_indexed(client):
     assert detail["chunk_count"] > 0
 
 
+def test_a_half_embedded_source_says_so_when_the_notebook_is_reopened(client):
+    """Kismi anlamsal kapsam DEFTER ACILDIGINDA gorunmeli.
+
+    Eksiklik daha once yalnizca ingest isinin bitis mesajinda soyleniyordu ve o
+    mesaj SSE akisiyla birlikte kayboluyordu. Ertesi gun defteri acan kullanici
+    hicbir sey eksik gormuyor, ama sonraki "bulamadim"in sebebi bu -- yani
+    urunun kendi ilkesi ("aranamayani goster") tam burada ihlal ediliyordu.
+    """
+    space_id = _create(client)
+    # `_upload` YETMIYOR: `status` parcalar yazilir yazilmaz `indexed` oluyor ve
+    # gomme ONDAN SONRA calisiyor (bkz. `rag_service._ingest_document`). Yani
+    # "indekslendi"yi bekleyen bir test, gomme ucusta iken okuyabiliyor --
+    # olculen sey makinenin o anki yuku oluyordu. ISIN kendisini bekliyoruz.
+    accepted = client.post(
+        f"/api/spaces/{space_id}/sources/document",
+        files={"file": ("ders.txt", b"Kovaryans matrisi kucultur. Kalman filtresi.", "text/plain")},
+    )
+    assert accepted.status_code == 202, accepted.text
+    _wait_for_job(client, accepted.json()["job_id"])
+
+    store = SQLiteStore(client.app_config.sqlite_path)
+    before = client.get(f"/api/spaces/{space_id}").json()["sources"][0]
+    assert before["embedded_chunk_count"] == before["chunk_count"] > 0
+
+    # Vektorleri dusur: gomme saglayicisinin arizalandigi durum. Kaynak
+    # `indexed` KALIYOR -- dogru davranis, cunku leksik arama calismaya devam
+    # ediyor ve isi dusurmek kullaniciyi bos elle birakirdi.
+    with store.connect() as conn:
+        conn.execute("DELETE FROM chunk_embedding")
+
+    after = client.get(f"/api/spaces/{space_id}").json()["sources"][0]
+
+    assert after["status"] == "indexed"
+    assert after["chunk_count"] == before["chunk_count"]
+    assert after["embedded_chunk_count"] == 0
+
+
 def test_unsupported_file_type_is_rejected(client):
     space_id = _create(client)
 

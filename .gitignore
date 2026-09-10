@@ -75,14 +75,13 @@ node_modules/
 web/dist/
 web/.vite/
 *.tsbuildinfo
-# `schema.d.ts` URETILEN bir dosya ama COMMIT EDILIYOR (bu yuzden burada yok):
-# `contract.ts` onu import ediyor, dolayisiyla Python kurmadan `npm run typecheck`
-# yapabilmek ve CI'in `--check` ile "guncel mi" karsilastirmasi yapabilmesi icin
-# depoda bulunmasi gerekiyor. Ara adim olan OpenAPI dokumu ise yok sayiliyor.
 web/openapi.json
 npm-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+
+.impeccable/
 
 # ---------------------------------------------------------------- editor / IDE
 .vscode/
@@ -96,3 +95,4 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+.docs/

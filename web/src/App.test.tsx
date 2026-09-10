@@ -8,6 +8,9 @@ import { installFakeEventSource } from "./test/fake-event-source";
 let uninstall: () => void;
 
 beforeEach(() => {
+  // Testler metnin KENDISINI kontrol ediyor; jsdom "en-US" oldugu icin
+  // dil sabitlenmezse gecmesi ortama bagli olurdu.
+  window.localStorage.setItem("derslik:lang", "tr");
   uninstall = installFakeEventSource();
   vi.spyOn(api, "capabilities").mockResolvedValue({} as never);
   vi.spyOn(api, "me").mockResolvedValue({

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { useT } from "../i18n";
 import type { PlaylistResult, ProgressEvent, RunSnapshot, RunState } from "../api/types";
 
 interface StreamState {
@@ -30,6 +31,8 @@ const IDLE: StreamState = {
  * kapattigi icin yeniden baglanan istemci takilmiyor.
  */
 export function useRunStream() {
+  const t = useT();
+
   const [state, setState] = useState<StreamState>(IDLE);
   const sourceRef = useRef<EventSource | null>(null);
   // AKTIF calistirma. `state.runId` yerine ref: `done` sonrasi calisan asenkron
@@ -98,10 +101,10 @@ export function useRunStream() {
             error:
               snapshot.error ??
               (snapshot.state === "cancelled"
-                ? "Hazırlığı sen iptal ettin."
+                ? t("stream.cancelledByYou")
                 : snapshot.state === "interrupted"
-                  ? "Sunucu yeniden başlatıldığı için hazırlık yarıda kaldı."
-                  : "Ders planı tamamlanamadı."),
+                  ? t("stream.serverRestarted")
+                  : t("stream.runFailed")),
           }));
         }
       });
@@ -132,8 +135,7 @@ export function useRunStream() {
             ...previous,
             state: "failed",
             error:
-              "Sunucuyla bağlantı koptu. Oturumun düşmüş olabilir; sayfayı " +
-              "yenileyip Derslerim bölümünden kontrol et.",
+              t("stream.connectionLost"),
           }));
         }
       });
@@ -161,7 +163,7 @@ export function useRunStream() {
     if (!runId) return;
     try {
       await api.cancelRun(runId);
-      setState((previous) => ({ ...previous, message: "İptal ediliyor…" }));
+      setState((previous) => ({ ...previous, message: t("stream.cancelling") }));
     } catch (error) {
       setState((previous) => ({ ...previous, error: (error as Error).message }));
     }

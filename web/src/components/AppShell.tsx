@@ -1,20 +1,22 @@
 import type { ReactNode } from "react";
 import { Compass, LibraryBig, LogOut, MessagesSquare, Moon, Sun, User } from "lucide-react";
 import { cn } from "../lib/cn";
+import { useLanguage } from "../i18n";
+import type { Dict } from "../i18n/dict";
 
 export type Section = "start" | "courses" | "room";
 
 interface NavEntry {
   id: Section;
-  label: string;
-  short: string;
+  label: keyof Dict;
+  short: keyof Dict;
   icon: React.ComponentType<{ className?: string }>;
 }
 
 const NAV: NavEntry[] = [
-  { id: "start", label: "Öğrenmeye başla", short: "Başla", icon: Compass },
-  { id: "courses", label: "Derslerim", short: "Derslerim", icon: LibraryBig },
-  { id: "room", label: "Çalışma odası", short: "Çalışma", icon: MessagesSquare },
+  { id: "start", label: "nav.start", short: "nav.start.short", icon: Compass },
+  { id: "courses", label: "nav.courses", short: "nav.courses.short", icon: LibraryBig },
+  { id: "room", label: "nav.room", short: "nav.room.short", icon: MessagesSquare },
 ];
 
 interface Props {
@@ -32,7 +34,8 @@ interface Props {
 }
 
 /**
- * Uygulama kabugu: solda tahta yesili ray, ustte baglam cubugu, ortada kagit.
+ * Uygulama kabugu: solda salon duvari, ustte baglam cubugu, ortada galeri
+ * zemini.
  *
  * Gezinme dar ekranda alt cubuga TASINIR, gizlenmez: uc bolum de her boyutta
  * tek dokunusla erisilebilir olmali. Ray ile alt cubuk ayni `NAV` dizisinden
@@ -52,6 +55,7 @@ export function AppShell({
   wide,
   children,
 }: Props) {
+  const { t, lang, setLang } = useLanguage();
   const items = NAV.filter((entry) => sections.includes(entry.id));
 
   return (
@@ -61,10 +65,10 @@ export function AppShell({
           <span className="rail__mark" aria-hidden>
             <Compass className="h-4 w-4" />
           </span>
-          <span className="rail__name">Derslik</span>
+          <span className="rail__name">{t("shell.brand")}</span>
         </div>
 
-        <nav className="rail__nav" aria-label="Ana bölümler">
+        <nav className="rail__nav" aria-label={t("nav.sections")}>
           {items.map((entry) => (
             <button
               key={entry.id}
@@ -74,7 +78,7 @@ export function AppShell({
               onClick={() => onNavigate(entry.id)}
             >
               <entry.icon className="h-[1.05rem] w-[1.05rem]" aria-hidden />
-              {entry.label}
+              {t(entry.label)}
             </button>
           ))}
         </nav>
@@ -94,12 +98,25 @@ export function AppShell({
           <h1 className="bar__title">{title}</h1>
           <div className="row" style={{ gap: "0.35rem", flexWrap: "nowrap" }}>
             {actions}
+            {/* Dil secimi bir DUGME degil bir SECIM: iki dil bugun, yarin uc
+                olabilir ve donguye giren bir dugme o gun yanlis arayuz olur. */}
+            <label className="lang">
+              <span className="sr-only">{t("shell.language")}</span>
+              <select
+                className="lang__select"
+                value={lang}
+                onChange={(event) => setLang(event.target.value === "en" ? "en" : "tr")}
+              >
+                <option value="tr">{t("shell.languageTr")}</option>
+                <option value="en">{t("shell.languageEn")}</option>
+              </select>
+            </label>
             <button
               type="button"
               className="icon-btn"
               onClick={onToggleTheme}
-              aria-label={dark ? "Aydınlık temaya geç" : "Karanlık temaya geç"}
-              title={dark ? "Aydınlık tema" : "Karanlık tema"}
+              aria-label={dark ? t("shell.themeToLight") : t("shell.themeToDark")}
+              title={dark ? t("shell.themeLight") : t("shell.themeDark")}
             >
               {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
@@ -108,8 +125,8 @@ export function AppShell({
                 type="button"
                 className="icon-btn"
                 onClick={onSignOut}
-                aria-label="Çıkış yap"
-                title="Çıkış yap"
+                aria-label={t("shell.signOut")}
+                title={t("shell.signOut")}
               >
                 <LogOut className="h-4 w-4" />
               </button>
@@ -120,7 +137,7 @@ export function AppShell({
         <div className={cn("body", wide && "body--wide")}>{children}</div>
       </div>
 
-      <nav className="tabbar" aria-label="Ana bölümler">
+      <nav className="tabbar" aria-label={t("nav.sections")}>
         {items.map((entry) => (
           <button
             key={entry.id}
@@ -130,7 +147,7 @@ export function AppShell({
             onClick={() => onNavigate(entry.id)}
           >
             <entry.icon className="h-5 w-5" aria-hidden />
-            {entry.short}
+            {t(entry.short)}
           </button>
         ))}
       </nav>

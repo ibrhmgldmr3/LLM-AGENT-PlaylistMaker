@@ -3,6 +3,7 @@ import { ArrowUpRight, ListVideo } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { YoutubeAuthStatus } from "../../api/client";
 import { Note, Spinner } from "../../components/ui";
+import { useT } from "../../i18n";
 
 /**
  * YouTube hesabini baglar ve tamamlanmis bir ders planini playlist olarak
@@ -12,6 +13,7 @@ import { Note, Spinner } from "../../components/ui";
  * denenebilir, bir hata ders planini kaybetmez.
  */
 export function PublishPanel({ runId, publishedUrl }: { runId: string; publishedUrl: string | null }) {
+  const t = useT();
   const [status, setStatus] = useState<YoutubeAuthStatus | null>(null);
   const [url, setUrl] = useState<string | null>(publishedUrl);
   const [busy, setBusy] = useState(false);
@@ -28,7 +30,7 @@ export function PublishPanel({ runId, publishedUrl }: { runId: string; published
     const params = new URLSearchParams(window.location.search);
     const result = params.get("youtube_auth");
     if (result) {
-      setNotice(result === "ok" ? "YouTube hesabın bağlandı." : "Yetkilendirme iptal edildi.");
+      setNotice(result === "ok" ? t("publish.connected") : t("publish.cancelled"));
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, [refresh]);
@@ -68,8 +70,9 @@ export function PublishPanel({ runId, publishedUrl }: { runId: string; published
   if (!status?.configured) {
     return (
       <p className="hint" style={{ marginTop: 0 }}>
-        YouTube'a yayınlama bu kurulumda kapalı (<code>YOUTUBE_OAUTH_CLIENT_ID</code> ve{" "}
-        <code>YOUTUBE_OAUTH_CLIENT_SECRET</code> tanımlı değil).
+        {t("publish.disabledPre")}
+        <code>YOUTUBE_OAUTH_CLIENT_ID</code>, <code>YOUTUBE_OAUTH_CLIENT_SECRET</code>
+        {t("publish.disabledPost")}
       </p>
     );
   }
@@ -78,7 +81,7 @@ export function PublishPanel({ runId, publishedUrl }: { runId: string; published
     <div className="stack stack--tight">
       {notice && <Note tone="ok" role="status">{notice}</Note>}
       {error && (
-        <Note tone="danger" role="alert" title="Yayınlanamadı">
+        <Note tone="danger" role="alert" title={t("publish.failed")}>
           {error}
         </Note>
       )}
@@ -86,9 +89,9 @@ export function PublishPanel({ runId, publishedUrl }: { runId: string; published
       {url ? (
         <div className="row">
           <ListVideo className="h-4 w-4 text-[color:var(--ink-3)]" aria-hidden />
-          <span className="meta">Bu plan YouTube'da bir playlist olarak duruyor.</span>
+          <span className="meta">{t("publish.exists")}</span>
           <a className="link-out" href={url} target="_blank" rel="noreferrer">
-            Playlist'i aç
+            {t("publish.openPlaylist")}
             <ArrowUpRight className="h-3.5 w-3.5" aria-hidden />
           </a>
         </div>
@@ -96,20 +99,20 @@ export function PublishPanel({ runId, publishedUrl }: { runId: string; published
         <div className="row">
           <button type="button" className="btn" onClick={publish} disabled={busy}>
             {busy ? <Spinner /> : <ListVideo className="h-4 w-4" aria-hidden />}
-            {busy ? "Yayınlanıyor…" : "Playlist olarak yayınla"}
+            {busy ? t("publish.publishing") : t("publish.publish")}
           </button>
           <button type="button" className="btn btn--quiet" onClick={disconnect}>
-            Hesabı ayır
+            {t("publish.disconnect")}
           </button>
-          <span className="meta">Planı YouTube hesabına kaydeder, telefonda da izlersin.</span>
+          <span className="meta">{t("publish.hint")}</span>
         </div>
       ) : (
         <div className="row">
           <button type="button" className="btn" onClick={connect}>
             <ListVideo className="h-4 w-4" aria-hidden />
-            YouTube hesabını bağla
+            {t("publish.connect")}
           </button>
-          <span className="meta">Yayınlamak için bir kez yetkilendirme gerekir.</span>
+          <span className="meta">{t("publish.connectHint")}</span>
         </div>
       )}
     </div>

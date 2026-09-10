@@ -339,8 +339,15 @@ def build_rag_answer_prompt(
         "including a partial one -- give what they do contain and stop there. "
         "Return false only when the excerpts do not address the question at "
         "all.\n"
-        '- "answer": the answer in Markdown when answered is true; an empty '
-        "string when it is false.\n"
+        # DUZ METIN, Markdown DEGIL. Istem eskiden Markdown istiyordu ama
+        # arayuz yaniti duvar metni olarak duz ciziyor; ekranda `* **UFE:**`
+        # gibi ham isaretler kaliyordu. Yanit bir belge degil, okunan bir
+        # aciklama -- liste gerektiginde madde imi yeter.
+        '- "answer": when answered is true, the answer as PLAIN TEXT. No '
+        "Markdown: no asterisks, no headings, no backticks, no tables. "
+        "Separate paragraphs with a blank line. When the answer genuinely is "
+        "a list, put one item per line and begin each line with the bullet "
+        "character (•). An empty string when it is false.\n"
         '- "used_chunk_ids": the id attributes of the excerpts you actually '
         "used, as integers. Only ids that appear below. Empty when answered is "
         "false.\n"

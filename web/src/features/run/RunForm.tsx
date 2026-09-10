@@ -2,6 +2,8 @@ import { useId, useState } from "react";
 import { ChevronDown, Play, SlidersHorizontal } from "lucide-react";
 import type { Capabilities, CreateRunRequest, Difficulty, Freshness, Language } from "../../api/types";
 import { Note, Spinner } from "../../components/ui";
+import { useT } from "../../i18n";
+import type { Dict } from "../../i18n/dict";
 
 interface Props {
   capabilities: Capabilities | null;
@@ -14,11 +16,18 @@ interface Props {
  * Ornekler SUSLEME DEGIL: tiklanabilir ve alanı dolduruyorlar, yani "ne kadar
  * dar/genis yazmaliyim" sorusunu gostererek yanitliyorlar.
  */
-const EXAMPLES = [
-  "Doğrusal cebirde özdeğerler ve özvektörler",
-  "React'te durum yönetimi",
-  "Makroekonomide enflasyon nasıl ölçülür",
-  "Fotoğrafta ışık ölçümü",
+/**
+ * Gonderdikten sonraki guzergah. YALNIZCA her calistirmada gerceklesen uc
+ * asama: transkript okuma ve calisma notu tercihe bagli, onlari da saymak
+ * bos bir ekranda tutulmayabilecek bir soz vermek olurdu.
+ */
+const ROUTE: (keyof Dict)[] = ["start.route1", "start.route2", "start.route3"];
+
+const EXAMPLES: (keyof Dict)[] = [
+  "start.example1",
+  "start.example2",
+  "start.example3",
+  "start.example4",
 ];
 
 function Check({
@@ -53,6 +62,7 @@ function Check({
 }
 
 export function RunForm({ capabilities, busy, onSubmit }: Props) {
+  const t = useT();
   const outOfRuns = capabilities?.runs_remaining_today === 0;
   // Ortak kapasite kullanicinin kendi hakkindan BAGIMSIZ: hakki olsa bile
   // servisin gunluk kota butcesi bittiyse calistirma baslatilamiyor.
@@ -89,12 +99,9 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
     <form className="start" onSubmit={submit}>
       <div className="stack stack--tight">
         <h2 className="start__q">
-          <label htmlFor="topic">Ne öğrenmek istiyorsun?</label>
+          <label htmlFor="topic">{t("start.q")}</label>
         </h2>
-        <p className="start__sub">
-          Tek bir hedef yaz. Konuyu alt başlıklara ayırıp her biri için en uygun videoyu
-          seçiyoruz; sonunda baştan sona izlenecek sıralı bir ders planın oluyor.
-        </p>
+        <p className="start__sub">{t("start.sub")}</p>
       </div>
 
       <div className="start__ask">
@@ -103,34 +110,33 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
           type="text"
           value={topic}
           autoComplete="off"
-          placeholder="Örnek: Makine öğrenmesiyle zaman serisi tahmini"
+          placeholder={t("start.placeholder")}
           onChange={(event) => setTopic(event.target.value)}
         />
         <button type="submit" className="btn btn--primary btn--lg" disabled={blocked}>
           {busy ? <Spinner /> : <Play className="h-4 w-4" aria-hidden />}
-          {busy ? "Oluşturuluyor…" : "Ders planımı oluştur"}
+          {busy ? t("start.submitting") : t("start.submit")}
         </button>
       </div>
 
       <div className="start__examples">
-        <span className="start__examples-label">Şunları deneyebilirsin:</span>
+        <span className="start__examples-label">{t("start.examplesLabel")}</span>
         {EXAMPLES.map((example) => (
           <button
             key={example}
             type="button"
             className="chip"
             disabled={busy}
-            onClick={() => setTopic(example)}
+            onClick={() => setTopic(t(example))}
           >
-            {example}
+            {t(example)}
           </button>
         ))}
       </div>
 
       {serviceFull ? (
-        <Note tone="danger" title="Bugünlük kapasite doldu">
-          Servisin bugünkü kapasitesi doldu. Arama kotası tüm kullanıcılar için ortak; kota
-          sıfırlandığında (Pasifik saatiyle gece yarısı) yeniden deneyebilirsin.
+        <Note tone="danger" title={t("start.capacityTitle")}>
+          {t("start.capacityBody")}
         </Note>
       ) : (
         /* Kalan hak yalnizca sunucuda sinir varsa (`null` degilse) gosteriliyor.
@@ -139,30 +145,28 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
         capabilities?.runs_remaining_today !== null &&
         capabilities?.runs_remaining_today !== undefined &&
         (capabilities.runs_remaining_today === 0 ? (
-          <Note tone="danger" title="Bugünlük hakkın doldu">
-            Yarın yeniden ders planı oluşturabilirsin. Bu arada “Derslerim”deki planlarına
-            çalışmaya devam edebilirsin.
+          <Note tone="danger" title={t("start.quotaTitle")}>
+            {t("start.quotaBody")}
           </Note>
         ) : (
-          <p className="meta">
-            Bugün {capabilities.runs_remaining_today} ders planı hakkın kaldı.
+          <p className="meta start__quota">
+            {t("start.quotaLeft", { n: capabilities.runs_remaining_today })}
           </p>
         ))
       )}
 
       {capabilities && !capabilities.youtube_search_configured && (
-        <Note tone="warn" title="Arama yedek yöntemle yapılacak">
-          YouTube Data API anahtarı tanımlı değil — arama yt-dlp ile yapılacak ve hız
-          sınırlarına takılabilir.
+        <Note tone="warn" title={t("start.fallbackTitle")}>
+          {t("start.fallbackBody")}
         </Note>
       )}
 
       <details className="prefs">
         <summary>
           <SlidersHorizontal className="h-4 w-4" aria-hidden />
-          Tercihler
+          {t("prefs.summary")}
           <span className="meta" style={{ fontWeight: 400 }}>
-            Dil · Seviye · Süre
+            {t("prefs.summaryHint")}
           </span>
           <ChevronDown className="prefs__caret h-4 w-4" aria-hidden />
         </summary>
@@ -171,55 +175,55 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
           <div className="prefs__grid">
             <div>
               <label className="label" htmlFor="language">
-                Dil
+                {t("prefs.language")}
               </label>
               <select
                 id="language"
                 value={language}
                 onChange={(event) => setLanguage(event.target.value as Language)}
               >
-                <option value="tr">Türkçe</option>
-                <option value="en">English</option>
+                <option value="tr">{t("shell.languageTr")}</option>
+                <option value="en">{t("shell.languageEn")}</option>
               </select>
-              <p className="hint">Videoların ve çalışma notlarının dili.</p>
+              <p className="hint">{t("prefs.languageHint")}</p>
             </div>
 
             <div>
               <label className="label" htmlFor="difficulty">
-                Seviye
+                {t("prefs.level")}
               </label>
               <select
                 id="difficulty"
                 value={difficulty}
                 onChange={(event) => setDifficulty(event.target.value as Difficulty)}
               >
-                <option value="mixed">Karışık</option>
-                <option value="beginner">Yeni başlıyorum</option>
-                <option value="intermediate">Temeli var</option>
-                <option value="advanced">İleri düzey</option>
+                <option value="mixed">{t("prefs.level.mixed")}</option>
+                <option value="beginner">{t("prefs.level.beginner")}</option>
+                <option value="intermediate">{t("prefs.level.intermediate")}</option>
+                <option value="advanced">{t("prefs.level.advanced")}</option>
               </select>
-              <p className="hint">Konuya ne kadar yakın olduğunu söyler.</p>
+              <p className="hint">{t("prefs.levelHint")}</p>
             </div>
 
             <div>
               <label className="label" htmlFor="freshness">
-                Video yaşı
+                {t("prefs.age")}
               </label>
               <select
                 id="freshness"
                 value={freshness}
                 onChange={(event) => setFreshness(event.target.value as Freshness)}
               >
-                <option value="balanced">Fark etmez</option>
-                <option value="evergreen">Zamansız anlatımlar</option>
-                <option value="recent">Yeni videolar</option>
+                <option value="balanced">{t("prefs.age.balanced")}</option>
+                <option value="evergreen">{t("prefs.age.evergreen")}</option>
+                <option value="recent">{t("prefs.age.recent")}</option>
               </select>
-              <p className="hint">Hızlı değişen konularda “yeni” işe yarar.</p>
+              <p className="hint">{t("prefs.ageHint")}</p>
             </div>
 
             <div>
               <label className="label" htmlFor="duration">
-                <span>Ders başına en fazla süre: {maxDuration} dk</span>
+                <span>{t("prefs.duration", { n: maxDuration })}</span>
               </label>
               <input
                 id="duration"
@@ -230,7 +234,7 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
                 value={maxDuration}
                 onChange={(event) => setMaxDuration(Number(event.target.value))}
               />
-              <p className="hint">Kısa tutarsan daha derli toplu, uzun tutarsan daha derin.</p>
+              <p className="hint">{t("prefs.durationHint")}</p>
             </div>
           </div>
 
@@ -239,25 +243,51 @@ export function RunForm({ capabilities, busy, onSubmit }: Props) {
               <Check
                 checked={includeEnglish}
                 onChange={setIncludeEnglish}
-                label="İngilizce videoları da değerlendir"
-                hint="Türkçe kaynak az olan konularda seçenekleri genişletir."
+                label={t("prefs.english")}
+                hint={t("prefs.englishHint")}
               />
             )}
             <Check
               checked={enableAsr}
               onChange={setEnableAsr}
-              label="Altyazısı olmayan videoların sesini yazıya dök"
-              hint="Daha iyi eşleşme sağlar ama hazırlık belirgin şekilde uzar."
+              label={t("prefs.asr")}
+              hint={t("prefs.asrHint")}
             />
             <Check
               checked={enableStudyNotes}
               onChange={setEnableStudyNotes}
-              label="Her ders için çalışma notu çıkar"
-              hint="Videonun transkriptinden kısa bir özet üretilir."
+              label={t("prefs.notes")}
+              hint={t("prefs.notesHint")}
             />
           </div>
         </div>
       </details>
+
+      {/* Ilerleme panelindeki AYNI yol cihazi, yatay yatirilmis. Gonderildigi
+          anda bu serit kalkiyor ve asagida canlisi aciliyor -- onizleme yerini
+          gercege birakiyor.
+
+          Bos baslangic ekraninin altindaki gri bant icin dogru olan tek sey
+          buydu: salon rengi anahtari ekranda hic kaynak yokken ogretilemez,
+          ogretilseydi kullanici ilk gercek kaynakta yanlis cikacak bir sey
+          ezberlerdi. */}
+      {!busy && (
+        <div className="start__route">
+          <span className="start__route-label" id="route-preview-label">
+            {t("start.routeLabel")}
+          </span>
+          <ol className="route route--preview" aria-labelledby="route-preview-label">
+            {ROUTE.map((step, index) => (
+              <li className="route__step" key={step}>
+                <span className="route__dot" aria-hidden>
+                  {index + 1}
+                </span>
+                <p className="route__label">{t(step)}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </form>
   );
 }

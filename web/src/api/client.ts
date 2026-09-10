@@ -181,7 +181,9 @@ export const api = {
       method: "DELETE",
     }),
 
-  ask: (spaceId: string, question: string, language = "Türkçe") =>
+  // Yanit dili SABIT DEGIL: cagiran (arayuz dili) belirliyor. Sabit birakmak,
+  // Ingilizce arayuz kullanan birine Turkce yanit dondururdu.
+  ask: (spaceId: string, question: string, language: string) =>
     request<RagAnswer>(`/api/spaces/${spaceId}/ask`, {
       method: "POST",
       body: JSON.stringify({ question, language }),
