@@ -240,6 +240,16 @@ export interface SpaceSource {
   language: string | null;
   status: SourceStatus;
   chunk_count: number;
+  /**
+   * Bu parcalarin kacinda ANLAMSAL arama var.
+   *
+   * `chunk_count`tan kucuk olmasi bir ariza degil KISMI KAPSAM: gomme
+   * saglayicisi arizalandiginda is dusmuyor (dogru karar -- leksik arama
+   * calismaya devam ediyor), kaynak `indexed` kaliyor. Arayuz farki
+   * gostermezse yari gomulu bir defter tamamen saglikli gorunur ve sonraki
+   * "bulamadim" hata gibi okunur.
+   */
+  embedded_chunk_count: number;
   error: string | null;
 }
 

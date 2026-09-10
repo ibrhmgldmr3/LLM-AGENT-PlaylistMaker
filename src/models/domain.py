@@ -229,6 +229,17 @@ class SpaceSource(BaseModel):
     language: str | None = None
     status: SourceStatus
     chunk_count: int = 0
+    # BU MODELLE gomulu parca sayisi. `chunk_count`tan KUCUK olmasi bir ariza
+    # degil kismi kapsam: leksik arama butun parcalarda calisiyor, anlamsal
+    # arama yalnizca gomulu olanlarda.
+    #
+    # Alan var cunku aksi halde yari gomulu bir defter TAMAMEN saglikli
+    # gorunuyordu: gomme hatasi isi dusurmuyor (dogru karar), kaynak `indexed`
+    # kaliyor ve eksiklik yalnizca ingest isinin bitis mesajinda bir kez
+    # soyleniyordu -- o mesaj akisla birlikte kayboluyor. Kullanici ertesi gun
+    # defteri actiginda hicbir sey eksik gorunmuyor, ama sonraki "bulamadim"in
+    # sebebi bu.
+    embedded_chunk_count: int = 0
     error: str | None = None
 
 

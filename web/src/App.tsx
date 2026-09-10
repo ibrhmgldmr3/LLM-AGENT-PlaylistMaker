@@ -11,6 +11,7 @@ import { SignIn } from "./features/auth/SignIn";
 import { SpaceWorkspace } from "./features/learn/SpaceWorkspace";
 import { AppShell, type Section } from "./components/AppShell";
 import { Note } from "./components/ui";
+import { LanguageProvider, useT } from "./i18n";
 import type { Session } from "./api/client";
 
 const THEME_KEY = "derslik:theme";
@@ -25,7 +26,17 @@ function initialDark(): boolean {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
 }
 
+/** Dil saglayicisi EN DISTA: kabuk ve her ekran cevirilere erisebilmeli. */
 export default function App() {
+  return (
+    <LanguageProvider>
+      <AppRoot />
+    </LanguageProvider>
+  );
+}
+
+function AppRoot() {
+  const t = useT();
   const [section, setSection] = useState<Section>("start");
   const [dark, setDark] = useState(initialDark);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
@@ -108,22 +119,22 @@ export default function App() {
 
   const title =
     section === "start"
-      ? "Öğrenmeye başla"
+      ? t("nav.start")
       : section === "room"
-        ? "Çalışma odası"
-        : (openedCourse?.topic ?? "Derslerim");
+        ? t("nav.room")
+        : (openedCourse?.topic ?? t("nav.courses"));
 
   const actions =
     section === "courses" ? (
       openedCourse ? (
         <button type="button" className="btn btn--quiet" onClick={() => setOpenedCourse(null)}>
           <ArrowLeft className="h-4 w-4" aria-hidden />
-          Derslerim
+          {t("nav.courses")}
         </button>
       ) : (
         <button type="button" className="btn" onClick={() => navigate("start")}>
           <Plus className="h-4 w-4" aria-hidden />
-          Yeni ders planı
+          {t("app.newPlan")}
         </button>
       )
     ) : null;
@@ -150,7 +161,7 @@ export default function App() {
           <RunForm capabilities={capabilities} busy={busy} onSubmit={start} />
 
           {submitError && (
-            <Note tone="danger" role="alert" title="Ders planı başlatılamadı">
+            <Note tone="danger" role="alert" title={t("app.startFailed")}>
               {submitError}
             </Note>
           )}
@@ -161,7 +172,7 @@ export default function App() {
             (run.state === "cancelled" ? (
               <Note role="status">{run.error}</Note>
             ) : (
-              <Note tone="danger" role="alert" title="Hazırlık yarıda kaldı">
+              <Note tone="danger" role="alert" title={t("app.interrupted")}>
                 {run.error}
               </Note>
             ))}
@@ -177,8 +188,8 @@ export default function App() {
 
           {run.result && (
             <div className="stack">
-              <Note tone="ok" role="status" title="Ders planın hazır">
-                Bu plan “Derslerim” bölümüne kaydedildi; istediğin zaman geri dönebilirsin.
+              <Note tone="ok" role="status" title={t("app.ready")}>
+                {t("app.readySaved")}
               </Note>
               <RunResult result={run.result} />
             </div>

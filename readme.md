@@ -536,6 +536,14 @@ excerpt per source** plus the normal retrieval results. Gates 2–4 still apply,
 "refusing" survives: a notebook-level phrasing about a topic the notebook does not cover
 is still refused.
 
+**The answer is asked for as plain text, not Markdown.** The prompt used to say *"the
+answer in Markdown"* while the interface draws it as wall text with `white-space:
+pre-wrap` — so a reader saw `* **ÜFE (Üretici Fiyat Endeksi):**` in the middle of an
+explanation. The prompt now asks for plain prose, one bulleted line per item when the
+answer genuinely is a list. Models still slip, so `plainProse()` in
+`web/src/hooks/useVideoRAG.ts` strips the syntax on the way in; it removes markers, never
+invents structure, so line breaks — and therefore lists — survive intact.
+
 Notebooks are **isolated**. Both retrieval paths are scoped by `space_id`
 (`search_chunks_fts` and `load_embeddings`), so a question asked in one notebook can
 never be answered from another's sources. `tests/test_space_scope.py` locks this on
@@ -611,7 +619,18 @@ provider does — the chunks are written and lexical search works. But a half-em
 notebook used to look completely healthy: every source said `indexed` while semantic
 search silently covered part of the corpus. Measured on a live database: 130 chunks, 64
 embedded — exactly one `EMBEDDING_BATCH_SIZE` batch, with three of six sources holding no
-vectors at all. The ingest summary now says how many chunks are still unembedded, and:
+vectors at all.
+
+The ingest summary says how many chunks are still unembedded — but that message goes out
+over SSE and is gone by the next visit, so **the gap is also on the source row itself**:
+`SpaceSource.embedded_chunk_count` is counted live against the *current* embedding model,
+the same test `load_embeddings` applies, and the UI says either "N bölümde anlamsal arama
+yok" or, when nothing is embedded, "yalnızca kelime araması". It is not styled as an
+error, because it is not one — lexical search still covers every chunk.
+
+The count is deliberately **not** stored next to `status`: the bug being fixed is that a
+stored field kept saying `indexed` while half the corpus was unsearchable, and a second
+stored counter would go stale the same way.
 
 ```bash
 python scripts/backfill_embeddings.py           # list gaps

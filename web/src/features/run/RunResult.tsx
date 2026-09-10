@@ -12,6 +12,8 @@ import {
 import { api } from "../../api/client";
 import { PublishPanel } from "../publish/PublishPanel";
 import { Fold, Meter, Note } from "../../components/ui";
+import { useLanguage, useT } from "../../i18n";
+import type { Dict } from "../../i18n/dict";
 import { cn } from "../../lib/cn";
 import { formatCount, formatDuration, formatTotalDuration } from "../../lib/format";
 import { useProgress } from "../../hooks/useProgress";
@@ -50,27 +52,28 @@ export function isWeakMatch(item: Recommendation): boolean {
  * gelistirici terimi; ekranda karsiligi yoksa gizlemek, yanlis bir sey
  * gostermekten iyidir.
  */
-const TRANSCRIPT_LABEL: Record<string, string> = {
-  available: "Transkript var",
-  unavailable: "Transkript yok",
-  cooldown: "Transkript şimdilik alınamadı",
-  failed_temporary: "Transkript şimdilik alınamadı",
-  failed_permanent: "Transkript alınamıyor",
+const TRANSCRIPT_LABEL: Record<string, keyof Dict> = {
+  available: "transcript.available",
+  unavailable: "transcript.unavailable",
+  cooldown: "transcript.cooldown",
+  failed_temporary: "transcript.cooldown",
+  failed_permanent: "transcript.failed_permanent",
 };
 
-const SCORE_LABEL: Record<string, string> = {
-  total: "Toplam",
-  title_relevance: "Başlık uyumu",
-  description_relevance: "Açıklama uyumu",
-  channel_quality: "Kanal güvenilirliği",
-  duration_fit: "Süre uygunluğu",
-  difficulty_fit: "Seviye uygunluğu",
-  language_match: "Dil uyumu",
-  freshness: "Güncellik",
-  engagement: "İzlenme ve etkileşim",
+const SCORE_LABEL: Record<string, keyof Dict> = {
+  total: "score.total",
+  title_relevance: "score.title_relevance",
+  description_relevance: "score.description_relevance",
+  channel_quality: "score.channel_quality",
+  duration_fit: "score.duration_fit",
+  difficulty_fit: "score.difficulty_fit",
+  language_match: "score.language_match",
+  freshness: "score.freshness",
+  engagement: "score.engagement",
 };
 
 function ScoreBreakdown({ item }: { item: Recommendation }) {
+  const t = useT();
   const rows = Object.entries(item.metadata_score)
     .filter(([key, value]) => key !== "rationale" && key !== "total" && typeof value === "number")
     .map(([key, value]) => [key, value as number] as const)
@@ -81,8 +84,7 @@ function ScoreBreakdown({ item }: { item: Recommendation }) {
   return (
     <>
       <p className="hint" style={{ marginTop: 0, marginBottom: "0.85rem" }}>
-        Bu video {item.confidence_score.toFixed(1)}/10 güven puanıyla seçildi. Çubuklar, tek
-        tek ölçütlerin bu seçim içindeki göreli ağırlığını gösterir.
+        {t("result.scoreRationale", { score: item.confidence_score.toFixed(1) })}
       </p>
       <div className="scores">
         {rows.map(([key, value]) => (
@@ -107,18 +109,18 @@ function ScoreBreakdown({ item }: { item: Recommendation }) {
 }
 
 function StudyNoteBody({ note }: { note: StudyNote }) {
+  const t = useT();
   if (note.status === "no_transcript") {
     return (
       <p className="hint" style={{ margin: 0 }}>
-        Bu videonun transkripti bulunamadı, o yüzden çalışma notu üretilmedi. Uydurulmuş bir
-        özet göstermektense boş bırakıyoruz.
+        {t("note.noTranscript")}
       </p>
     );
   }
   if (note.status === "failed") {
     return (
-      <Note tone="danger" title="Çalışma notu üretilemedi">
-        {note.error ?? "Bilinmeyen bir hata oluştu."}
+      <Note tone="danger" title={t("note.failed")}>
+        {note.error ?? t("note.unknownError")}
       </Note>
     );
   }
@@ -127,7 +129,7 @@ function StudyNoteBody({ note }: { note: StudyNote }) {
     <>
       <div className="row row--between" style={{ alignItems: "center", marginBottom: "0.4rem" }}>
         <p className="hint" style={{ margin: 0 }}>
-          Videonun transkriptinden üretildi — özet niteliğindedir, videonun kendisiyle doğrula.
+          {t("note.fromTranscript")}
         </p>
         {isAsr && (
           <span className="tag tag--chalk" title={note.transcript_backend ?? "Whisper ASR"}>
@@ -155,9 +157,10 @@ function Unit({
   done: boolean;
   onToggle: () => void;
 }) {
+  const { t, lang } = useLanguage();
   const weak = isWeakMatch(item);
-  const duration = formatDuration(item.video.duration_sec);
-  const subscribers = formatCount(item.video.subscriber_count);
+  const duration = formatDuration(item.video.duration_sec, t);
+  const subscribers = formatCount(item.video.subscriber_count, lang);
   const transcript = TRANSCRIPT_LABEL[item.transcript_status];
 
   return (
@@ -174,9 +177,11 @@ function Unit({
         onClick={onToggle}
         aria-pressed={done}
         aria-label={
-          done ? `${index + 1}. dersin işaretini kaldır` : `${index + 1}. dersi izledim olarak işaretle`
+          done
+            ? t("result.unmarkAria", { n: index + 1 })
+            : t("result.markAria", { n: index + 1 })
         }
-        title={done ? "İşareti kaldır" : "İzledim olarak işaretle"}
+        title={done ? t("result.unmark") : t("result.markWatched")}
       >
         {done ? <Check className="h-4 w-4" aria-hidden /> : index + 1}
       </button>
@@ -202,7 +207,7 @@ function Unit({
               {transcript && <span>{transcript}</span>}
             </p>
           </div>
-          {weak && <span className="tag tag--warn">Zayıf eşleşme</span>}
+          {weak && <span className="tag tag--warn">{t("result.weakMatch")}</span>}
         </div>
 
         {item.why_selected && <p className="unit__why">{item.why_selected}</p>}
@@ -218,20 +223,20 @@ function Unit({
             <ArrowUpRight className="h-4 w-4" aria-hidden />
           </a>
           <button type="button" className="btn btn--quiet" onClick={onToggle}>
-            {done ? "İşareti kaldır" : "İzledim"}
+            {done ? t("result.unmark") : t("result.watched")}
           </button>
         </div>
       </div>
 
       <div className="unit__extra">
         {weak && (
-          <Note tone="warn" title="Bu başlık için iyi bir aday bulunamadı">
-            Konuyu biraz daraltmayı ya da tercihlerden İngilizce içeriği açmayı deneyebilirsin.
+          <Note tone="warn" title={t("result.noCandidate")}>
+          {t("result.weakHint")}
           </Note>
         )}
         {note && (
           <Fold
-            summary="Çalışma notu"
+            summary={t("result.studyNote")}
             icon={NotebookPen}
             open={note.status === "available"}
             className={weak ? "mt-2" : undefined}
@@ -239,7 +244,7 @@ function Unit({
             <StudyNoteBody note={note} />
           </Fold>
         )}
-        <Fold summary="Neden bu video seçildi?" icon={ListChecks}>
+        <Fold summary={t("result.whyThis")} icon={ListChecks}>
           <ScoreBreakdown item={item} />
         </Fold>
       </div>
@@ -248,15 +253,16 @@ function Unit({
 }
 
 function SubtopicDiagnostics({ item }: { item: SubtopicResult }) {
+  const t = useT();
   return (
     <div style={{ marginBottom: "1.25rem" }}>
       <h4 style={{ fontSize: "0.92rem" }}>{item.subtopic.title}</h4>
       <p className="meta" style={{ marginTop: "0.2rem" }}>
-        {item.candidates_considered} aday değerlendirildi ·{" "}
-        {item.selected_video_id ? "bir video seçildi" : "uygun video bulunamadı"}
+        {t("result.candidatesConsidered", { n: item.candidates_considered })}
+        {item.selected_video_id ? t("result.selectedOne") : t("result.selectedNone")}
       </p>
       <p className="hint">
-        Arama sorgusu: <code>{item.query}</code>
+        {t("result.searchQuery")} <code>{item.query}</code>
       </p>
       {item.shortlisted_candidates.length > 0 && (
         <ol className="stack stack--tight" style={{ marginTop: "0.6rem" }}>
@@ -276,12 +282,16 @@ function SubtopicDiagnostics({ item }: { item: SubtopicResult }) {
 }
 
 export function RunResult({ result }: { result: PlaylistResult }) {
+  const t = useT();
   const total = result.recommendations.length;
   const { completed, toggle } = useProgress(result.run_id, total);
   const doneCount = result.recommendations.filter((item) =>
     completed.includes(item.video.video_id),
   ).length;
-  const totalTime = formatTotalDuration(result.recommendations.map((item) => item.video.duration_sec));
+  const totalTime = formatTotalDuration(
+    result.recommendations.map((item) => item.video.duration_sec),
+    t,
+  );
   const remaining = total - doneCount;
   // Yalnizca GERCEKTEN uretilmis notlar sayiliyor: transkripti olmadigi icin
   // uretilmeyen ya da hata alan notlari saymak, olmayan bir seyi vaat ederdi.
@@ -299,16 +309,16 @@ export function RunResult({ result }: { result: PlaylistResult }) {
         <div className="min-w-0">
           <h2 className="course__title">{result.topic}</h2>
           <div className="course__facts">
-            <span className="tag tag--chalk">{total} ders</span>
+            <span className="tag tag--chalk">{t("result.lessons", { n: total })}</span>
             {totalTime && <span className="tag tag--chalk">{totalTime}</span>}
-            {noteCount > 0 && <span className="tag tag--chalk">{noteCount} çalışma notu</span>}
+            {noteCount > 0 && <span className="tag tag--chalk">{t("result.notes", { n: noteCount })}</span>}
           </div>
         </div>
 
         {total > 0 && (
           <div className="course__progress">
             <div className="course__progress-top">
-              <span className="course__progress-label">İlerlemen</span>
+              <span className="course__progress-label">{t("result.progress")}</span>
               <span className="course__progress-count">
                 {doneCount} / {total}
               </span>
@@ -317,16 +327,16 @@ export function RunResult({ result }: { result: PlaylistResult }) {
               value={doneCount}
               max={total}
               variant="chalk"
-              label={`${total} dersin ${doneCount} tanesi tamamlandı`}
+              label={t("result.meterLabel", { total, done: doneCount })}
             />
             <p className="course__progress-label" style={{ marginTop: "0.5rem" }}>
               {remaining === 0 ? (
                 <>
                   <Trophy className="mr-1 inline h-3.5 w-3.5" aria-hidden />
-                  Hepsini bitirdin.
+                  {t("result.allDone")}
                 </>
               ) : (
-                `${remaining} ders kaldı.`
+                t("result.remaining", { n: remaining })
               )}
             </p>
           </div>
@@ -334,9 +344,8 @@ export function RunResult({ result }: { result: PlaylistResult }) {
       </header>
 
       {total === 0 ? (
-        <Note tone="warn" title="Bu tercihlerle ders planı çıkmadı">
-          Konuyu biraz genişletmeyi, süre sınırını yükseltmeyi ya da İngilizce içeriği açmayı
-          deneyebilirsin.
+        <Note tone="warn" title={t("result.noPlanTitle")}>
+          {t("result.noPlanBody")}
         </Note>
       ) : (
         <>
@@ -372,18 +381,18 @@ export function RunResult({ result }: { result: PlaylistResult }) {
         <div className="row">
           <a className="btn" href={api.exportUrl(result.run_id, "markdown")}>
             <Download className="h-4 w-4" aria-hidden />
-            Markdown indir
+            {t("result.downloadMd")}
           </a>
           <a className="btn" href={api.exportUrl(result.run_id, "json")}>
             <FileJson className="h-4 w-4" aria-hidden />
-            JSON indir
+            {t("result.downloadJson")}
           </a>
         </div>
 
         {result.subtopics.length > 0 && (
-          <Fold summary="Bu plan nasıl kuruldu?" icon={ScrollText}>
+          <Fold summary={t("result.howBuilt")} icon={ScrollText}>
             <p className="hint" style={{ marginTop: 0, marginBottom: "1rem" }}>
-              Her alt başlık için ayrı bir arama yapıldı ve adaylar puanlanarak sıralandı.
+              {t("result.howBuiltBody")}
             </p>
             {result.subtopics.map((item) => (
               <SubtopicDiagnostics key={item.subtopic.normalized_title} item={item} />

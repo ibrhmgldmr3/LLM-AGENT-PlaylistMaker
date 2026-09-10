@@ -105,8 +105,22 @@ def _owned_space(store: SQLiteStore, space_id: str, user_id: str) -> dict:
     return space
 
 
-def _detail(store: SQLiteStore, space: dict) -> SpaceDetail:
-    sources = [SpaceSource.model_validate(row) for row in store.list_sources(space["space_id"])]
+def _detail(store: SQLiteStore, space: dict, embedding_model: str) -> SpaceDetail:
+    """Defterin kunyesi + kaynaklari.
+
+    Gomulu parca sayisi BURADA birlestiriliyor, `list_sources` icinde degil:
+    sayim modele bagli ve depo katmani yapilandirmayi gormuyor. Ayrica
+    `list_sources`in diger cagiranlarinin (kaynak sayimi, dokuman kotasi) bu
+    sorguya ihtiyaci yok.
+    """
+    space_id = space["space_id"]
+    embedded = store.embedded_chunk_counts(space_id, embedding_model)
+    sources = [
+        SpaceSource.model_validate(
+            {**row, "embedded_chunk_count": embedded.get(row["source_id"], 0)}
+        )
+        for row in store.list_sources(space_id)
+    ]
     return SpaceDetail(
         space_id=space["space_id"],
         name=space["name"],
@@ -171,9 +185,13 @@ def list_spaces(
 def get_space(
     space_id: str,
     user_id: str = Depends(get_current_user),
+    credentials: UserCredentials = Depends(get_user_credentials),
+    defaults: RunOptions = Depends(get_default_run_options),
+    server: ServerConfig = Depends(get_server_config),
     store: SQLiteStore = Depends(get_store),
 ) -> SpaceDetail:
-    return _detail(store, _owned_space(store, space_id, user_id))
+    config = build_run_config(credentials, defaults, server)
+    return _detail(store, _owned_space(store, space_id, user_id), config.embedding_model())
 
 
 # `response_class=Response` icin bkz. `api/routers/auth.py` — FastAPI 0.116'da

@@ -6,6 +6,7 @@ import { Empty, Meter, Note } from "../../components/ui";
 import { formatDateTime } from "../../lib/format";
 import { forgetRun } from "../../lib/progress";
 import { useRunProgress } from "../../hooks/useProgress";
+import { useLanguage, useT } from "../../i18n";
 
 const PAGE_SIZE = 10;
 
@@ -18,6 +19,7 @@ function CourseRow({
   onOpen: (runId: string) => void;
   onDelete: (runId: string) => void;
 }) {
+  const { t, lang } = useLanguage();
   const progress = useRunProgress(item.run_id);
   const finished = progress.total !== null && progress.done >= progress.total;
 
@@ -30,15 +32,15 @@ function CourseRow({
       <div className="course-row__body min-w-0">
         <h3 className="course-row__title">{item.topic}</h3>
         <p className="meta" style={{ marginTop: "0.2rem" }}>
-          {formatDateTime(item.created_at)}
-          {!item.is_complete && " · yarım kaldı"}
+          {formatDateTime(item.created_at, lang)}
+          {!item.is_complete && t("history.unfinished")}
         </p>
       </div>
 
       {item.is_complete && progress.total !== null && (
         <div className="course-row__prog">
           <div className="row row--between" style={{ gap: "0.5rem", marginBottom: "0.35rem" }}>
-            <span className="meta">{finished ? "Tamamlandı" : "İlerlemen"}</span>
+            <span className="meta">{finished ? t("history.done") : t("history.progress")}</span>
             <span className="meta" style={{ fontWeight: 600 }}>
               {progress.done} / {progress.total}
             </span>
@@ -47,7 +49,7 @@ function CourseRow({
             value={progress.done}
             max={progress.total}
             variant={finished ? undefined : "signal"}
-            label={`${item.topic}: ${progress.total} dersin ${progress.done} tanesi tamamlandı`}
+            label={t("history.meterLabel", { topic: item.topic, total: progress.total, done: progress.done })}
           />
         </div>
       )}
@@ -55,7 +57,7 @@ function CourseRow({
       <div className="row" style={{ gap: "0.4rem" }}>
         {item.is_complete && (
           <button type="button" className="btn" onClick={() => onOpen(item.run_id)}>
-            Derse git
+            {t("history.open")}
           </button>
         )}
         <button
@@ -64,7 +66,7 @@ function CourseRow({
           onClick={() => onDelete(item.run_id)}
         >
           <Trash2 className="h-4 w-4" aria-hidden />
-          Sil
+          {t("history.delete")}
         </button>
       </div>
     </article>
@@ -78,6 +80,7 @@ export function HistoryList({
   onOpen: (runId: string) => void;
   onCreate?: () => void;
 }) {
+  const t = useT();
   const [items, setItems] = useState<RunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -119,7 +122,7 @@ export function HistoryList({
 
   if (error) {
     return (
-      <Note tone="danger" role="alert" title="Derslerin yüklenemedi">
+      <Note tone="danger" role="alert" title={t("history.loadFailed")}>
         {error}
       </Note>
     );
@@ -129,17 +132,17 @@ export function HistoryList({
     return (
       <Empty
         icon={BookOpen}
-        title="Henüz bir dersin yok."
+        title={t("history.emptyTitle")}
         action={
           onCreate && (
             <button type="button" className="btn btn--primary" onClick={onCreate}>
               <Plus className="h-4 w-4" aria-hidden />
-              İlk ders planını oluştur
+              {t("history.emptyAction")}
             </button>
           )
         }
       >
-        Bir konu yaz, sıralı bir ders planı çıkaralım. Oluşturduğun her plan burada durur.
+        {t("history.emptyBody")}
       </Empty>
     );
   }
@@ -153,8 +156,7 @@ export function HistoryList({
       </div>
 
       <p className="hint" style={{ marginTop: 0 }}>
-        İzledim işaretlerin bu tarayıcıda saklanır; başka bir cihazda ya da gizli sekmede
-        görünmez.
+        {t("history.localNote")}
       </p>
 
       {total > PAGE_SIZE && (
@@ -166,7 +168,7 @@ export function HistoryList({
             onClick={() => load(offset - PAGE_SIZE)}
           >
             <ChevronLeft className="h-4 w-4" aria-hidden />
-            Önceki
+            {t("history.prev")}
           </button>
           <span className="meta">
             {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} / {total}
@@ -177,7 +179,7 @@ export function HistoryList({
             disabled={offset + PAGE_SIZE >= total}
             onClick={() => load(offset + PAGE_SIZE)}
           >
-            Sonraki
+            {t("history.next")}
             <ChevronRight className="h-4 w-4" aria-hidden />
           </button>
         </div>

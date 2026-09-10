@@ -1,7 +1,8 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { renderWithLanguage as render } from "../../test/render";
 import { api } from "../../api/client";
 import type { RunSummary } from "../../api/types";
 import { HistoryList } from "./HistoryList";

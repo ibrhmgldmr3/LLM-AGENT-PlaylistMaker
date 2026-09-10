@@ -151,6 +151,23 @@ def test_excerpt_title_cannot_escape_the_attribute():
     assert 'id="9"' not in prompt
 
 
+def test_answer_is_asked_for_as_plain_text_not_markdown():
+    """Arayuz yaniti DUZ ciziyor; istem Markdown isterse ekranda `**` kalir.
+
+    Ilk kez calisan bir defterde tam bu oldu: `* **UFE (Uretici Fiyat
+    Endeksi):**` kullanicinin okudugu metnin icinde duruyordu. Istem ile
+    cizim birbirine bagli, o yuzden istemin sozu burada kilitleniyor.
+    """
+    from src.providers.llm_provider import build_rag_answer_prompt
+
+    prompt = build_rag_answer_prompt("soru", [_chunk(1, "metin")], "Türkçe")
+
+    assert "PLAIN TEXT" in prompt
+    assert "no asterisks" in prompt
+    # "the answer in Markdown" ifadesi GERI GELMEMELI.
+    assert "answer in Markdown" not in prompt
+
+
 def test_the_question_is_the_last_thing_the_model_reads():
     """DUZEN GUVENLIK GEREGI: once talimat, sonra veri, EN SONDA soru.
 

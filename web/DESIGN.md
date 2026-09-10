@@ -96,7 +96,8 @@ siyah metin — hem duvarda hem galeri grisinde ~9:1.
   rakamlar alt alta hizalanır.
 
 Okuma ölçüsü `.prose` ve `.unit__why` için 68–70ch. Başlıklarda
-`letter-spacing: -0.018em`, karşılama duvarındaki soruda `-0.042em`.
+`letter-spacing: -0.018em`, karşılama duvarındaki soruda `-0.04em`
+(kalite tabanının izin verdiği en sıkı değer).
 
 ## Yerleşim
 
@@ -112,9 +113,22 @@ Okuma ölçüsü `.prose` ve `.unit__why` için 68–70ch. Başlıklarda
 ```
 
 - `.body` en fazla 1180px; çalışma odasında `.body--wide` ile 1560px.
-- `.room` iki sütun (içerik + sohbet), 1100px altında tek sütuna iner.
+- `.room` iki sütun (içerik + soru), 1100px altında tek sütuna iner. Soru
+  sütunu 22–30rem: yanıt bu dünyada **duvar metni** (Literata) ve 23rem'de
+  ölçü ~34 karaktere düşüyordu — uzun bir açıklama için oluk genişliği.
+- Tek sütuna inince soru paneli **başa** geçer (`order: -1`). Defterin amacı
+  soru sormak; alt sıraya düştüğünde telefonda oynatıcının ve 23 bölümlük
+  transkriptin altında, 1610 piksel aşağıda kalıyordu.
 - Karşılama duvarı ve bölüm başlıkları kenar boşluklarının **dışına** taşar
   (negatif `margin`): bir duvar kenarlıklı bir kutu değil, bölgenin kendisidir.
+- Başlangıç ekranının eteğinde `.route--preview` durur: duvarın bittiği yerde
+  yönlendirme başlar. Gönderilince şerit kalkar, aynı yol ilerleme panelinde
+  duvar renginde canlanır. <=760px'te temel `.route` geometrisine (dikey,
+  numara solda) döner — yatayda numaranın altına inen ad, dikey bağlantı
+  çizgisinin metnin içinden geçmesine yol açardı.
+- Bu banda salon rengi **lejantı konmadı**: ekranda tek kaynak yokken altı
+  renkli bir anahtar, kullanıcıya ilk gerçek kaynakta yanlış çıkacak bir şey
+  öğretirdi.
 - Dokunma hedefleri <900px'te >=44px = 2.75rem (`.unit__num`, `.btn`, `.icon-btn`).
 
 ## Bileşen dili
@@ -124,8 +138,10 @@ Okuma ölçüsü `.prose` ve `.unit__why` için 68–70ch. Başlıklarda
 | `.panel` / `.panel--board` | Yüzey kutu / duvar kutu |
 | `.unit` | Numaralı ders; numara aynı zamanda "izledim" düğmesi |
 | `.route` | Hazırlık güzergâhı — nokta + çizgi, geçmiş/şimdi/bekleyen |
+| `.route--preview` | Aynı güzergâh gönderilmeden önce: yatay, zemin üstünde, hepsi bekleyen |
 | `.course-row` | Liste nesnesi (ders planı ve defter aynı dili kullanır) |
 | `.source` | Kaynak satırı — sol kenar bandı salon rengi |
+| `.source__gap` | Anlamsal arama boşluğu — çekince (okra), hata değil |
 | `.cite` / `.line` | Künye / videonun işaretli anı; ikisi de salon rengi |
 | `.notice` (`--absent`/`--unverified`/`--outofscope`) | Yanıt verilemedi |
 | `.note` (`--warn`/`--danger`/`--ok`) | Uyarı kutusu; `tone` ile `role` ayrı |
@@ -182,8 +198,11 @@ kaydırma çubuğu duvarın kendi rengiyle ölçülür.
 ## İkonlar
 
 `lucide-react`, tek çizgi kalınlığı, 3.5–5 birim aralığında. Emoji ve unicode
-oklar ikon yerine kullanılmaz — tek istisna karşılama duvarındaki dev ok, ki o
-bir ikon değil duvarın malzemesi (`opacity: .12`, `aria-hidden`, `z-index: -1`).
+oklar ikon yerine kullanılmaz — **istisnasız**. Karşılama duvarında bir dönem
+dev bir `→` glifi vardı; `overflow: hidden` içinde kırpılmış bir kıymık olarak
+çıkıyor ve harfin karakteri yedek font zincirine kalıyordu, kabuktaki her ikon
+çizilmiş SVG iken. Kaldırıldı. Bu belgenin ona yazdığı muafiyet, kuralın
+kendisinden önce gelen bir uyum jetonuydu.
 
 ## Dil
 

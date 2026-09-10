@@ -25,6 +25,8 @@ import {
 import { cn } from "../../lib/cn";
 import { formatClock, formatDateTime } from "../../lib/format";
 import { roomStyle } from "../../lib/roomKey";
+import { useLanguage, useT } from "../../i18n";
+import type { Dict } from "../../i18n/dict";
 import type {
   Citation,
   RagRefusal,
@@ -36,12 +38,7 @@ import { usePlaylist } from "../../hooks/usePlaylist";
 import { useVideoRAG } from "../../hooks/useVideoRAG";
 import { Empty, Meter, Note, Spinner } from "../../components/ui";
 
-const PROMPTS = [
-  "Bu konunun ana fikri ne?",
-  "Önemli noktaları listele",
-  "Sınav için hangi kavramları bilmeliyim?",
-  "Bunu beş maddede özetle",
-];
+const PROMPTS: (keyof Dict)[] = ["ws.prompt0", "ws.prompt1", "ws.prompt2", "ws.prompt3"];
 
 /**
  * Kaynak durumlari kullanicinin dilinde.
@@ -52,11 +49,11 @@ const PROMPTS = [
  * dusundururdu -- ve asil onemlisi, NEYIN ARANAMAYACAGINI bilmesi gerekiyor,
  * yoksa o konuda "bulamadim" yanitini alip sistemi bozuk sanar.
  */
-const STATUS: Record<SpaceSource["status"], { label: string; tone?: "ok" | "warn" | "danger" }> = {
-  pending: { label: "Hazırlanıyor" },
-  indexed: { label: "Hazır", tone: "ok" },
-  no_text: { label: "Metin yok — aranamaz", tone: "warn" },
-  failed: { label: "Eklenemedi", tone: "danger" },
+const STATUS: Record<SpaceSource["status"], { label: keyof Dict; tone?: "ok" | "warn" | "danger" }> = {
+  pending: { label: "ws.preparing" },
+  indexed: { label: "ws.ready", tone: "ok" },
+  no_text: { label: "ws.status.noText", tone: "warn" },
+  failed: { label: "ws.status.failed", tone: "danger" },
 };
 
 function timeFromUrl(url: string | null): number | null {
@@ -105,6 +102,7 @@ function CreateNotebookDialog({
   onOpenChange: (open: boolean) => void;
   onCreate: (name: string) => Promise<void>;
 }) {
+  const t = useT();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -130,28 +128,27 @@ function CreateNotebookDialog({
         <Dialog.Overlay className="overlay" />
         <Dialog.Content className="dialog">
           <div className="row row--between" style={{ alignItems: "flex-start" }}>
-            <Dialog.Title className="section-title">Yeni çalışma defteri</Dialog.Title>
+            <Dialog.Title className="section-title">{t("ws.newTitle")}</Dialog.Title>
             <Dialog.Close asChild>
-              <button type="button" className="icon-btn" aria-label="Kapat">
+              <button type="button" className="icon-btn" aria-label={t("ws.close")}>
                 <X className="h-4 w-4" />
               </button>
             </Dialog.Close>
           </div>
           <Dialog.Description className="lede" style={{ margin: "0.4rem 0 1.2rem", fontSize: "0.92rem" }}>
-            Defterine bir ad ver. Sonra ders planlarını ve kendi dökümanlarını içine
-            ekleyebilirsin.
+            {t("ws.newBody")}
           </Dialog.Description>
 
           <form onSubmit={submit} className="stack stack--tight">
             <label className="label" htmlFor="notebook-name">
-              Defter adı
+              {t("ws.nameLabel")}
             </label>
             <input
               id="notebook-name"
               type="text"
               value={value}
               autoComplete="off"
-              placeholder="Örnek: Olasılık ve istatistik"
+              placeholder={t("ws.namePlaceholder")}
               onChange={(event) => setValue(event.target.value)}
             />
             <button
@@ -161,7 +158,7 @@ function CreateNotebookDialog({
               disabled={!value.trim() || busy}
             >
               {busy && <Spinner />}
-              {busy ? "Oluşturuluyor…" : "Defteri oluştur"}
+              {busy ? t("ws.creating") : t("ws.create")}
             </button>
           </form>
         </Dialog.Content>
@@ -187,22 +184,22 @@ function NotebookList({
   onCreateClick: () => void;
   onDelete: (spaceId: string) => void;
 }) {
+  const { t, lang } = useLanguage();
   return (
     <div className="stack stack--loose">
       <div className="stack stack--tight">
-        <h2 className="section-title">Çalışma defterlerin</h2>
+        <h2 className="section-title">{t("ws.listTitle")}</h2>
         <p className="lede">
-          Bir deftere ders planlarını ve kendi dökümanlarını topla, sonra o deftere soru sor.
-          Cevaplar yalnızca senin eklediğin kaynaklara dayanır; kaynakta yoksa uydurulmaz.
+          {t("ws.listLede")}
         </p>
         <div className="row" style={{ marginTop: "0.4rem" }}>
           <button type="button" className="btn btn--primary" onClick={onCreateClick}>
             <Plus className="h-4 w-4" aria-hidden />
-            Yeni defter
+            {t("ws.newButton")}
           </button>
           {runs.length > 0 && (
             <span className="meta">
-              Eklemeye hazır {runs.length} tamamlanmış ders planın var.
+              {t("ws.runsReady", { n: runs.length })}
             </span>
           )}
         </div>
@@ -210,21 +207,20 @@ function NotebookList({
 
       {loading ? (
         <p className="meta">
-          <Spinner /> Defterlerin yükleniyor…
+          <Spinner /> {t("ws.loadingList")}
         </p>
       ) : spaces.length === 0 ? (
         <Empty
           icon={Notebook}
-          title="Henüz bir defterin yok."
+          title={t("ws.emptyTitle")}
           action={
             <button type="button" className="btn btn--primary" onClick={onCreateClick}>
               <Plus className="h-4 w-4" aria-hidden />
-              İlk defterini oluştur
+              {t("ws.emptyAction")}
             </button>
           }
         >
-          Defter, tek bir konuya ait video ve dökümanları bir arada tutar. Hepsine birden
-          soru sorabilirsin.
+          {t("ws.emptyBody")}
         </Empty>
       ) : (
         <div className="courses">
@@ -240,21 +236,21 @@ function NotebookList({
                 <h3 className="course-row__title">{space.name}</h3>
                 <p className="meta" style={{ marginTop: "0.2rem" }}>
                   {space.source_count === 0
-                    ? "Henüz kaynak yok"
-                    : `${space.source_count} kaynak`}
+                    ? t("ws.noSources")
+                    : t("ws.sourceCount", { n: space.source_count })}
                   {" · "}
-                  {formatDateTime(space.updated_at)}
+                  {formatDateTime(space.updated_at, lang)}
                 </p>
               </div>
               <div className="row" style={{ gap: "0.4rem" }}>
                 <button type="button" className="btn" onClick={() => onOpen(space.space_id)}>
-                  Aç
+                  {t("ws.open")}
                 </button>
                 <button
                   type="button"
                   className="icon-btn icon-btn--danger"
                   onClick={() => onDelete(space.space_id)}
-                  aria-label={`${space.name} defterini sil`}
+                  aria-label={t("ws.deleteNotebook", { name: space.name })}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -276,11 +272,12 @@ function Player({
   source: SpaceSource | null;
   startSecond: number;
 }) {
+  const t = useT();
   const src = embedUrl(source, startSecond);
   return (
     <div className="player">
       <div className="player__bar">
-        <h3 className="player__title">{source?.title ?? "Kaynak seçilmedi"}</h3>
+        <h3 className="player__title">{source?.title ?? t("ws.noSourceSelected")}</h3>
         {source?.url && (
           <a
             className="btn btn--quiet"
@@ -288,7 +285,7 @@ function Player({
             target="_blank"
             rel="noreferrer"
           >
-            YouTube'da aç
+            {t("ws.openOnYouTube")}
             <ArrowUpRight className="h-3.5 w-3.5" aria-hidden />
           </a>
         )}
@@ -307,8 +304,8 @@ function Player({
             <MonitorPlay className="h-8 w-8" aria-hidden />
             <p>
               {source
-                ? "Bu kaynak bir video değil, o yüzden oynatıcı boş."
-                : "Soldan bir video kaynağı seç ya da bir ders planı ekle."}
+                ? t("ws.notAVideo")
+                : t("ws.pickSource")}
             </p>
           </div>
         )}
@@ -337,15 +334,15 @@ function Moments({
   onSeek: (second: number) => void;
   activeSecond: number;
 }) {
+  const t = useT();
   if (citations.length === 0) {
     return (
       <div className="panel panel__pad">
         <h3 className="section-title" style={{ fontSize: "1rem", marginBottom: "0.4rem" }}>
-          İşaretli anlar
+          {t("ws.marks")}
         </h3>
         <p className="hint" style={{ marginTop: 0 }}>
-          Sağdan bir soru sorduğunda, cevabın dayandığı anlar burada birikir ve tek tıkla o
-          saniyeye gidersin.
+            {t("ws.marksEmpty")}
         </p>
       </div>
     );
@@ -354,7 +351,7 @@ function Moments({
   return (
     <div className="panel panel__pad">
       <h3 className="section-title" style={{ fontSize: "1rem", marginBottom: "0.6rem" }}>
-        İşaretli anlar
+        {t("ws.marks")}
       </h3>
       <div className="lines">
         {citations.map((citation, index) => {
@@ -372,7 +369,11 @@ function Moments({
               disabled={second === null}
             >
               <span className="line__t">
-                {second !== null ? formatClock(second) : citation.page ? `s. ${citation.page}` : "—"}
+                {second !== null
+                  ? formatClock(second)
+                  : citation.page
+                    ? t("format.page", { n: citation.page })
+                    : "—"}
               </span>
               <span className="min-w-0">{citation.quote}</span>
             </button>
@@ -402,13 +403,14 @@ function SourceTranscriptViewer({
   onTranscribe: (sourceId: string) => void;
   transcribing: boolean;
 }) {
+  const t = useT();
   const [filterQuery, setFilterQuery] = useState("");
 
   if (!source) {
     return (
       <div className="panel panel__pad">
         <p className="hint" style={{ margin: 0 }}>
-          Metnini ve transkriptini görmek için bir kaynak seçin.
+          {t("ws.selectForText")}
         </p>
       </div>
     );
@@ -418,7 +420,7 @@ function SourceTranscriptViewer({
     return (
       <div className="panel panel__pad">
         <p className="meta" style={{ margin: 0 }}>
-          <Spinner /> Kaynak metni yükleniyor…
+          <Spinner /> {t("ws.loadingText")}
         </p>
       </div>
     );
@@ -429,14 +431,14 @@ function SourceTranscriptViewer({
       <div className="panel panel__pad stack stack--tight">
         <div className="row row--between" style={{ alignItems: "center" }}>
           <h3 className="section-title" style={{ fontSize: "1rem" }}>
-            Transkript Bulunamadı
+            {t("ws.noCaptionsTitle")}
           </h3>
-          <span className="tag tag--warn">Metin Yok</span>
+          <span className="tag tag--warn">{t("ws.status.noText")}</span>
         </div>
         <p className="hint" style={{ marginTop: 0 }}>
           {source.kind === "video"
-            ? "Bu videoda YouTube altyazısı bulunamadı. Whisper ASR ile sesi metne dönüştürebilirsiniz."
-            : "Bu dosyadan metin çıkarılamadı (taranmış bir belge olabilir)."}
+            ? t("ws.noCaptions")
+            : t("ws.noTextFromFile")}
         </p>
         {source.kind === "video" && (
           <div className="row" style={{ marginTop: "0.5rem" }}>
@@ -447,7 +449,7 @@ function SourceTranscriptViewer({
               disabled={transcribing}
             >
               {transcribing ? <Spinner /> : <AudioWaveform className="h-4 w-4" aria-hidden />}
-              {transcribing ? "ASR İşleniyor…" : "Whisper ile Transkript Çıkar"}
+              {transcribing ? t("ws.asrRunning") : t("ws.asrStart")}
             </button>
           </div>
         )}
@@ -467,14 +469,14 @@ function SourceTranscriptViewer({
       <div className="row row--between" style={{ alignItems: "center" }}>
         <div className="row" style={{ gap: "0.5rem", alignItems: "center" }}>
           <h3 className="section-title" style={{ fontSize: "1rem" }}>
-            {source.kind === "video" ? "Transkript" : "Döküman Metni"}
+            {source.kind === "video" ? "Transkript" : t("ws.docText")}
           </h3>
           {isAsr && (
             <span className="tag tag--chalk" title={sourceText?.transcript_backend ?? "Whisper"}>
               Whisper ASR
             </span>
           )}
-          <span className="meta">{chunks.length} bölüm</span>
+          <span className="meta">{t("ws.sectionCount", { n: chunks.length })}</span>
         </div>
 
         {chunks.length > 2 && (
@@ -483,7 +485,7 @@ function SourceTranscriptViewer({
               type="text"
               value={filterQuery}
               onChange={(e) => setFilterQuery(e.target.value)}
-              placeholder="Metin içinde ara…"
+              placeholder={t("ws.searchInText")}
               style={{ padding: "0.25rem 0.5rem", fontSize: "0.85rem", width: "11rem" }}
             />
             {filterQuery && (
@@ -491,7 +493,7 @@ function SourceTranscriptViewer({
                 type="button"
                 className="icon-btn"
                 onClick={() => setFilterQuery("")}
-                aria-label="Aramayı temizle"
+                aria-label={t("ws.clearSearch")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -502,11 +504,11 @@ function SourceTranscriptViewer({
 
       {chunks.length === 0 ? (
         <p className="hint" style={{ margin: 0 }}>
-          {sourceText?.full_text || "Bu kaynak için henüz metin bölümü bulunmuyor."}
+          {sourceText?.full_text || t("ws.noTextYet")}
         </p>
       ) : filteredChunks.length === 0 ? (
         <p className="hint" style={{ margin: "0.5rem 0" }}>
-          "{filterQuery}" ifadesini içeren bir bölüm bulunamadı.
+          {t("ws.filterEmpty", { q: filterQuery })}
         </p>
       ) : (
         // TRANSKRIPT ISARETI. Renk kabin ustunde bir kez veriliyor: bu
@@ -535,8 +537,8 @@ function SourceTranscriptViewer({
                   {hasTime
                     ? formatClock(chunk.start_sec!)
                     : chunk.page
-                    ? `s. ${chunk.page}`
-                    : `§${chunk.ordinal + 1}`}
+                      ? t("format.page", { n: chunk.page })
+                      : `§${chunk.ordinal + 1}`}
                 </span>
                 <span className="min-w-0" style={{ whiteSpace: "pre-wrap" }}>
                   {chunk.text}
@@ -566,6 +568,7 @@ function SourceTranscriptViewer({
  * Kirmizi YOK: reddetmek bu ozelligin VAADI, arizasi degil.
  */
 function AbsenceNotice({ kind, text }: { kind: RagRefusal; text: string }) {
+  const t = useT();
   const unverified = kind === "unverified";
   const tone =
     kind === "unverified"
@@ -575,9 +578,9 @@ function AbsenceNotice({ kind, text }: { kind: RagRefusal; text: string }) {
         : "notice--absent";
   const what =
     kind === "unverified"
-      ? "Doğrulanamadı"
+      ? t("ws.unverified")
       : kind === "no_content"
-        ? "Kapsam dışı"
+        ? t("ws.outOfScope")
         : "Bu defterde yok";
 
   return (
@@ -608,6 +611,7 @@ function Chat({
   onAsk: (question: string) => void;
   onCitationClick: (citation: Citation) => void;
 }) {
+  const t = useT();
   const [question, setQuestion] = useState("");
 
   const submit = (event: React.FormEvent) => {
@@ -621,7 +625,7 @@ function Chat({
   return (
     <aside className="room__aside">
       <div className="panel-head">
-        <h3>Deftere sor</h3>
+        <h3>{t("ws.askTitle")}</h3>
         <MessagesSquare className="h-4 w-4 text-[color:var(--ink-3)]" aria-hidden />
       </div>
 
@@ -632,10 +636,10 @@ function Chat({
               key={prompt}
               type="button"
               className="chip"
-              onClick={() => onAsk(prompt)}
+              onClick={() => onAsk(t(prompt))}
               disabled={asking}
             >
-              {prompt}
+              {t(prompt)}
             </button>
           ))}
         </div>
@@ -643,10 +647,10 @@ function Chat({
 
       <div className="thread">
         {messages.length === 0 && (
-          <Empty icon={Quote} title={ready ? "Henüz soru sormadın" : "Önce kaynak ekle"}>
+          <Empty icon={Quote} title={ready ? t("ws.noQuestionYet") : t("ws.addSourceFirst")}>
             {ready
-              ? "Anlamadığın bir noktayı sor. Cevabın altında hangi videonun hangi saniyesine dayandığı yazar."
-              : "Bir ders planı ekle ya da döküman yükle; aranabilir içerik olmadan soru sorulamaz."}
+              ? t("ws.askHint")
+              : t("ws.needSources")}
           </Empty>
         )}
 
@@ -660,7 +664,7 @@ function Chat({
           >
             <p>
               {message.content ||
-                (message.streaming ? "Kaynaklarda aranıyor…" : "")}
+                (message.streaming ? t("ws.searching") : "")}
             </p>
 
             {message.role === "assistant" && message.content && !message.streaming && (
@@ -670,7 +674,7 @@ function Chat({
                   className="icon-btn"
                   style={{ width: "1.9rem", height: "1.9rem", flexBasis: "1.9rem" }}
                   onClick={() => void navigator.clipboard?.writeText(message.content)}
-                  aria-label="Cevabı kopyala"
+                  aria-label={t("ws.copyAnswer")}
                 >
                   <Copy className="h-3.5 w-3.5" />
                 </button>
@@ -693,9 +697,16 @@ function Chat({
                       onClick={() => onCitationClick(citation)}
                       title={citation.quote}
                     >
-                      <BookMarked className="h-3 w-3" aria-hidden />
-                      {second !== null ? `${formatClock(second)} · ` : ""}
-                      {citation.title}
+                      <BookMarked className="h-3 w-3 shrink-0" aria-hidden />
+                      {/* Metin KENDI kabinda: `text-overflow` bir esnek
+                          kutunun cocuklarina islemez, bu yuzden kunye
+                          basliklari uc nokta olmadan kelime ortasinda
+                          kesiliyordu -- ve kesilmis bir kunye hangi kaynaga
+                          gittigini soylemez. */}
+                      <span className="cite__text">
+                        {second !== null ? `${formatClock(second)} · ` : ""}
+                        {citation.title}
+                      </span>
                     </button>
                   );
                 })}
@@ -711,15 +722,15 @@ function Chat({
           type="text"
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
-          placeholder={ready ? "Anlamadığın noktayı yaz…" : "Önce kaynak ekle"}
+          placeholder={ready ? t("ws.askPlaceholder") : t("ws.addSourceFirst")}
           disabled={!ready}
-          aria-label="Sorun"
+          aria-label={t("ws.questionLabel")}
         />
         <button
           type="submit"
           className="btn btn--primary"
           disabled={!ready || asking || !question.trim()}
-          aria-label="Soruyu gönder"
+          aria-label={t("ws.send")}
         >
           {asking ? <Spinner /> : <Send className="h-4 w-4" aria-hidden />}
         </button>
@@ -741,6 +752,7 @@ function AddSources({
   onAddRun: (runId: string) => void;
   onUpload: (file: File) => void;
 }) {
+  const t = useT();
   const [runId, setRunId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -750,11 +762,11 @@ function AddSources({
         value={runId}
         onChange={(event) => setRunId(event.target.value)}
         disabled={busy || runs.length === 0}
-        aria-label="Eklenecek ders planı"
+        aria-label={t("ws.runToAdd")}
         style={{ width: "auto", minWidth: "min(100%, 15rem)" }}
       >
         <option value="">
-          {runs.length === 0 ? "Tamamlanmış ders planın yok" : "Ders planı seç…"}
+          {runs.length === 0 ? t("ws.noCompletedRuns") : t("ws.pickRun")}
         </option>
         {runs.map((run) => (
           <option key={run.run_id} value={run.run_id}>
@@ -769,7 +781,7 @@ function AddSources({
         onClick={() => onAddRun(runId)}
       >
         <ListVideo className="h-4 w-4" aria-hidden />
-        Videoları ekle
+        {t("ws.addVideos")}
       </button>
 
       <input
@@ -777,7 +789,7 @@ function AddSources({
         type="file"
         className="sr-only"
         accept=".pdf,.docx,.txt,.md"
-        aria-label="Döküman yükle"
+        aria-label={t("ws.uploadDoc")}
         onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) onUpload(file);
@@ -793,7 +805,7 @@ function AddSources({
         onClick={() => inputRef.current?.click()}
       >
         <Upload className="h-4 w-4" aria-hidden />
-        Döküman yükle
+        {t("ws.uploadDoc")}
       </button>
     </div>
   );
@@ -802,6 +814,7 @@ function AddSources({
 /* --------------------------------------------------------------- defter detayı */
 
 function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => void }) {
+  const t = useT();
   const rag = useVideoRAG(spaceId);
   const [startSecond, setStartSecond] = useState(0);
   const [activeTab, setActiveTab] = useState<"transcript" | "moments">("transcript");
@@ -832,7 +845,7 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
   if (rag.loading && !rag.space) {
     return (
       <p className="meta">
-        <Spinner /> Defter açılıyor…
+        <Spinner /> {t("ws.opening")}
       </p>
     );
   }
@@ -844,7 +857,7 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
       <div className="row row--between">
         <button type="button" className="btn btn--quiet" onClick={onBack}>
           <ArrowLeft className="h-4 w-4" aria-hidden />
-          Defterlerim
+          {t("ws.listTitle")}
         </button>
         <AddSources
           runs={rag.runs}
@@ -867,16 +880,16 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
       {ingesting && (
         <div className="panel panel__pad stack stack--tight">
           <div className="row row--between">
-            <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>Kaynak hazırlanıyor</span>
+            <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>{t("ws.ingesting")}</span>
             <span className="meta">{Math.round(rag.ingestJob.progress * 100)}%</span>
           </div>
           <Meter
             value={rag.ingestJob.progress * 100}
             variant="signal"
-            label="Kaynak hazırlama ilerlemesi"
+            label={t("ws.ingestProgress")}
           />
           <p className="hint" style={{ marginTop: 0 }}>
-            {rag.ingestJob.message ?? "İşleniyor…"}
+            {rag.ingestJob.message ?? t("ws.processing")}
           </p>
         </div>
       )}
@@ -887,9 +900,8 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
       )}
 
       {sources.length === 0 ? (
-        <Empty icon={Upload} title="Bu defter henüz boş.">
-          Yukarıdan tamamlanmış bir ders planının videolarını ekle ya da bir PDF/Word/metin
-          dosyası yükle. Hazırlık bittiğinde deftere soru sorabilirsin.
+        <Empty icon={Upload} title={t("ws.spaceEmptyTitle")}>
+            {t("ws.spaceEmptyBody")}
         </Empty>
       ) : (
         <div className="room">
@@ -911,7 +923,7 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
                 onClick={() => setActiveTab("moments")}
               >
                 <BookMarked className="h-4 w-4" aria-hidden />
-                İşaretli anlar ({moments.length})
+                {t("ws.marks")} ({moments.length})
               </button>
             </div>
 
@@ -941,6 +953,16 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
                 {sources.map((source) => {
                   const status = STATUS[source.status];
                   const active = source.source_id === rag.selectedSourceId;
+                  // ANLAMSAL ARAMA BOSLUGU. Gomme saglayicisi arizalandiginda
+                  // is DUSMUYOR -- leksik arama calisiyor ve kaynak `indexed`
+                  // kaliyor. Dogru karar, ama arayuz farki gostermezse defter
+                  // tamamen saglikli gorunuyor ve sonraki "bulamadim" hata gibi
+                  // okunuyordu. Eksiklik daha once yalnizca ingest bittiginde,
+                  // akipticen bir mesajda soyleniyordu.
+                  const unembedded =
+                    source.status === "indexed"
+                      ? source.chunk_count - source.embedded_chunk_count
+                      : 0;
                   return (
                     // KENAR BANDI. Rengin OGRENILDIGI yer burasi: kullanici
                     // kaynagi adiyla burada goruyor, sonra alintida ve
@@ -968,16 +990,26 @@ function NotebookDetail({ spaceId, onBack }: { spaceId: string; onBack: () => vo
                       >
                         <span className="source__title">{source.title}</span>
                         <span className="source__status">
-                          {status.label}
-                          {source.status === "indexed" && ` · ${source.chunk_count} bölüm`}
+                          {t(status.label)}
+                          {source.status === "indexed" && t("ws.sections", { n: source.chunk_count })}
                           {source.error && ` · ${source.error}`}
                         </span>
+                        {unembedded > 0 && (
+                          <span
+                            className="source__gap"
+                            title={t("ws.gapBody")}
+                          >
+                            {unembedded === source.chunk_count
+                              ? t("ws.gapTitle")
+                              : t("ws.gapPartial", { n: unembedded })}
+                          </span>
+                        )}
                       </button>
                       <button
                         type="button"
                         className="icon-btn icon-btn--danger"
                         onClick={() => rag.deleteSource(source.source_id)}
-                        aria-label={`${source.title} kaynağını kaldır`}
+                        aria-label={t("ws.removeSource", { name: source.title })}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>

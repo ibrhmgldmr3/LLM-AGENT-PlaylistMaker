@@ -8,7 +8,7 @@
    Defter bir KOLEKSİYON, her kaynak bir eser, her alıntı bir KÜNYE.
 
    Üç malzeme:
-   1. DUVAR (--board): ultramarin bir salon duvarı. Gezinmeyi ve "şu an
+   1. DUVAR (--board): markanın yeşilinden bir salon duvarı. Gezinmeyi ve "şu an
       buradasın"ı taşır. İnce bir vurgu değil, bütün bir bölgeye sahip —
       rengin sayfa ölçeğinde taahhüt edilmesi bu demek.
    2. ETİKET (--surface): müze etiket kartonu. Beyaz, dik, okunur. Üstünde
@@ -117,17 +117,17 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --ground: #121418;
-  --surface: #1b1e24;
-  --surface-2: #21252c;
-  --surface-sunk: #0e1014;
+  --ground: #131714;
+  --surface: #1c211d;
+  --surface-2: #222824;
+  --surface-sunk: #0f1310;
 
-  --ink: #e9ebee;
-  --ink-2: #a6aeb6;
-  --ink-3: #838c94;
+  --ink: #e9ece9;
+  --ink-2: #a7b0a9;
+  --ink-3: #848e86;
 
-  --rule: #2c313a;
-  --rule-2: #3d4450;
+  --rule: #2d332e;
+  --rule-2: #3e463f;
 
   /* Duvar karanlıkta da DUVAR kalmalı: eski gece yeşili (#17251f) bu zeminle
      neredeyse aynı değerde ve bölge sınırı kaybolurdu -- amplifikasyonun tam
@@ -524,7 +524,10 @@ button {
 
   .btn:disabled {
     cursor: not-allowed;
-    opacity: 0.5;
+    border-color: var(--rule);
+    background: var(--surface-2);
+    box-shadow: none;
+    color: var(--ink-3);
   }
 
   .btn--primary {
@@ -941,11 +944,14 @@ button {
 
   /* ------------------------------------------------------------ boş durumlar */
 
+  /* Kesik çizgi bu dünyanın malzemesi DEĞİL: müze etiketi keskin ve tam
+     çizgilidir, kesik çerçeve jenerik "yer tutucu" dilidir. Boşluk zaten
+     içerikle anlatılıyor, çerçeveyle değil. */
   .empty {
     display: grid;
     justify-items: center;
     gap: 0.3rem;
-    border: 1px dashed var(--rule-2);
+    border: 1px solid var(--rule);
     border-radius: var(--r-lg);
     padding: clamp(2rem, 6vw, 3.5rem) 1.5rem;
     background: var(--surface);
@@ -1629,9 +1635,12 @@ button {
 
   /* ============================================== 5. çalışma odası (RAG) */
 
+  /* Soru sütunu OKUNAN bir sütundur, bir kenar çubuğu değil: yanıt bu dünyada
+     duvar metni (Literata) ve 23rem'de ölçü ~34 karaktere düşüyordu -- uzun
+     bir açıklama için oluk genişliği. Sağdaki alan zaten boştu. */
   .room {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(20rem, 23rem);
+    grid-template-columns: minmax(0, 1fr) minmax(22rem, 30rem);
     gap: 1rem;
     align-items: start;
   }
@@ -1886,9 +1895,17 @@ button {
     font-size: 0.76rem;
     font-weight: 600;
     overflow: hidden;
+    transition: background 160ms var(--ease);
+  }
+
+  /* Kısaltma METNİN kendi kabında yapılır: `text-overflow` esnek bir kutunun
+     çocuklarına işlemez, o yüzden künye başlıkları üç nokta olmadan kelime
+     ortasında kesiliyordu. */
+  .cite__text {
+    min-width: 0;
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    transition: background 160ms var(--ease);
   }
 
   .cite:hover {
@@ -1992,8 +2009,13 @@ button {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* Defterin AMACI soru sormak. Tek sütuna inince "Deftere sor" en alta
+     düşüyordu: telefonda 1610 piksel aşağıda, yani oynatıcının ve 23 bölümlük
+     transkriptin altında. Kullanıcının en çok kullandığı cihazda ürünün asıl
+     eylemi iki ekran gömülüydü; sıra tersine çevrildi. */
   .room__aside {
     position: static;
+    order: -1;
     max-height: none;
   }
 
@@ -2149,10 +2171,7 @@ button {
     display: block;
     margin-bottom: 0.15rem;
     font-weight: 600;
-    font-size: 0.72rem;
-    font-family: var(--mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 0.86rem;
   }
 
   .notice svg {
@@ -2267,30 +2286,15 @@ time,
     background: var(--board);
     padding: clamp(2.4rem, 9vh, 5.5rem) clamp(1.25rem, 3vw, 2.5rem) clamp(2.6rem, 9vh, 5.5rem);
     overflow: hidden;
+    border-bottom: 3px solid var(--signal);
     color: var(--chalk);
-  }
-
-  /* Yönlendirme oku: müze duvarındaki dev yön işareti. Dekor değil,
-     duvarın malzemesi -- salonun devam ettiğini söyleyen şey. */
-  .start > .stack:first-child::after {
-    position: absolute;
-    right: -3%;
-    bottom: -38%;
-    z-index: -1;
-    opacity: 0.12;
-    color: var(--chalk);
-    content: "→";
-    font-size: clamp(16rem, 34vw, 30rem);
-    font-weight: 700;
-    line-height: 0.7;
-    pointer-events: none;
   }
 
   /* Vinil ölçek: duvar yazısı tabela register'ında yaşar. */
   .start__q {
     max-width: 16ch;
     font-size: clamp(2.6rem, 7.4vw, 5.2rem);
-    letter-spacing: -0.042em;
+    letter-spacing: -0.04em;
     line-height: 0.98;
     text-wrap: balance;
   }
@@ -2315,6 +2319,10 @@ time,
     box-shadow: var(--shadow-3);
   }
 
+  .start__quota {
+    margin: 1.1rem 0 0;
+  }
+
   .start__examples {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
@@ -2327,22 +2335,18 @@ time,
     grid-column: 1 / -1;
     margin-bottom: 0.1rem;
     color: var(--ink-3);
-    font-size: 0.72rem;
-    font-family: var(--mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 0.82rem;
   }
 
-  /* Örnek konular SALON LEVHASI olur: her biri kendi renginde, numaralı.
-     Numara burada bilgi taşıyor -- sıradaki durakları sayıyor. */
+  /* Örnek konular birer etiket plakası. Renk ve numara KALDIRILDI: salon
+     rengi kaynağın kimliğinden türer ve örnek konu bir kaynak değil; numara
+     ise ancak sıranın kendisi bilgi taşıdığında hak edilir, bunlar ise
+     birini seçeceğin dört alternatif. */
   .start__examples .chip {
-    display: grid;
+    display: block;
     position: relative;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 0.6rem;
-    align-items: center;
     border: 1px solid var(--rule);
-    border-top: 2px solid var(--key);
+    border-top: 2px solid var(--rule-2);
     border-radius: 0 0 var(--r-sm) var(--r-sm);
     padding: 0.7rem 0.85rem;
     color: var(--ink);
@@ -2350,30 +2354,74 @@ time,
     line-height: 1.35;
   }
 
-  .start__examples .chip::before {
-    color: var(--key);
-    font-variant-numeric: tabular-nums;
-    font-size: 0.72rem;
-    font-family: var(--mono);
-    font-weight: 600;
-    content: counter(salon, decimal-leading-zero);
-    counter-increment: salon;
-  }
-
-  .start__examples {
-    counter-reset: salon;
-  }
-
-  .start__examples .chip:nth-of-type(6n + 1) { --key: var(--key-1); }
-  .start__examples .chip:nth-of-type(6n + 2) { --key: var(--key-2); }
-  .start__examples .chip:nth-of-type(6n + 3) { --key: var(--key-3); }
-  .start__examples .chip:nth-of-type(6n + 4) { --key: var(--key-4); }
-  .start__examples .chip:nth-of-type(6n + 5) { --key: var(--key-5); }
-  .start__examples .chip:nth-of-type(6n) { --key: var(--key-6); }
-
   .start__examples .chip:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--key) 8%, var(--surface));
+    border-top-color: var(--signal);
+    background: var(--surface-2);
     color: var(--ink);
+  }
+
+  /* GÜZERGÂH ÖNİZLEMESİ. Ekranın eteği çıplak zemindi; müzede duvarın bittiği
+     yerde yönlendirme başlar, bu dünyanın FORM'u da zaten "müze etiketi ve
+     galeri yönlendirmesi".
+
+     Yeni bir cihaz DEĞİL: ilerleme panelindeki `.route` yatay yatırılmış.
+     Gönderildiği anda şerit kalkıyor ve aynı yol, aynı numaralı duraklarla
+     duvar renginde canlanıyor -- önizleme kendi gerçeğine dönüşüyor.
+
+     Buraya salon rengi lejantı konamazdı: ekranda tek kaynak yokken altı
+     renkli bir anahtar, kullanıcının ilk gerçek kaynakta yanlış çıkacak bir
+     şey ezberlemesi demekti. */
+  .start__route {
+    margin-top: 1.9rem;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.15rem;
+  }
+
+  .start__route-label {
+    display: block;
+    margin-bottom: 0.85rem;
+    color: var(--ink-3);
+    font-size: 0.82rem;
+  }
+
+  .route--preview {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 0.9rem;
+  }
+
+  /* Durak yatayda ÜST ÜSTE dizilir: numara, altında adı. Böylece bağlantı
+     çizgisi duraktan durağa kesintisiz gider, metnin içinden geçmez. */
+  .route--preview .route__step {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+    padding-bottom: 0;
+  }
+
+  .route--preview .route__step::before {
+    top: 0.82rem;
+    right: -0.9rem;
+    bottom: auto;
+    left: 2rem;
+    width: auto;
+    height: 1px;
+    background: var(--rule-2);
+  }
+
+  /* Zemin üstündeki hali: duvar rengi yerine galeri grisi, tebeşir yerine
+     mürekkep. Rakam yönlendirme okrasının OKUNUR tonunda (`--signal-ink`,
+     zemine karşı 5.1:1) -- `--signal` 3.3:1'de kalıyor ve bu boyda düşerdi. */
+  .route--preview .route__dot {
+    border-color: var(--rule-2);
+    background: var(--ground);
+    color: var(--signal-ink);
+  }
+
+  .route--preview .route__label {
+    padding-top: 0;
+    color: var(--ink-2);
+    font-size: 0.86rem;
+    line-height: 1.4;
   }
 
   /* Üst çubuk duvarın devamı: renk artık İKİ bölgeye sahip, tek şeride değil.
@@ -2415,6 +2463,33 @@ time,
 
   .start__examples {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Telefonda güzergâh, ilerleme panelindekinin birebir geometrisine döner:
+     numara solda, adı sağında, çizgi duraktan durağa aşağı iner. Üst üste
+     dizilim burada yanlış olurdu -- dikey çizgi metnin içinden geçerdi. */
+  .route--preview {
+    grid-auto-flow: row;
+    gap: 0;
+  }
+
+  .route--preview .route__step {
+    grid-template-columns: 1.65rem minmax(0, 1fr);
+    gap: 0.85rem;
+    padding-bottom: 1.1rem;
+  }
+
+  .route--preview .route__step::before {
+    top: 1.85rem;
+    right: auto;
+    bottom: -0.2rem;
+    left: 0.82rem;
+    width: 1px;
+    height: auto;
+  }
+
+  .route--preview .route__label {
+    padding-top: 0.15rem;
   }
 }
 
@@ -2540,6 +2615,20 @@ time,
     border-left-color: var(--board);
   }
 
+  /* Anlamsal arama boşluğu. ÇEKİNCE, hata değil -- kaynak eklendi, indekslendi
+     ve kelime aramasıyla bulunabiliyor; eksik olan yalnızca anlamsal yol. Bu
+     yüzden kırmızı değil okra: `.notice--unverified` ile aynı aile, aynı
+     gerekçe ("dikkat çeker ama bir arıza bildirmez").
+
+     Satırın kendi salon rengiyle yarışmasın diye zeminsiz ve küçük: kaynağın
+     KİMLİĞİ kenar bandında, bu ise o kaynak hakkında bir dipnot. */
+  .source__gap {
+    display: block;
+    margin-top: 0.1rem;
+    color: var(--signal-ink);
+    font-size: 0.74rem;
+  }
+
   /* 2. KÜNYE. Eskiden okra bir hapti; okra bu dünyada "buraya bas" demek ve
      aynı sarıyı bir kaynağın KİMLİĞİ olarak da kullanmak dünyanın tek
      kuralını bulanıklaştırıyordu. Künye artık kaynağın kendi rengini taşıyor. */
@@ -2614,5 +2703,39 @@ time,
     align-self: stretch;
     margin: 0;
     border-radius: var(--r-sm);
+  }
+}
+
+/* ------------------------------------------------------------------ dil seçimi
+   Üst çubuk duvarın parçası, dolayısıyla seçici de duvarın malzemesinde:
+   tebeşir metin, duvarın kendi çizgisi. Yerel `<select>` bilerek korunuyor --
+   iki seçenek için özel bir açılır menü yazmak, klavye ve ekran okuyucu
+   davranışını sıfırdan üstlenmek demek olurdu. */
+
+@layer components {
+  .lang__select {
+    appearance: none;
+    border: 1px solid var(--board-3);
+    border-radius: var(--r-sm);
+    background: transparent;
+    padding: 0.34rem 0.55rem;
+    color: var(--chalk-2);
+    font-size: 0.78rem;
+    font-family: var(--sans);
+    font-weight: 500;
+    cursor: pointer;
+    transition: border-color 160ms var(--ease), color 160ms var(--ease);
+  }
+
+  .lang__select:hover {
+    border-color: var(--chalk-3);
+    color: var(--chalk);
+  }
+
+  /* Açılır listenin kendisi işletim sisteminin penceresi: metin okunabilir
+     kalsın diye zemin/mürekkep açıkça veriliyor. */
+  .lang__select option {
+    background: var(--surface);
+    color: var(--ink);
   }
 }

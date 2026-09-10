@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { useLanguage, type Translate } from "../i18n";
 import type {
   Citation,
   RagAnswer,
@@ -32,12 +33,34 @@ function messageId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function answerText(answer: RagAnswer): string {
-  if (answer.answered && answer.answer) return answer.answer;
-  return (
-    answer.reason ??
-    `${answer.searched_sources} kaynak arandı ama bu soruyu karşılayan bir bölüm bulunamadı. Deftere ilgili bir video ya da döküman eklemeyi deneyebilirsin.`
-  );
+/**
+ * Ham Markdown isaretlerini SOKER.
+ *
+ * Istem artik duz metin istiyor ama model bazen yine de Markdown yaziyor ve
+ * yanit `white-space: pre-wrap` ile duz ciziliyor: ekranda `* **ÜFE:**` gibi
+ * bir sey kaliyordu. Burada yapilan sey bicimlendirme UYDURMAK degil, okurun
+ * gormemesi gereken SOZDIZIMINI kaldirmak; satir yapisi oldugu gibi kaliyor,
+ * yani madde listeleri liste olarak okunmaya devam ediyor.
+ */
+export function plainProse(text: string): string {
+  return text
+    .replace(/```+/g, "")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^(\s*)[*+-]\s+/gm, "$1• ")
+    .replace(/^\s*[-*_]{3,}\s*$/gm, "")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/__([^_\n]+)__/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function answerText(answer: RagAnswer, t: Translate): string {
+  if (answer.answered && answer.answer) return plainProse(answer.answer);
+  // `reason` sunucudan KULLANICININ dilinde geliyor; yalnizca o yoksa
+  // arayuzun kendi cumlesine dusuluyor.
+  return answer.reason ?? t("rag.notFound", { n: answer.searched_sources });
 }
 
 /**
@@ -53,6 +76,8 @@ function refusalOf(answer: RagAnswer): RagRefusal | null {
 }
 
 export function useVideoRAG(spaceId: string | null) {
+  const { t, answerLanguage } = useLanguage();
+
   const [space, setSpace] = useState<SpaceDetail | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
@@ -79,7 +104,7 @@ export function useVideoRAG(spaceId: string | null) {
           null,
       );
     } catch (exception) {
-      setError(exception instanceof ApiError ? exception.message : "Defter açılamadı.");
+      setError(exception instanceof ApiError ? exception.message : t("error.spaceOpen"));
     } finally {
       setLoading(false);
     }
@@ -126,7 +151,7 @@ export function useVideoRAG(spaceId: string | null) {
         const accepted = await api.addRunToSpace(spaceId, runId);
         ingestJob.watch(accepted.job_id, accepted.events_url);
       } catch (exception) {
-        setError(exception instanceof ApiError ? exception.message : "Ders planı eklenemedi.");
+        setError(exception instanceof ApiError ? exception.message : t("error.runAdd"));
       }
     },
     [ingestJob, spaceId],
@@ -141,7 +166,7 @@ export function useVideoRAG(spaceId: string | null) {
         await load();
         ingestJob.watch(accepted.job_id, accepted.events_url);
       } catch (exception) {
-        setError(exception instanceof ApiError ? exception.message : "Döküman yüklenemedi.");
+        setError(exception instanceof ApiError ? exception.message : t("error.docUpload"));
       }
     },
     [ingestJob, load, spaceId],
@@ -156,7 +181,7 @@ export function useVideoRAG(spaceId: string | null) {
         await load();
         ingestJob.watch(accepted.job_id, accepted.events_url);
       } catch (exception) {
-        setError(exception instanceof ApiError ? exception.message : "Transkript çıkarma başlatılamadı.");
+        setError(exception instanceof ApiError ? exception.message : t("error.transcribe"));
       }
     },
     [ingestJob, load, spaceId],
@@ -170,7 +195,7 @@ export function useVideoRAG(spaceId: string | null) {
         await api.deleteSource(spaceId, sourceId);
         await load();
       } catch (exception) {
-        setError(exception instanceof ApiError ? exception.message : "Kaynak kaldırılamadı.");
+        setError(exception instanceof ApiError ? exception.message : t("error.sourceRemove"));
       }
     },
     [load, spaceId],
@@ -206,8 +231,8 @@ export function useVideoRAG(spaceId: string | null) {
       ]);
 
       try {
-        const answer = await api.ask(spaceId, trimmed);
-        const text = answerText(answer);
+        const answer = await api.ask(spaceId, trimmed, answerLanguage);
+        const text = answerText(answer, t);
         const refusal = refusalOf(answer);
 
         // Reddedilen yanit YAZILMIYOR, aninda konuyor. Harf harf akan bir
@@ -250,7 +275,7 @@ export function useVideoRAG(spaceId: string | null) {
         );
       } catch (exception) {
         setMessages((items) => items.filter((item) => item.id !== assistantId));
-        setError(exception instanceof ApiError ? exception.message : "Yanıt üretilemedi.");
+        setError(exception instanceof ApiError ? exception.message : t("error.answer"));
       } finally {
         setAsking(false);
       }

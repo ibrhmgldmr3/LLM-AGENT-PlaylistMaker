@@ -1831,6 +1831,35 @@ class SQLiteStore:
             ).fetchall()
         return [(int(row["chunk_id"]), row["text"]) for row in rows]
 
+    def embedded_chunk_counts(self, space_id: str, model: str) -> dict[str, int]:
+        """Kaynak basina BU MODELLE gomulu parca sayisi.
+
+        Neden SAKLANMIYOR da her seferinde sayiliyor: duzeltilmek istenen hata
+        tam olarak "saklanan durum yalan soyluyordu" idi. `space_source.status`
+        gomme basarisiz olsa da `indexed` kalir (bilerek -- leksik arama
+        calisiyor ve is DUSMEMELI), dolayisiyla yanina saklanacak ikinci bir
+        sayac da ayni sekilde bayatlardi. Canli sayim bu yalani YAPISAL olarak
+        imkansiz kiliyor.
+
+        Bedeli onemsiz: alan basina birkac bin satirda tek bir gruplu sayim, ve
+        yalnizca defter acilirken calisiyor.
+
+        Olcut MODELE BAGLI, `load_embeddings` ve `chunks_missing_embeddings` ile
+        birebir ayni: farkli modellerin vektorleri arasinda kosinus benzerligi
+        anlamsiz, yani baska modelle gomulmus bir parca erisim icin GOMULU
+        DEGILDIR. Arayuzun bunu "tamam" gostermesi, kullaniciya calismayan bir
+        aramayi calisiyor diye anlatmak olurdu.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT c.source_id AS source_id, COUNT(*) AS n FROM chunk c"
+                " JOIN chunk_embedding e ON e.chunk_id = c.chunk_id"
+                " WHERE c.space_id = ? AND e.model = ?"
+                " GROUP BY c.source_id",
+                (space_id, model),
+            ).fetchall()
+        return {row["source_id"]: int(row["n"]) for row in rows}
+
     def put_embeddings(self, rows: list[tuple[int, str, int, bytes]]) -> None:
         """`(chunk_id, model, dim, vector)` satirlarini yazar."""
         if not rows:

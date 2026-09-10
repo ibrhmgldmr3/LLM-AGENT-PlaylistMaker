@@ -1,9 +1,22 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { LanguageProvider } from "../i18n";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
 import type { RagAnswer, SpaceDetail } from "../api/types";
 import { useVideoRAG } from "./useVideoRAG";
+
+// Hooklar hata mesajlarini ceviri katmanindan aliyor, dolayisiyla saglayici
+// SART. Dil TURKCE'ye sabitleniyor: iddialar metnin KENDISINI kontrol ediyor
+// ve testin kosucunun tarayici diline gore degismesi, gecmesi makineye bagli
+// bir test olurdu.
+const wrapper = ({ children }: { children: ReactNode }) =>
+  createElement(LanguageProvider, null, children);
+
+beforeEach(() => {
+  window.localStorage.setItem("derslik:lang", "tr");
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -57,7 +70,7 @@ describe("useVideoRAG / ret", () => {
       }),
     );
 
-    const hook = renderHook(() => useVideoRAG("sp"));
+    const hook = renderHook(() => useVideoRAG("sp"), { wrapper });
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     await askOnce(hook);
 
@@ -78,7 +91,7 @@ describe("useVideoRAG / ret", () => {
       answer({ answered: false, answer: null, reason, refusal: "not_found" }),
     );
 
-    const hook = renderHook(() => useVideoRAG("sp"));
+    const hook = renderHook(() => useVideoRAG("sp"), { wrapper });
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     await askOnce(hook);
 
@@ -98,7 +111,7 @@ describe("useVideoRAG / ret", () => {
       answer({ answered: false, answer: null, reason: "bulunamadı", refusal: null }),
     );
 
-    const hook = renderHook(() => useVideoRAG("sp"));
+    const hook = renderHook(() => useVideoRAG("sp"), { wrapper });
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     await askOnce(hook);
 
@@ -109,7 +122,7 @@ describe("useVideoRAG / ret", () => {
     stubLoad();
     vi.spyOn(api, "ask").mockResolvedValue(answer());
 
-    const hook = renderHook(() => useVideoRAG("sp"));
+    const hook = renderHook(() => useVideoRAG("sp"), { wrapper });
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     await askOnce(hook);
 

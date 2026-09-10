@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 import type { Capabilities, CreateRunRequest } from "../../api/types";
+import { renderWithLanguage as render } from "../../test/render";
 import { RunForm } from "./RunForm";
 
 afterEach(cleanup);
@@ -148,6 +149,22 @@ describe("RunForm", () => {
     const button = submitButton();
     expect(button.disabled).toBe(true);
     expect(button.textContent).toBe("Oluşturuluyor…");
+  });
+
+  it("güzergâh önizlemesi yalnızca gönderilmeden ÖNCE görünür", () => {
+    // Onizleme "gonderdikten sonra su olacak" diyor; calistirma basladiginda
+    // ayni yolun CANLISI asagida aciliyor. Ikisi ayni anda ekranda olursa
+    // onizleme yalan soyler ve ayni yol iki kez cizilir.
+    const { rerender } = render(<RunForm capabilities={null} busy={false} onSubmit={vi.fn()} />);
+
+    expect(screen.queryByText("Gönderdikten sonra:")).not.toBeNull();
+    expect(screen.queryByText("Konu alt başlıklara ayrılır")).not.toBeNull();
+    expect(screen.queryByText("Videolar sıralı bir ders planına dizilir")).not.toBeNull();
+
+    rerender(<RunForm capabilities={null} busy={true} onSubmit={vi.fn()} />);
+
+    expect(screen.queryByText("Gönderdikten sonra:")).toBeNull();
+    expect(screen.queryByText("Konu alt başlıklara ayrılır")).toBeNull();
   });
 
   it("YouTube anahtarı yoksa uyarı gösterir, varsa göstermez", () => {

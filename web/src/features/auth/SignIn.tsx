@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Compass, ListChecks, MessagesSquare, Moon, ShieldCheck, Sun } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import { Note, Spinner } from "../../components/ui";
+import { useT } from "../../i18n";
+import type { Dict } from "../../i18n/dict";
 
 /**
  * Giris ekrani. Cok kullanicili kurulumda oturum yokken TEK gorunen sey.
@@ -13,25 +15,14 @@ import { Note, Spinner } from "../../components/ui";
  * yaptigini bilmeyen biri, tanimadigi bir siteye Google hesabini baglamak
  * istemez. Uc madde, izin ekranina gitmeden once neye evet dedigini anlatiyor.
  */
-const POINTS = [
-  {
-    icon: Compass,
-    title: "Bir konu yaz, ders planı al",
-    body: "Konu alt başlıklara ayrılır, her biri için en uygun video seçilir ve sıraya dizilir.",
-  },
-  {
-    icon: ListChecks,
-    title: "İzlediklerini işaretle",
-    body: "Nerede kaldığını takip et; planı baştan sona bitir.",
-  },
-  {
-    icon: MessagesSquare,
-    title: "Derse soru sor",
-    body: "Cevaplar yalnızca senin kaynaklarına dayanır ve videonun tam saniyesine götürür.",
-  },
+const POINTS: { icon: React.ComponentType<{ className?: string }>; title: keyof Dict; body: keyof Dict }[] = [
+  { icon: Compass, title: "signin.point1.title", body: "signin.point1.body" },
+  { icon: ListChecks, title: "signin.point2.title", body: "signin.point2.body" },
+  { icon: MessagesSquare, title: "signin.point3.title", body: "signin.point3.body" },
 ];
 
 export function SignIn({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: () => void }) {
+  const t = useT();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -56,24 +47,21 @@ export function SignIn({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: 
         <span className="rail__mark" aria-hidden>
           <Compass className="h-4 w-4" />
         </span>
-        <span className="rail__name">Derslik</span>
+        <span className="rail__name">{t("shell.brand")}</span>
         <button
           type="button"
           className="icon-btn icon-btn--chalk"
           style={{ marginLeft: "auto" }}
           onClick={onToggleTheme}
-          aria-label={dark ? "Aydınlık temaya geç" : "Karanlık temaya geç"}
+          aria-label={dark ? t("shell.themeToLight") : t("shell.themeToDark")}
         >
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
       </div>
 
       <div className="signin__body">
-        <h1 className="signin__title">Kendi kendine öğrenmenin düzenli hali.</h1>
-        <p className="signin__lede">
-          YouTube'da doğru videoyu aramakla geçen zamanı, baştan sona izlenecek bir ders
-          planına çeviriyoruz.
-        </p>
+        <h1 className="signin__title">{t("signin.title")}</h1>
+        <p className="signin__lede">{t("signin.lede")}</p>
 
         <ul className="signin__points">
           {POINTS.map((point) => (
@@ -82,15 +70,15 @@ export function SignIn({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: 
                 <point.icon className="h-4 w-4" />
               </span>
               <div>
-                <strong>{point.title}</strong>
-                <p>{point.body}</p>
+                <strong>{t(point.title)}</strong>
+                <p>{t(point.body)}</p>
               </div>
             </li>
           ))}
         </ul>
 
         {error && (
-          <Note tone="danger" role="alert" title="Giriş başlatılamadı">
+          <Note tone="danger" role="alert" title={t("signin.failed")}>
             {error}
           </Note>
         )}
@@ -98,12 +86,11 @@ export function SignIn({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: 
         <div className="signin__cta">
           <button type="button" className="btn btn--primary btn--lg" onClick={start} disabled={busy}>
             {busy && <Spinner />}
-            {busy ? "Yönlendiriliyor…" : "Google ile giriş yap"}
+            {busy ? t("signin.redirecting") : t("signin.google")}
           </button>
           <p className="signin__fine">
             <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-            Aynı izinle hazırladığın planı YouTube'a playlist olarak yayınlayabilirsin. API
-            anahtarı girmen gerekmez.
+            {t("signin.fine")}
           </p>
         </div>
       </div>

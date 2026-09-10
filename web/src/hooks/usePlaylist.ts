@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { useT } from "../i18n";
 import type { RunSummary, SpaceSummary } from "../api/types";
 
 export function usePlaylist() {
+  const t = useT();
+
   const [spaces, setSpaces] = useState<SpaceSummary[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -16,7 +19,7 @@ export function usePlaylist() {
       setSpaces(spaceBody.items);
       setRuns(runBody.items.filter((run) => run.is_complete));
     } catch (exception) {
-      setError(exception instanceof ApiError ? exception.message : "Defterlerin yüklenemedi.");
+      setError(exception instanceof ApiError ? exception.message : t("error.spacesLoad"));
     } finally {
       setLoading(false);
     }

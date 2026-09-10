@@ -1098,6 +1098,11 @@ export interface components {
              * @default 0
              */
             chunk_count: number;
+            /**
+             * Embedded Chunk Count
+             * @default 0
+             */
+            embedded_chunk_count: number;
             /** Error */
             error: string | null;
             /**

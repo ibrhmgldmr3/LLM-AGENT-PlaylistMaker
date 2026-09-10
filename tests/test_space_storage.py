@@ -245,6 +245,51 @@ def test_embeddings_are_scoped_by_model(store):
     assert store.load_embeddings("sp", "model-b") == []
 
 
+def test_embedded_counts_are_reported_per_source(store):
+    """Gomme kapsami KAYNAK BASINA gorunmeli.
+
+    Defter duzeyinde tek bir sayi yetmiyordu: olculen gercek arizada 6
+    kaynagin 3'unde hic vektor yoktu ve toplam sayi "130 parcanin 64'u" diyordu
+    -- yani kullanici hangi kaynagin aranamadigini bilemiyordu.
+    """
+    store.create_space("sp", "local", "Alan")
+    for source_id, text in (("doc:1", "Kovaryans matrisi."), ("doc:2", "Entropi tanimi.")):
+        store.add_source("sp", source_id, kind="document", ref_id="1", title=source_id)
+        store.replace_chunks(
+            "sp", source_id, chunk_document([(1, text)], max_chars=400, overlap_chars=0)
+        )
+
+    # Yalnizca BIR kaynak gomuluyor; digeri yalnizca leksik olarak aranabilir.
+    first = [
+        chunk_id
+        for chunk_id, _text in store.chunks_missing_embeddings("sp", "m")
+        if store.get_chunks([chunk_id])[0]["source_id"] == "doc:1"
+    ]
+    store.put_embeddings([(chunk_id, "m", 3, _vector([1.0, 0.0, 0.0])) for chunk_id in first])
+
+    counts = store.embedded_chunk_counts("sp", "m")
+
+    assert counts["doc:1"] == len(first)
+    # Hic gomulmemis kaynak sozlukte YOK -- cagiran taraf 0'a dusuyor. Sifirla
+    # doldurmak, "kaynak var ama vektoru yok" ile "kaynak yok"u ayni gosterirdi.
+    assert "doc:2" not in counts
+
+
+def test_embedded_counts_follow_the_model(store):
+    """Baska modelle gomulmus parca, erisim icin GOMULU DEGILDIR.
+
+    `load_embeddings` model adiyla suzuyor; sayim da suzmezse arayuz calismayan
+    bir aramayi "tamam" diye gosterirdi -- duzeltmeye calistigimiz yalanin ta
+    kendisi, yalnizca baska bir kaynaktan.
+    """
+    _seed(store)
+    (chunk_id, _text) = store.chunks_missing_embeddings("sp", "model-a")[0]
+    store.put_embeddings([(chunk_id, "model-a", 3, _vector([1.0, 0.0, 0.0]))])
+
+    assert store.embedded_chunk_counts("sp", "model-a") == {"doc:1": 1}
+    assert store.embedded_chunk_counts("sp", "model-b") == {}
+
+
 # --------------------------------------------------------------------- silme
 
 
