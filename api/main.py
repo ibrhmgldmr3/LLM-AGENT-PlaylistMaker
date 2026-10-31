@@ -33,7 +33,12 @@ from src.providers.errors import (
     ProviderRateLimitedError,
     ProviderTemporaryError,
 )
-from src.utils.logging_utils import redact_secrets
+from src.utils.logging_utils import configure_root_logging, redact_secrets
+
+# IMPORT ZAMANINDA: bu modul uygulamanin giris noktasi ve asagidaki modul
+# seviyesi kod (CORS uyarisi, `_mount_frontend`) daha `lifespan` calismadan
+# ONCE log yaziyor. Kok logger'da zaten handler varsa fonksiyon dokunmuyor.
+configure_root_logging()
 
 logger = logging.getLogger("api")
 

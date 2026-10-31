@@ -33,6 +33,10 @@ _NOT_IN_ENV_TO_FIELD = {
     "REDIS_URL",
     "JOB_KEY_PREFIX",
     "JOB_TTL_SEC",
+    # Gunluk seviyesi acilista, yapilandirma yuklenmeden ONCE gerekiyor
+    # (`configure_root_logging`) -- `AppConfig`ten okunsaydi, yapilandirma
+    # hatasini bildiren kaydin kendisi henuz handler'siz olurdu.
+    "LOG_LEVEL",
     # Surec ortamina ait; `AppConfig` alani degil.
     "ALLOW_UNSAFE_OPENMP_WORKAROUND",
     "PYTHONUTF8",

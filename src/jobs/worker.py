@@ -28,7 +28,7 @@ from src.jobs.redis_runner import RedisJobRunner
 from src.jobs.runner import JobCancelled, JobState
 from src.jobs.tasks import TaskContext, UnknownTask, resolve_task
 from src.models import ProgressEvent
-from src.utils.logging_utils import redact_secrets
+from src.utils.logging_utils import configure_root_logging, redact_secrets
 
 _log = logging.getLogger("worker")
 
@@ -148,10 +148,10 @@ def serve(runner: RedisJobRunner | None = None, stop: threading.Event | None = N
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # Web sureciyle AYNI yapilandirma: bicim ve maskeleme filtresi tek yerde
+    # tanimli olmazsa iki surecin gunlugu farkli gorunur ve `redact_secrets`
+    # yalnizca birinde calisir.
+    configure_root_logging()
     stop = threading.Event()
 
     def _request_stop(signum, _frame):

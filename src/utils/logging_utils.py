@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -47,6 +48,63 @@ class _RedactSecretsFilter(logging.Filter):
         record.msg = redact_secrets(message)
         record.args = ()
         return True
+
+
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+
+
+def configure_root_logging(level: Optional[str] = None) -> bool:
+    """KOK logger'a handler takar; uygulamanin kendi kayitlari gorunur olsun.
+
+    uvicorn yalnizca KENDI logger'larini (`uvicorn`, `uvicorn.error`,
+    `uvicorn.access`) yapilandiriyor, koke dokunmuyor. `api` ve `src.*` altindaki
+    kayitlar oraya propagate oluyor, handler bulamiyor ve Python'in `lastResort`
+    handler'ina dusuyor -- o da SADECE WARNING ve ustunu, zaman damgasiz ve
+    logger adi olmadan stderr'e yaziyor. Sonuc: acilistaki tek-surec kisiti,
+    "yarida kalan N calistirma isaretlendi", "frontend mount edildi" gibi INFO
+    kayitlarinin tamami uretimde SESSIZCE kayboluyordu -- tam da bir sunucunun
+    dogru ayaga kalktigini dogrulamak icin bakilacak satirlar.
+
+    Handler'a maskeleme filtresi de takiliyor: sir sizdirabilecek her kayit
+    (bkz. `redact_secrets`) TEK yerde temizleniyor, her logger'in bunu kendi
+    basina hatirlamasi gerekmiyor.
+
+    Seviye `LOG_LEVEL` ile ayarlanir; varsayilan INFO.
+
+    Kok logger'da ZATEN handler varsa hicbir sey yapmaz ve `False` doner:
+    pytest, gunicorn ya da gomuldugu baska bir uygulama kendi yapilandirmasini
+    kurmussa onun ustune yazmak, bu fonksiyonun cozdugu sorunun aynisini karsi
+    tarafa yasatirdi.
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return False
+
+    requested = (level or os.getenv("LOG_LEVEL") or "INFO").upper()
+    resolved = getattr(logging, requested, None)
+    # Gecersiz bir `LOG_LEVEL` yuzunden gunluk TAMAMEN susmamali.
+    if not isinstance(resolved, int):
+        resolved = logging.INFO
+
+    # Windows konsolu stdout'u cp1254/cp857 ile aciyor ve log mesajlarindaki
+    # Turkce harfler `?` olarak cikiyordu ("Is durumu" -> "?? durumu"). Linux
+    # kabinda sorun yok, ama gelistirme burada yapiliyor ve okunamayan bir
+    # gunluk, olmayan bir gunlukten cok da iyi degil. `errors="replace"`:
+    # kodlanamayan tek bir karakter YUZUNDEN kayit dusmesin.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        # Yeniden yapilandirilamayan bir akim (yakalanmis/sarmalanmis stdout).
+        pass
+
+    # stdout: kap gunluklerinde uygulama ciktisi ile hata akisi karismasin.
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.addFilter(_RedactSecretsFilter())
+
+    root.addHandler(handler)
+    root.setLevel(resolved)
+    return True
 
 
 def setup_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
