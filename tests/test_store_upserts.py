@@ -243,3 +243,51 @@ def test_no_upsert_references_a_column_without_qualifying_it():
         "tablo adiyla nitelendirin (`tablo.sutun = tablo.sutun + 1`):\n"
         + "\n".join(offenders)
     )
+
+
+# ---------------------------------------- bu dalda eklenen yollar, iki lehcede
+#
+# Asagidakilerin hepsi lehceye BAGLI bir yoldan geciyor: tavsiye kilidi
+# (`pg_advisory_xact_lock` <-> `BEGIN IMMEDIATE`), `api_usage` upsert'i
+# (niteliksiz sutun Postgres'te belirsiz) ve `IN (...)` yer tutucu cevirisi.
+# Yalnizca SQLite'a karsi sinanmalari, ayni sessiz ayrismayi beklemek olurdu.
+
+
+def test_daily_allowance_counts_and_stops(store):
+    assert store.consume_daily_allowance("ali", "rag", "rag_ask", limit=2)
+    assert store.consume_daily_allowance("ali", "rag", "rag_ask", limit=2)
+    assert not store.consume_daily_allowance("ali", "rag", "rag_ask", limit=2)
+
+    assert store.daily_calls("ali", "rag", "rag_ask") == 2
+    assert store.daily_calls("veli", "rag", "rag_ask") == 0
+    assert store.sum_api_units() == 0, "RAG sayaclari YouTube kotasina girmemeli"
+
+
+def test_daily_allowance_holds_under_concurrency(store):
+    """Postgres'te atomiklik TAMAMEN tavsiye kilidine dayaniyor."""
+    import threading
+
+    results: list[bool] = []
+    barrier = threading.Barrier(8)
+
+    def take():
+        barrier.wait()
+        results.append(store.consume_daily_allowance("ali", "rag", "rag_ingest", limit=3))
+
+    threads = [threading.Thread(target=take) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert results.count(True) == 3
+    assert store.daily_calls("ali", "rag", "rag_ingest") == 3
+
+
+def test_interrupted_runs_respect_the_live_set(store):
+    for run_id in ("canli", "kesilen"):
+        assert store.create_run_within_daily_limit(run_id, "k", {}, user_id="ali", max_per_day=0)
+
+    assert store.mark_interrupted_runs(is_live=lambda run_id: run_id == "canli") == 1
+    assert store.mark_interrupted_runs() == 1, "canli olan artik canli sayilmayinca isaretlenmeli"
+    assert store.mark_interrupted_runs() == 0

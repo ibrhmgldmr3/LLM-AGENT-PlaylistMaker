@@ -117,7 +117,11 @@ docker run -d -p 6399:6379 redis:7-alpine
 REDIS_TEST_URL=redis://localhost:6399/0 python -m pytest tests/test_redis_runner.py
 ```
 
-Without a server those tests skip, so CI stays green without Redis.
+Without a server those tests skip locally. CI runs them against real Redis and Postgres
+services and **fails if any test is skipped** — a skip there means a service could not be
+reached, which is exactly how these 71 tests used to go unnoticed: before the services were
+added, the whole scale-out path (Redis job runner, Postgres dialect, SQLite → Postgres
+transfer) never ran in CI.
 
 The same applies to the storage layer. `tests/test_space_storage.py` — the
 store's most database-dependent surface: generated keys, the full-text index
@@ -898,13 +902,14 @@ would verify behaviour that cannot occur.
 
 ### CI
 
-`.github/workflows/ci.yml` runs four jobs on push and pull request:
+`.github/workflows/ci.yml` runs five jobs on push and pull request:
 
 | Job | What it protects |
 |---|---|
-| `backend` | Python 3.13: import check, `pyflakes`, full test suite |
+| `backend` | Python 3.13: import check, `pyflakes` (including `scripts/`), full test suite against real Redis and Postgres — a skipped test fails the job |
 | `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
 | `frontend` | `web/`: regenerates types from the backend, typecheck, tests, production build |
+| `docker` | Builds the image and checks that it starts without a `.env` and answers `/api/health` |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
 
 ### The API contract
