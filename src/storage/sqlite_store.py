@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from src.models import PlaylistResult, TranscriptResult, VideoCandidate
 from src.storage.crypto import SecretBox
@@ -843,27 +843,58 @@ class SQLiteStore:
                 )
         return removed
 
-    def mark_interrupted_runs(self) -> int:
+    def mark_interrupted_runs(self, is_live: Callable[[str], bool] | None = None) -> int:
         """Yarida kalmis calistirmalari isaretler; isaretlenen sayiyi doner.
 
-        YALNIZCA ACILISTA cagrilmali. Olcut "sonucu yok" -- ve bu, ancak hicbir
-        is calismiyorken dogru bir olcut: surec icinde calisan bir calistirmanin
-        da sonucu henuz yoktur. Acilista tanim geregi hicbir is calismiyor
-        (`InProcessJobRunner` durumu bellekte tutuyor ve yeniden baslamayla
-        kayboluyor), dolayisiyla sonucu olmayan her satir gercekten yarida
-        kalmis demektir.
+        YALNIZCA ACILISTA cagrilmali. Olcut "sonucu yok" TEK BASINA YETMIYOR:
+        calisan bir calistirmanin da sonucu henuz yoktur. Bir calistirma ancak
+        sonucu yoksa VE is kosucusu onu canli bir is olarak tanimiyorsa
+        (`is_live` False) yarida kalmistir.
+
+        `is_live` verilmezse hicbir is canli sayilmiyor. Bellek ici kosucuda
+        acilista dogru olan tam olarak bu: durum surecle birlikte kayboldu,
+        yani sonucu olmayan her satir gercekten yarida kaldi. Redis
+        topolojisinde DEGIL -- isler ayri bir worker'da calisiyor ve web
+        replikasinin yeniden baslamasi onlari durdurmuyor. Eskiden `is_live`
+        yoktu ve her dagitim worker'da SUREN isleri de isaretliyordu:
+        rezervasyonlari sifirlaniyor, gunluk haklari iade ediliyordu.
+
+        `is_live` veritabani baglantisi DISINDA cagriliyor: Redis'e gidebilir
+        ve o sirada yazma kilidi tutulmamali.
 
         Neden isaretleniyor da SILINMIYOR: gecmis listesinde "yarim kaldi"
         olarak gorunmeye devam etmeli. Kullaniciya yalan soylemeden hakkini
         geri vermenin yolu bu.
         """
         with self.connect() as conn:
-            cursor = conn.execute(
-                "UPDATE run SET interrupted_at = ?, reserved_units = 0"
-                " WHERE result_json IS NULL AND interrupted_at IS NULL",
-                (_to_iso(_utc_now()),),
-            )
-            return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+            candidates = [
+                row["run_id"]
+                for row in conn.execute(
+                    "SELECT run_id FROM run WHERE result_json IS NULL AND interrupted_at IS NULL"
+                )
+            ]
+        if is_live is not None:
+            candidates = [run_id for run_id in candidates if not is_live(run_id)]
+        if not candidates:
+            return 0
+
+        marked = 0
+        now = _to_iso(_utc_now())
+        with self.connect() as conn:
+            # Kosullar UPDATE'te TEKRARLANIYOR: secim ile yazma arasinda biten
+            # bir calistirma (sonucu yazildi) isaretlenmemeli.
+            for start in range(0, len(candidates), 500):
+                chunk = candidates[start : start + 500]
+                placeholders = ", ".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    "UPDATE run SET interrupted_at = ?, reserved_units = 0"
+                    f" WHERE run_id IN ({placeholders})"
+                    " AND result_json IS NULL AND interrupted_at IS NULL",
+                    (now, *chunk),
+                )
+                if cursor.rowcount and cursor.rowcount > 0:
+                    marked += cursor.rowcount
+        return marked
 
     def list_run_ids(self) -> set[str]:
         """Veritabaninda kayitli tum calistirma kimlikleri.
