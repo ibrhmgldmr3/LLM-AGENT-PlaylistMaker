@@ -1093,20 +1093,65 @@ class SQLiteStore:
         yani alt sinir pratikte gercege cok yakin.
         """
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO api_usage (day, user_id, provider, endpoint, calls, units)
-                VALUES (?, ?, ?, ?, 1, ?)
-                -- Sutunlar TABLO ADIYLA nitelikli. Niteliksiz `calls`,
-                -- Postgres'te hedef satirla `excluded` arasinda BELIRSIZ
-                -- (`AmbiguousColumn`); SQLite ise kabul ediyor, yani hata
-                -- yalnizca Postgres'te ve yalnizca CALISMA aninda cikiyor.
-                ON CONFLICT(day, user_id, provider, endpoint) DO UPDATE SET
-                    calls = api_usage.calls + 1,
-                    units = api_usage.units + excluded.units
-                """,
-                (day or quota_day(), user_id, provider, endpoint, int(units)),
-            )
+            self._add_api_call(conn, day or quota_day(), user_id, provider, endpoint, units)
+
+    @staticmethod
+    def _add_api_call(conn, day: str, user_id: str, provider: str, endpoint: str, units: int) -> None:
+        conn.execute(
+            """
+            INSERT INTO api_usage (day, user_id, provider, endpoint, calls, units)
+            VALUES (?, ?, ?, ?, 1, ?)
+            -- Sutunlar TABLO ADIYLA nitelikli. Niteliksiz `calls`,
+            -- Postgres'te hedef satirla `excluded` arasinda BELIRSIZ
+            -- (`AmbiguousColumn`); SQLite ise kabul ediyor, yani hata
+            -- yalnizca Postgres'te ve yalnizca CALISMA aninda cikiyor.
+            ON CONFLICT(day, user_id, provider, endpoint) DO UPDATE SET
+                calls = api_usage.calls + 1,
+                units = api_usage.units + excluded.units
+            """,
+            (day, user_id, provider, endpoint, int(units)),
+        )
+
+    def daily_calls(self, user_id: str, provider: str, endpoint: str, day: str | None = None) -> int:
+        """Bir kullanicinin bir kota gunundeki cagri sayisi. Salt okunur."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT calls FROM api_usage"
+                " WHERE day = ? AND user_id = ? AND provider = ? AND endpoint = ?",
+                (day or quota_day(), user_id, provider, endpoint),
+            ).fetchone()
+        return int(row["calls"]) if row else 0
+
+    def consume_daily_allowance(self, user_id: str, provider: str, endpoint: str, limit: int) -> bool:
+        """Gunluk haktan BIR tuketir; hak kalmadiysa `False` doner ve HICBIR SEY yazmaz.
+
+        Sayma ve yazma AYNI islemde, `create_run_within_daily_limit` ile ayni
+        gerekceyle: ayrildiklarinda es zamanli istekler ayni eski sayiyi
+        okuyup hepsi gecer (orada olculmustu: 3 sinirinda 12 istekten 11'i).
+        Kilit KULLANICI basina: farkli kullanicilarin istekleri birbirini
+        beklemesin (Postgres'te tavsiye kilidi; SQLite'ta zaten dosya geneli).
+
+        `limit=0` sinirsiz -- ama sayac YINE artiyor: admin raporu gercek
+        kullanimi gostermeli ki sinir tahminle degil olcumle secilsin. Kilit
+        yalnizca sinir varken aliniyor.
+
+        `units=0` BILEREK: `api_usage.units` YouTube kota butcesinin kaynagi
+        (bkz. `sum_api_units`) ve bu sayaclar ona girmemeli. Embedding sayaci
+        da ayni kurali izliyor (`embedding_service`).
+        """
+        day = quota_day()
+        with self.connect() as conn:
+            if limit:
+                self._dialect.lock(conn, f"daily_allowance:{user_id}")
+                row = conn.execute(
+                    "SELECT calls FROM api_usage"
+                    " WHERE day = ? AND user_id = ? AND provider = ? AND endpoint = ?",
+                    (day, user_id, provider, endpoint),
+                ).fetchone()
+                if row is not None and int(row["calls"]) >= limit:
+                    return False
+            self._add_api_call(conn, day, user_id, provider, endpoint, units=0)
+        return True
 
     def sum_api_units(self, user_id: str | None = None, day: str | None = None) -> int:
         """Bir kota gununde harcanan toplam birim. `user_id=None` = tum kullanicilar."""

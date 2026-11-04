@@ -581,6 +581,18 @@ provider is down, the lexical half keeps working; search gets weaker, not absent
 | `MAX_SPACES_PER_USER` | `10` | storage and embedding cost sits with the server owner |
 | `MAX_DOCUMENTS_PER_SPACE` | `25` | |
 | `MAX_UPLOAD_BYTES` | `20971520` | 20 MB, enforced while reading, not from `Content-Length` |
+| `MAX_RAG_QUESTIONS_PER_USER_PER_DAY` | `0` | per user, `0` = unlimited; each question is at least one embedding call |
+| `MAX_RAG_INGESTS_PER_USER_PER_DAY` | `0` | per user, `0` = unlimited; document uploads, run imports and ASR share it |
+
+`MAX_SPACES_PER_USER`, `MAX_DOCUMENTS_PER_SPACE` and `MAX_UPLOAD_BYTES` bound storage; the last
+two bound **call volume**, which the storage caps do not — deleting and re-adding a source, or asking the same notebook all day, was unlimited.
+Keys are shared, so in `multi_user` one person could otherwise exhaust the day's LLM quota for
+everyone; the server warns at startup when `multi_user` runs with RAG and either limit is `0`.
+Like the run limit, the check and the count happen in one transaction, the day turns over with
+the YouTube quota (Pacific time), and a refusal is a `429` with `Retry-After`. The counters
+live in `api_usage` with `units=0`, so they never count against the YouTube budget, and
+`GET /api/admin/usage` reports them per user under `rag_calls_by_user` — a limit can be
+chosen from measured use rather than guessed.
 
 **`RAG_MIN_SIMILARITY` is measured, not guessed** — and the first measurement was wrong
 in an instructive way. With `gemini-embedding-001` over 20 questions against **real

@@ -91,6 +91,27 @@ def _warn_on_unbounded_shared_quota() -> None:
             "kullanıcılar toplamı) tüketebilir. .env.example bu mod için 3 öneriyor."
         )
 
+    # Ayni gerekce RAG icin: her soru ve her kaynak ekleme paylasimli LLM
+    # anahtariyla gidiyor ve depolama tavanlari (alan/dokuman sayisi) cagri
+    # HACMINI sinirlamiyor.
+    if server.auth_mode == "multi_user" and server.enable_rag:
+        unbounded = [
+            name
+            for name, value in (
+                ("MAX_RAG_QUESTIONS_PER_USER_PER_DAY", server.max_rag_questions_per_user_per_day),
+                ("MAX_RAG_INGESTS_PER_USER_PER_DAY", server.max_rag_ingests_per_user_per_day),
+            )
+            if not value
+        ]
+        if unbounded:
+            logger.warning(
+                "AUTH_MODE=multi_user ve ENABLE_RAG=true ama %s=0 (sınırsız). Her soru ve "
+                "her kaynak ekleme PAYLAŞIMLI LLM anahtarıyla gidiyor; tek bir kullanıcı "
+                "günlük LLM kotasını herkes için tüketebilir. Kullanıcı başına gerçek "
+                "kullanımı GET /api/admin/usage gösteriyor (`rag_calls_by_user`).",
+                ", ".join(unbounded),
+            )
+
 
 def _log_config_warnings() -> None:
     """`.env` okunurken toplanan uyarilari gunluge yazar.

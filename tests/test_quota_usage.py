@@ -185,3 +185,56 @@ def test_quota_day_follows_pacific_time_not_utc():
 
     assert quota_day(an) == "2026-08-19"
     assert an.date().isoformat() == "2026-08-20", "test kendi varsayimini dogrulasin"
+
+
+# ------------------------------------------------------ gunluk kullanim hakki
+
+
+def test_daily_allowance_is_atomic_under_concurrency(tmp_path):
+    """Sayma ve yazma TEK islemde; ayrilsalar es zamanli istekler siniri asar.
+
+    Ayni yaris calistirma kabulunde olculmustu: 3 sinirinda 12 istekten 11'i
+    geciyordu.
+    """
+    import threading
+
+    path = str(tmp_path / "app.db")
+    SQLiteStore(path)
+    results: list[bool] = []
+    barrier = threading.Barrier(8)
+
+    def take():
+        store = SQLiteStore(path)
+        barrier.wait()
+        results.append(store.consume_daily_allowance("ali", "rag", "ask", limit=3))
+
+    threads = [threading.Thread(target=take) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert results.count(True) == 3
+
+
+def test_allowance_is_per_user(tmp_path):
+    store = SQLiteStore(str(tmp_path / "app.db"))
+
+    assert store.consume_daily_allowance("ali", "rag", "ask", limit=1)
+    assert not store.consume_daily_allowance("ali", "rag", "ask", limit=1)
+    assert store.consume_daily_allowance("veli", "rag", "ask", limit=1)
+
+
+def test_unlimited_allowance_is_still_counted_and_costs_no_youtube_quota(tmp_path):
+    """`0` = sinirsiz, ama sayac yine artiyor: admin raporu sinir SECMEK icin bunu gosteriyor.
+
+    `units=0`: `api_usage.units` YouTube kota butcesinin kaynagi ve RAG
+    sayaclari ona girmemeli (embedding sayaci da ayni kurali izliyor).
+    """
+    store = SQLiteStore(str(tmp_path / "app.db"))
+
+    for _ in range(5):
+        assert store.consume_daily_allowance("ali", "rag", "ask", limit=0)
+
+    assert store.daily_calls("ali", "rag", "ask") == 5
+    assert store.sum_api_units() == 0

@@ -610,3 +610,38 @@ def test_local_or_unknown_clients_do_not_trigger_the_exposure_warning(
         deps.get_current_user_optional(_request_from(host))
 
     assert not [r for r in caplog.records if "AUTH_MODE=single_user" in r.getMessage()]
+
+
+@pytest.mark.parametrize(
+    ("questions", "ingests", "expected"),
+    [
+        (0, 0, ["MAX_RAG_QUESTIONS_PER_USER_PER_DAY", "MAX_RAG_INGESTS_PER_USER_PER_DAY"]),
+        (30, 0, ["MAX_RAG_INGESTS_PER_USER_PER_DAY"]),
+        (30, 10, []),
+    ],
+)
+def test_unbounded_rag_in_multi_user_is_reported_at_startup(
+    tmp_path, monkeypatch, caplog, questions, ingests, expected
+):
+    """Varsayilan 0 oldugu icin bu durum yapilandirmaya dokunmayan kurulumda KENDILIGINDEN olusuyor."""
+    from api import main
+
+    config = AppConfig(
+        auth_mode="multi_user", gemini_api_key="k", enable_rag=True,
+        max_runs_per_user_per_day=3,
+        max_rag_questions_per_user_per_day=questions,
+        max_rag_ingests_per_user_per_day=ingests,
+        data_dir=str(tmp_path), sqlite_path=str(tmp_path / "app.db"),
+    )
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+
+    with caplog.at_level("WARNING", logger="api"):
+        main._warn_on_unbounded_shared_quota()
+
+    rag = [r.getMessage() for r in caplog.records if "ENABLE_RAG=true" in r.getMessage()]
+    if not expected:
+        assert rag == []
+    else:
+        assert len(rag) == 1
+        for name in expected:
+            assert name in rag[0]

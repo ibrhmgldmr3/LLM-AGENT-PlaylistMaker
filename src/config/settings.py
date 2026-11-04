@@ -116,6 +116,8 @@ ENV_TO_FIELD: dict[str, str] = {
     "MAX_SPACES_PER_USER": "max_spaces_per_user",
     "MAX_DOCUMENTS_PER_SPACE": "max_documents_per_space",
     "MAX_UPLOAD_BYTES": "max_upload_bytes",
+    "MAX_RAG_QUESTIONS_PER_USER_PER_DAY": "max_rag_questions_per_user_per_day",
+    "MAX_RAG_INGESTS_PER_USER_PER_DAY": "max_rag_ingests_per_user_per_day",
 }
 
 
@@ -531,6 +533,15 @@ class ServerConfig(BaseModel):
     max_spaces_per_user: int = Field(default=10, ge=1)
     max_documents_per_space: int = Field(default=25, ge=1)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1024)
+
+    # Kullanici basina GUNLUK tavanlar (0 = sinirsiz, varsayilan). Yukaridaki
+    # tavanlar DEPOLAMAYI sinirliyor, bunlar CAGRI hacmini: her soru bir
+    # embedding + bir uretim cagrisi, her iceri alma (dokuman, calistirma
+    # videolari, ASR) transkript + embedding. Anahtarlar paylasimli oldugu
+    # icin sinir yoksa tek kullanici gunluk LLM kotasini herkes icin bitirir.
+    # Gun, YouTube kotasiyla AYNI sinirda (Pasifik saati) donuyor.
+    max_rag_questions_per_user_per_day: int = Field(default=0, ge=0)
+    max_rag_ingests_per_user_per_day: int = Field(default=0, ge=0)
 
     def effective_embedding_provider(self) -> str:
         """Embedding hangi saglayicidan alinacak.
