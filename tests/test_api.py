@@ -516,3 +516,51 @@ def _wait_for_state(client, run_id, state, timeout=5.0):
             return
         time.sleep(0.02)
     raise AssertionError(f"`{state}` durumuna {timeout}s icinde ulasilmadi")
+
+
+# ------------------------------------------------------- saglayici anahtari
+
+
+def _client_with(tmp_path, monkeypatch, **overrides):
+    config = AppConfig(
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+        **overrides,
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+
+    from api.main import app
+
+    return TestClient(app)
+
+
+def test_openrouter_only_setup_is_served(tmp_path, monkeypatch):
+    """Regresyon: yalnizca `OPENROUTER_API_KEY` ile kurulan sunucu her ucta 503.
+
+    `.env.example` OpenRouter'i destekliyor ama anahtar kontrolu yalnizca
+    Gemini ve Together'i sayiyordu: `/api/config` bile 503 donuyor, arayuz
+    hicbir yetenegi ogrenemiyordu.
+    """
+    with _client_with(
+        tmp_path, monkeypatch,
+        llm_provider="openrouter", openrouter_api_key="o", enable_rag=True,
+    ) as client:
+        config = client.get("/api/config")
+        assert config.status_code == 200
+        assert config.json()["llm_configured"] is True
+        assert client.post("/api/spaces", json={"name": "defter"}).status_code == 201
+
+
+def test_key_of_an_unselected_provider_does_not_count(tmp_path, monkeypatch):
+    """`LLM_PROVIDER=gemini` iken yalnizca `TOGETHER_API_KEY` yetmez.
+
+    Eski kontrol "herhangi bir anahtar" ariyordu: istek kabul ediliyor, kota
+    rezerve ediliyor ve is ILK LLM cagrisinda dusuyordu. Okunan tek anahtar
+    secilen saglayicininki; mesaj da tam olarak onu adlandirmali.
+    """
+    with _client_with(tmp_path, monkeypatch, together_api_key="t") as client:
+        response = client.post("/api/runs", json={"topic": "zaman serisi"})
+
+    assert response.status_code == 503
+    assert "GEMINI_API_KEY" in response.json()["detail"]

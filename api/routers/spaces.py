@@ -86,7 +86,8 @@ def _require_rag(config: AppConfig) -> None:
     if not config.llm_api_key():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "LLM sağlayıcı anahtarı yapılandırılmamış (GEMINI_API_KEY veya TOGETHER_API_KEY)",
+            f"LLM sağlayıcı anahtarı yapılandırılmamış: "
+            f"LLM_PROVIDER={config.llm_provider} için {config.llm_api_key_env()} tanımlı değil",
         )
 
 

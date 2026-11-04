@@ -18,6 +18,13 @@ DEV_CORS_ORIGINS: tuple[str, ...] = (
 )
 
 
+# Saglayici -> anahtarini tasiyan ortam degiskeni (`ServerConfig.llm_api_key_env`).
+LLM_KEY_ENV: dict[str, str] = {
+    "gemini": "GEMINI_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
 # Ortam degiskeni -> model alani eslemesi.
 # Varsayilan degerler SADECE modelde tanimlidir; burada tekrarlanmaz.
 ENV_TO_FIELD: dict[str, str] = {
@@ -550,6 +557,33 @@ class ServerConfig(BaseModel):
             return self.together_embedding_model
         return self.gemini_embedding_model
 
+    def llm_api_key(self) -> str | None:
+        """SECILEN saglayicinin anahtari.
+
+        Anahtar secimini tek bir yerde topluyor; cagiran taraflarin hangi
+        saglayicinin hangi alani kullandigini bilmesi gerekmiyor.
+
+        `ServerConfig` UZERINDE (AppConfig degil): "sunucu yapilandirilmis mi"
+        kontrolu (`api/deps.get_user_credentials`) yalnizca `ServerConfig`
+        goruyor. Metot yalnizca `AppConfig`teyken o kontrol saglayicilari
+        ELLE sayiyordu ve listeye OpenRouter hic eklenmemisti -- yalnizca
+        `OPENROUTER_API_KEY` ile kurulan sunucu her ucta 503 donuyordu.
+        """
+        if self.llm_provider == "together":
+            return self.together_api_key
+        if self.llm_provider == "openrouter":
+            return self.openrouter_api_key
+        return self.gemini_api_key
+
+    def llm_api_key_env(self) -> str:
+        """Secilen saglayicinin anahtarini tasiyan ortam degiskeni.
+
+        Hata mesajlari icin: "anahtar eksik" demek yetmiyor, HANGI degiskenin
+        doldurulacagini soylemeli. Uc saglayiciyi birden saymak, secili
+        olmayan bir anahtari doldurmaya yonlendirirdi.
+        """
+        return LLM_KEY_ENV[self.llm_provider]
+
     max_search_workers: int = Field(default=4)
     max_transcript_workers: int = Field(default=4)
     max_asr_workers: int = Field(default=1)
@@ -664,18 +698,6 @@ class AppConfig(ServerConfig, UserCredentials, RunOptions):
 
     def run_options(self) -> RunOptions:
         return RunOptions.model_validate(self.model_dump())
-
-    def llm_api_key(self) -> str | None:
-        """SECILEN saglayicinin anahtari.
-
-        Anahtar secimini tek bir yerde topluyor; cagiran taraflarin hangi
-        saglayicinin hangi alani kullandigini bilmesi gerekmiyor.
-        """
-        if self.llm_provider == "together":
-            return self.together_api_key
-        if self.llm_provider == "openrouter":
-            return self.openrouter_api_key
-        return self.gemini_api_key
 
     def public_capabilities(self) -> dict[str, bool]:
         """Arayuzun hangi kontrolleri acabilecegini anlatir. SIR ICERMEZ.

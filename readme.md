@@ -159,7 +159,7 @@ Two settings matter before exposing this to anyone else:
 | | |
 |---|---|
 | Python | **3.13** — the version CI tests and development targets. 3.11/3.12 should work but are not verified. |
-| **An LLM key** | Gemini **or** Together.ai — `LLM_PROVIDER` selects which, and only that one's key is read |
+| **An LLM key** | Gemini, Together.ai **or** OpenRouter — `LLM_PROVIDER` selects which, and only that one's key is read |
 | YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used. **Its daily quota is the binding constraint for a shared deployment** — see below |
 | YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
 | A JS runtime (`node`) | needed for audio download; see below |
@@ -436,19 +436,27 @@ warning rather than being silently ignored.
 
 ### Required
 
-One LLM key. `LLM_PROVIDER` decides which one is read; the other may stay empty.
+One LLM key. `LLM_PROVIDER` decides which one is read; the others may stay empty. A key
+belonging to a provider that is *not* selected does not count: requests are refused with a
+503 that names the missing variable, rather than accepted and failing at the first LLM call.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `LLM_PROVIDER` | `gemini` | `gemini` or `together` |
+| `LLM_PROVIDER` | `gemini` | `gemini`, `together` or `openrouter` |
 | `GEMINI_API_KEY` | — | required when `LLM_PROVIDER=gemini` |
 | `TOGETHER_API_KEY` | — | required when `LLM_PROVIDER=together` |
 | `TOGETHER_MODEL` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | verify it is available on your account |
+| `OPENROUTER_API_KEY` | — | required when `LLM_PROVIDER=openrouter` |
+| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | `<provider>/<model>`; verify it is available on your account |
 
 Together.ai is reached over its **OpenAI-compatible** endpoint, so no extra SDK is
 installed — the existing `requests` dependency carries it. Both providers share one
 prompt and one field contract; only the schema *dialect* differs (Gemini wants
 uppercase types, OpenAI-compatible endpoints want standard JSON Schema).
+
+OpenRouter is reached the same way. It has **no embeddings**, so with
+`LLM_PROVIDER=openrouter` the learning-space embeddings fall back to Gemini (or to
+Together when there is no Gemini key); set `EMBEDDING_PROVIDER` to choose explicitly.
 
 Keys are **server-side and shared**. Users never enter an API key — `LLM_PROVIDER` and the
 keys below apply to every request regardless of who made it. An earlier design had each user

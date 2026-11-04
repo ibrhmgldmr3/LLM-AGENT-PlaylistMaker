@@ -81,16 +81,23 @@ def get_current_user(user_id: str | None = Depends(get_current_user_optional)) -
 def get_user_credentials(server: ServerConfig = Depends(get_server_config)) -> UserCredentials:
     """Kullanicinin API anahtarlari.
 
-    ARTIK PAYLASIMLI: LLM (Gemini/Together) ve YouTube Data API anahtarlari
-    her iki auth modunda da `ServerConfig` uzerinden `.env`'den geliyor --
-    kullanici hicbir anahtar girmiyor (bkz. `src/config/settings.py` ust
-    docstring'i). Bu fonksiyon yalnizca sunucunun gercekten yapilandirilmis
-    oldugunu dogruluyor; degilse istek SESSIZCE degil ACIKCA 503 aliyor.
+    ARTIK PAYLASIMLI: LLM (Gemini/Together/OpenRouter) ve YouTube Data API
+    anahtarlari her iki auth modunda da `ServerConfig` uzerinden `.env`'den
+    geliyor -- kullanici hicbir anahtar girmiyor (bkz. `src/config/settings.py`
+    ust docstring'i). Bu fonksiyon yalnizca sunucunun gercekten
+    yapilandirilmis oldugunu dogruluyor; degilse istek SESSIZCE degil ACIKCA
+    503 aliyor.
+
+    Bakilan anahtar SECILEN saglayicininki (`llm_api_key()`). Onceden
+    saglayicilar elle sayiliyordu (`together or gemini`): OpenRouter listede
+    yoktu, ve secili olmayan bir saglayicinin anahtari kontrolu geciriyor,
+    is ilk LLM cagrisinda dusuyordu -- kota rezerve edildikten SONRA.
     """
-    if not (server.together_api_key or server.gemini_api_key):
+    if not server.llm_api_key():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Sunucu için LLM sağlayıcı anahtarı yapılandırılmamış (GEMINI_API_KEY veya TOGETHER_API_KEY)",
+            f"Sunucu için LLM sağlayıcı anahtarı yapılandırılmamış: "
+            f"LLM_PROVIDER={server.llm_provider} için {server.llm_api_key_env()} tanımlı değil",
         )
     return UserCredentials()
 
