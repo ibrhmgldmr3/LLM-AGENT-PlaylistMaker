@@ -4,6 +4,7 @@ import functools
 import os
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from dotenv import dotenv_values, find_dotenv, load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -70,6 +71,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "JOB_TTL_SEC": "job_ttl_sec",
     "AUTH_MODE": "auth_mode",
     "CORS_ALLOW_ORIGINS": "cors_allow_origins",
+    "PUBLIC_BASE_URL": "public_base_url",
     "SESSION_TTL_SEC": "session_ttl_sec",
     "MAX_RUNS_PER_USER_PER_DAY": "max_runs_per_user_per_day",
     "ADMIN_USER_IDS": "admin_user_ids",
@@ -348,6 +350,38 @@ class ServerConfig(BaseModel):
     # tarayicilar zaten reddediyor ve oturum cerezi tasiyan bu API'de joker
     # koken, herhangi bir sitenin kullanici adina istek atmasi demek olurdu.
     cors_allow_origins: str | None = Field(default=None)
+
+    # Uygulamanin DISARIDAN gorunen koku (sema + alan adi [+ port]), ornegin
+    # `https://app.example.com`. YouTube girisinin `redirect_uri`si bundan
+    # kuruluyor ve Google Console'da kayitli adresle BIREBIR eslesmeli.
+    #
+    # Tanimsizsa adres istekten turetiliyor -- yerel gelistirmede dogru. Ters
+    # proxy arkasinda yanlis: TLS proxy'de sonlaniyor (uygulama `http`
+    # goruyor) ve varsayilan nginx `Host`u upstream adiyla gonderiyor.
+    # Yalnizca KOKEN: alt yol on eki uvicorn `--root-path` ile veriliyor ve
+    # rota yolu ona gore kuruluyor; burada da yazilirsa iki kez eklenirdi.
+    public_base_url: str | None = Field(default=None)
+
+    @field_validator("public_base_url")
+    @classmethod
+    def validate_public_base_url(cls, value: str | None) -> str | None:
+        # ACILISTA reddediliyor: yanlis bir deger aksi halde ancak ilk giris
+        # denemesinde, Google'dan donen bir `redirect_uri_mismatch` olarak
+        # ortaya cikardi.
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                "PUBLIC_BASE_URL mutlak bir http(s) adresi olmalı, örneğin https://app.example.com"
+            )
+        if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise ValueError(
+                "PUBLIC_BASE_URL yalnızca köken olmalı (şema + alan adı); alt yol için "
+                "uvicorn --root-path kullanın"
+            )
+        return value.rstrip("/")
 
     # OAuth ISTEMCISI kuruluma ait, kullaniciya degil: uygulamanin Google'a
     # kayitli kimligi bu. Kullanici basina olsaydi herkesin kendi Google Cloud

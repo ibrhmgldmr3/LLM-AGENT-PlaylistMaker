@@ -721,11 +721,21 @@ deterministic: the delimiters and gate 4.
 | `YOUTUBE_OAUTH_TOKEN_FILE` | `data/cache/youtube_oauth_token.json` | legacy file store; the API uses the `oauth_token` table |
 | `YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER` | `true` | legacy desktop flow only; the API uses a redirect flow |
 | `YOUTUBE_PLAYLIST_PRIVACY_STATUS` | `private` | `private` \| `unlisted` \| `public` |
+| `PUBLIC_BASE_URL` | — | public origin, e.g. `https://app.example.com`; **required behind a reverse proxy** |
 
 The API uses a proper OAuth redirect flow instead of opening a browser on the server, and
 stores tokens per user in the `oauth_token` table rather than a file. For that path the
 Google Cloud client must be of type **Web application**, with
 `http://localhost:8000/api/auth/youtube/callback` registered as an authorized redirect URI.
+
+Behind a reverse proxy, set `PUBLIC_BASE_URL` to the public origin and register
+`<PUBLIC_BASE_URL>/api/auth/youtube/callback`. Without it the address is derived from the
+request, and a proxy hides the truth twice: TLS ends at the proxy, so the app sees `http`
+(uvicorn trusts `X-Forwarded-Proto` only from 127.0.0.1 by default), and nginx's default
+`proxy_pass` sends the *upstream* name as `Host`. Either way Google receives a redirect URI
+it does not know and answers `redirect_uri_mismatch`. When `PUBLIC_BASE_URL` is unset the
+scheme still follows `X-Forwarded-Proto` — the same rule that decides the session cookie's
+`Secure` flag — so the common TLS-only case works without it.
 
 The flow is **bound to the browser that started it.** `/start` sets a short-lived,
 `HttpOnly` cookie holding the `state`, and the callback rejects a `state` this browser did

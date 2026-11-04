@@ -90,9 +90,26 @@ STATE_COOKIE_PATH = "/api/auth/youtube"
 # `oauth_token` ile ayni sekilde SIFRELENIYOR.
 
 
-def _redirect_uri(request: Request) -> str:
-    """Callback ucunun mutlak adresi; Google Console'a da bu yazilmali."""
-    return str(request.url_for("youtube_callback"))
+def _redirect_uri(request: Request, server: ServerConfig) -> str:
+    """Callback ucunun mutlak adresi; Google Console'a da bu yazilmali.
+
+    `/start` ve `/callback` AYNI degeri uretmeli: Google kod degisiminde
+    `redirect_uri`nin yetkilendirmedekiyle birebir ayni olmasini istiyor.
+
+    `PUBLIC_BASE_URL` tanimliysa TEK YETKILI kaynak o. Tanimsizsa adres
+    istekten kuruluyor ama SEMA `_request_is_https` ile -- oturum cerezinin
+    `secure` kararini veren AYNI kural. Eskiden `request.url_for` oldugu gibi
+    kullaniliyordu: TLS ters proxy'de sonlandiginda uygulamaya `http` geliyor
+    (uvicorn `X-Forwarded-Proto`ya varsayilan olarak yalnizca 127.0.0.1'den
+    guveniyor), Google'a `http://...` gidiyor ve kayitli `https://...` ile
+    eslesmiyordu. Cerez basligi okurken adres okumuyordu; iki karar
+    ayrismisti. `Host`un da yanlis olabildigi kurulumlar (varsayilan nginx)
+    icin cozum `PUBLIC_BASE_URL`.
+    """
+    url = request.url_for("youtube_callback")
+    if server.public_base_url:
+        return f"{server.public_base_url}{url.path}"
+    return str(url.replace(scheme="https" if _request_is_https(request) else "http"))
 
 
 def _oauth_client_configured(server: ServerConfig) -> bool:
@@ -138,7 +155,7 @@ def start_authorization(
     placeholder = secrets.token_urlsafe(24)
     try:
         url, code_verifier = build_authorization_url(
-            server, _redirect_uri(request), placeholder, scopes=LOGIN_SCOPES
+            server, _redirect_uri(request, server), placeholder, scopes=LOGIN_SCOPES
         )
     except Exception as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, redact_secrets(str(exc))) from exc
@@ -214,7 +231,7 @@ def youtube_callback(
 
     try:
         exchanged = exchange_code_for_token(
-            server, _redirect_uri(request), code, code_verifier=code_verifier, scopes=LOGIN_SCOPES
+            server, _redirect_uri(request, server), code, code_verifier=code_verifier, scopes=LOGIN_SCOPES
         )
     except Exception as exc:
         raise HTTPException(

@@ -536,3 +536,94 @@ def test_successful_callback_clears_the_binding_cookie(client, monkeypatch):
     assert response.status_code in (302, 307)
     cleared = response.headers["set-cookie"].lower()
     assert f"{auth_router.STATE_COOKIE}=" in cleared and "max-age=0" in cleared
+
+
+# -------------------------------------------------- redirect_uri (ters proxy)
+#
+# `redirect_uri` `request.url_for`tan uretiliyordu. Tipik kurulumda TLS ters
+# proxy'de sonlaniyor ve uygulamaya duz `http` geliyor; uvicorn
+# `X-Forwarded-Proto`ya varsayilan olarak yalnizca 127.0.0.1'den guveniyor.
+# Sonuc: Google'a `http://...` gidiyor ve kayitli `https://...` adresiyle
+# eslesmiyor (`redirect_uri_mismatch`). Ayni dosyada oturum cerezinin
+# `secure` bayragi bu basligi ZATEN okuyordu -- iki karar birbirinden
+# ayrismisti. Varsayilan nginx yapilandirmasi `Host`u da upstream adiyla
+# gonderdigi icin kesin cozum adresi acikca vermek: `PUBLIC_BASE_URL`.
+
+
+def _spy_redirect_uris(monkeypatch):
+    seen: dict[str, str] = {}
+
+    def build(server, redirect_uri, state, **kw):
+        seen["start"] = redirect_uri
+        return "https://accounts.example/consent", "v"
+
+    def exchange(server, redirect_uri, code, code_verifier=None, **kw):
+        seen["callback"] = redirect_uri
+        return ExchangedToken(token_json="{}")
+
+    monkeypatch.setattr(auth_router, "build_authorization_url", build)
+    monkeypatch.setattr(auth_router, "exchange_code_for_token", exchange)
+    return seen
+
+
+def _complete_flow(client, headers=None):
+    state = client.get("/api/auth/youtube/start", headers=headers).json()["state"]
+    # Baglama cerezi ELLE gonderiliyor: proxy `https` bildirdiginde cerez
+    # dogru olarak `Secure` isaretleniyor ve gercek tarayici onu proxy'ye
+    # HTTPS ile gonderiyor. Test istemcisi ise duz http konustugu icin
+    # `Secure` cerezi geri yollamiyor -- bu, uygulamanin degil duzenegin siniri.
+    response = client.get(
+        f"/api/auth/youtube/callback?code=k&state={state}",
+        headers={**(headers or {}), "cookie": f"{auth_router.STATE_COOKIE}={state}"},
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 307), response.text
+
+
+def test_redirect_uri_follows_the_proxys_scheme(client, monkeypatch):
+    seen = _spy_redirect_uris(monkeypatch)
+
+    _complete_flow(client, headers={"x-forwarded-proto": "https"})
+
+    assert seen["start"] == "https://testserver/api/auth/youtube/callback"
+    assert seen["callback"] == seen["start"], "iki adim AYNI adresi kullanmali; Google aksi halde reddeder"
+
+
+def test_without_a_proxy_the_request_address_is_used(client, monkeypatch):
+    """Gelistirme davranisi degismedi."""
+    seen = _spy_redirect_uris(monkeypatch)
+
+    _complete_flow(client)
+
+    assert seen["start"] == seen["callback"] == "http://testserver/api/auth/youtube/callback"
+
+
+def test_public_base_url_wins_over_what_the_request_says(tmp_path, monkeypatch):
+    config = AppConfig(
+        gemini_api_key="test-key",
+        youtube_oauth_client_id="client-id",
+        youtube_oauth_client_secret="client-secret",
+        public_base_url="https://app.example.com/",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    seen = _spy_redirect_uris(monkeypatch)
+
+    from api.main import app
+
+    with TestClient(app) as browser:
+        # Proxy upstream adini ve duz http'yi bildiriyor; ikisi de yok sayilmali.
+        _complete_flow(browser, headers={"host": "upstream:8000", "x-forwarded-proto": "http"})
+
+    assert seen["start"] == seen["callback"] == "https://app.example.com/api/auth/youtube/callback"
+
+
+@pytest.mark.parametrize("bad", ["app.example.com", "ftp://app.example.com", "https://"])
+def test_public_base_url_must_be_an_absolute_http_url(bad):
+    """Yanlis deger ACILISTA reddedilmeli; ilk giris denemesinde Google'dan donen bir hataya donusmemeli."""
+    from src.config import ServerConfig
+
+    with pytest.raises(ValueError):
+        ServerConfig(public_base_url=bad)
