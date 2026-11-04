@@ -430,7 +430,21 @@ class SQLiteStore:
         satir yaziliyor. (Bu tabloda yerinde sema degisikligi bir kez CI'i
         kirmisti -- bkz. `_copy_legacy_provider_health`.) Islem tekrarlanabilir:
         ikinci calistirmada tasinacak satir kalmadigi icin etkisiz.
+
+        Tasinacak satir YOKSA hic YAZILMIYOR. Bu fonksiyon her store
+        kurulumunda -- yani `get_store` uzerinden HER ISTEKTE -- calisiyor ve
+        `INSERT ... SELECT` ile `DELETE`, hicbir satir eslesmese bile yazma
+        kilidi istiyor. Kosulsuz calistigi surece salt okunur istekler de baska
+        bir yazicinin kilidini bekliyordu; WAL'in "okuyucu yaziciyi beklemez"
+        kazanci boylece kayboluyordu (olculdu: kilitsiz 11 ms, kilit altinda
+        4047 ms, 30 sn'yi asinca HTTP 500). Gocun kendisi tek seferlik; ilk
+        calismadan sonra asagidaki SELECT hep bos donuyor ve kilit gerekmiyor.
         """
+        pending = conn.execute(
+            "SELECT 1 FROM provider_cooldown WHERE user_id != ? LIMIT 1", (SERVER_SCOPE,)
+        ).fetchone()
+        if pending is None:
+            return
         conn.execute(
             """
             INSERT INTO provider_cooldown
