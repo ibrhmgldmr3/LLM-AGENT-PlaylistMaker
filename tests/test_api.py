@@ -564,3 +564,49 @@ def test_key_of_an_unselected_provider_does_not_count(tmp_path, monkeypatch):
 
     assert response.status_code == 503
     assert "GEMINI_API_KEY" in response.json()["detail"]
+
+
+# ------------------------------------------- single_user'in disariya acilmasi
+
+
+def _request_from(host):
+    from starlette.requests import Request
+
+    return Request({"type": "http", "headers": [], "client": (host, 50000) if host else None})
+
+
+@pytest.fixture
+def single_user_server(tmp_path, monkeypatch):
+    config = AppConfig(
+        gemini_api_key="k", data_dir=str(tmp_path), sqlite_path=str(tmp_path / "app.db")
+    )
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    monkeypatch.setattr(deps, "_exposure_warned", False)
+
+
+def test_single_user_reached_from_another_machine_is_reported(single_user_server, caplog):
+    """`single_user`da oturum YOK: istegi yapan HERKES sunucu sahibi sayiliyor.
+
+    Varsayilan Docker kurulumu tam olarak bu: `AUTH_MODE` tanimsiz (=
+    single_user) ve CMD `0.0.0.0`a baglaniyor. Uygulama hangi adrese
+    baglandigini guvenilir bicimde bilemiyor; asil soruyu yanitlayan sinyal,
+    yerel olmayan bir istemcinin gercekten ulasmis olmasi.
+    """
+    with caplog.at_level("WARNING", logger="api"):
+        assert deps.get_current_user_optional(_request_from("203.0.113.7")) == "local"
+        deps.get_current_user_optional(_request_from("198.51.100.9"))
+
+    warnings = [r for r in caplog.records if "AUTH_MODE=single_user" in r.getMessage()]
+    assert len(warnings) == 1, "surec basina BIR KEZ uyarilmali; her istekte degil"
+    assert "203.0.113.7" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "::ffff:127.0.0.1", "testclient", None])
+def test_local_or_unknown_clients_do_not_trigger_the_exposure_warning(
+    single_user_server, caplog, host
+):
+    """Yerel istemci (ve IP olmayan test istemcisi / unix soketi) uyari degil."""
+    with caplog.at_level("WARNING", logger="api"):
+        deps.get_current_user_optional(_request_from(host))
+
+    assert not [r for r in caplog.records if "AUTH_MODE=single_user" in r.getMessage()]

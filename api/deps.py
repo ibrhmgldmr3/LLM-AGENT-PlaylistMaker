@@ -17,6 +17,8 @@ Vaat tutuldu: cok kullanicili moda gecerken rota imzalari hic degismedi.
 
 from __future__ import annotations
 
+import ipaddress
+import logging
 
 from fastapi import Depends, HTTPException, Request, status
 
@@ -42,6 +44,56 @@ def get_server_config() -> ServerConfig:
 
 SESSION_COOKIE = "map_session"
 
+_log = logging.getLogger("api")
+
+# Surec basina BIR KEZ: her istekte yazmak gunlugu bogar ve uyariyi okunmaz
+# kilar. Testler sifirlayabilsin diye modul duzeyinde.
+_exposure_warned = False
+
+
+def _warn_if_single_user_is_exposed(request: Request) -> None:
+    """`single_user` sunucusuna YEREL OLMAYAN bir istemci ulastiysa uyarir.
+
+    Bu modda oturum yok: istegi yapan HERKES sunucu sahibi (`local`) sayiliyor
+    -- gecmisi silebilir, sahibin YouTube hesabina liste yayinlayabilir ve
+    kullanim raporunu okuyabilir. Varsayilan Docker kurulumu tam olarak bu:
+    `AUTH_MODE` tanimsiz ve CMD `0.0.0.0`a baglaniyor.
+
+    Uygulama hangi adrese BAGLANDIGINI guvenilir bicimde bilemiyor (uvicorn
+    bunu uygulamaya vermiyor). Asil soruyu yanitlayan sinyal daha iyi: yerel
+    olmayan bir istemci GERCEKTEN ulasti mi. Ayni makinedeki bir ters proxy
+    arkasinda uvicorn `X-Forwarded-For`u 127.0.0.1'den guvenilir saydigi icin
+    istemci adresi gercek adres oluyor ve uyari yine calisiyor.
+
+    IP olmayan istemci (test istemcisi, unix soketi) icin karar verilemiyor;
+    sessiz geciliyor -- yanlis alarm, gercek alarmi da okunmaz kilardi.
+    """
+    global _exposure_warned
+    if _exposure_warned:
+        return
+    host = request.client.host if request.client else None
+    if not host:
+        return
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    # `::ffff:127.0.0.1` gibi IPv4-eslemeli adresler: 3.13 oncesinde
+    # `is_loopback` bunlari tanimiyor.
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if address.is_loopback:
+        return
+    _exposure_warned = True
+    _log.warning(
+        "AUTH_MODE=single_user ama istek yerel olmayan bir adresten geldi (%s). "
+        "Bu modda oturum yok ve isteği yapan HERKES sunucu sahibi sayılır: "
+        "geçmişi silebilir, sahibin YouTube hesabına liste yayınlayabilir ve "
+        "kullanım raporunu okuyabilir. Sunucu başkalarına açıksa "
+        "AUTH_MODE=multi_user kullanın.",
+        host,
+    )
+
 
 def get_current_user_optional(request: Request) -> str | None:
     """Istegin sahibi; oturum yoksa `None`. 401 FIRLATMAZ.
@@ -57,6 +109,7 @@ def get_current_user_optional(request: Request) -> str | None:
     """
     server = _base_config().server_config()
     if server.auth_mode == "single_user":
+        _warn_if_single_user_is_exposed(request)
         return DEFAULT_USER_ID
 
     token = request.cookies.get(SESSION_COOKIE)

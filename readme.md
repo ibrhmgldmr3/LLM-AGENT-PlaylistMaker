@@ -141,10 +141,11 @@ whose database name does not contain `test`.
 > `WEB_CONCURRENCY > 1`. Scaling out needs a shared job backend (the
 > `JobRunner` protocol exists for exactly that swap).
 
-Two settings matter before exposing this to anyone else:
+Three settings matter before exposing this to anyone else:
 
 | Setting | Why |
 |---|---|
+| `AUTH_MODE` | The default `single_user` has **no sign-in**: whoever reaches the server is its owner — they can delete history, publish to the owner's YouTube account and read the usage report. The Docker image binds `0.0.0.0`, so set `multi_user` for anything others can reach. The server logs a warning the first time a non-local client reaches a `single_user` instance. |
 | `SECRET_ENCRYPTION_KEY` | Without it OAuth tokens are stored **in plain text**. They carry permission to create playlists on the user's YouTube account. Generate with `python -m src.storage.crypto`. |
 | `CORS_ALLOW_ORIGINS` | Leave empty when the UI is served from the same process (the default, and the recommended setup). Only set it if the frontend lives on a separate domain. `*` is ignored — this API carries a session cookie. |
 
