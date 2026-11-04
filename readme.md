@@ -865,17 +865,21 @@ src/
     metadata_ranker.py      scoring
     recommendation_service.py  global assignment
     topic_service.py / transcript_service.py / playlist_publish_service.py
-    rag_service.py          ingest + retrieval + the three abstention gates
+    rag_service.py          ingest + retrieval + the four abstention gates
     chunking.py             transcript/document → overlapping, timestamped chunks
     embedding_service.py    float32 BLOB vectors, cosine search (no vector DB)
     document_parser.py      PDF / DOCX / TXT / MD → (page, text)
     run_retention.py        deleting a run from the database AND from disk
     space_retention.py      deleting a learning space from the database AND from disk
   storage/sqlite_store.py   cache, provider cooldowns, run history, OAuth tokens, quota counters
+  storage/dialect.py        the whole SQLite <-> Postgres difference, in one place
+  storage/factory.py        `create_store`, the single construction path (`DATABASE_URL` picks the dialect)
+  storage/transfer.py       one-time SQLite -> Postgres data transfer
   storage/crypto.py         at-rest encryption for stored OAuth tokens
-  jobs/                     JobRunner abstraction (in-process today)
+  jobs/                     JobRunner: in-process (default) or Redis (`JOB_BACKEND=redis`)
+    worker.py               the Redis worker loop (`python -m src.jobs.worker`)
   utils/                    text, retry, logging, yt-dlp options
-tests/                      471 tests
+tests/                      backend tests (see Tests)
 ```
 
 ## Tests
@@ -884,15 +888,16 @@ tests/                      471 tests
 pytest -q
 ```
 
-359 backend tests, no network access, around ten seconds. Each significant bug fixed in this codebase
-has a regression test named after the behaviour it locks in. The suite runs without a `.env`
-and without any API key — CI has neither.
+836 backend tests, no internet access, around fifteen seconds. 74 of them need a real Redis or
+Postgres and skip without one (see [Scaling out](#scaling-out-optional)); CI runs them all. Each
+significant bug fixed in this codebase has a regression test named after the behaviour it locks
+in. The suite runs without a `.env` and without any API key — CI has neither.
 
 ```bash
 cd web && npm test
 ```
 
-47 frontend tests. Most cover `useRunStream` — the SSE hook, which holds the most intricate
+67 frontend tests. Most cover `useRunStream` — the SSE hook, which holds the most intricate
 logic on that side. They run against a fake `EventSource`, which is what makes them
 deterministic: the test decides when `progress`, `done`, or a bodiless `error` arrives, so
 nothing waits on a timer. The fake mirrors the browser contract in two details that matter —
