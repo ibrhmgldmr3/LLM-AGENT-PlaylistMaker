@@ -26,6 +26,7 @@ from api.routers import auth as auth_router
 from api.routers import config as config_router
 from api.routers import runs as runs_router
 from api.routers import spaces as spaces_router
+from src.jobs import JobRunner
 from src.jobs.factory import create_job_runner
 from src.storage import backend_name
 from src.providers.errors import (
@@ -89,6 +90,27 @@ def _warn_on_unbounded_shared_quota() -> None:
             "kullanıcı günlük YouTube kotasının tamamını (~8-16 çalıştırma, tüm "
             "kullanıcılar toplamı) tüketebilir. .env.example bu mod için 3 öneriyor."
         )
+
+    # Ayni gerekce RAG icin: her soru ve her kaynak ekleme paylasimli LLM
+    # anahtariyla gidiyor ve depolama tavanlari (alan/dokuman sayisi) cagri
+    # HACMINI sinirlamiyor.
+    if server.auth_mode == "multi_user" and server.enable_rag:
+        unbounded = [
+            name
+            for name, value in (
+                ("MAX_RAG_QUESTIONS_PER_USER_PER_DAY", server.max_rag_questions_per_user_per_day),
+                ("MAX_RAG_INGESTS_PER_USER_PER_DAY", server.max_rag_ingests_per_user_per_day),
+            )
+            if not value
+        ]
+        if unbounded:
+            logger.warning(
+                "AUTH_MODE=multi_user ve ENABLE_RAG=true ama %s=0 (sınırsız). Her soru ve "
+                "her kaynak ekleme PAYLAŞIMLI LLM anahtarıyla gidiyor; tek bir kullanıcı "
+                "günlük LLM kotasını herkes için tüketebilir. Kullanıcı başına gerçek "
+                "kullanımı GET /api/admin/usage gösteriyor (`rag_calls_by_user`).",
+                ", ".join(unbounded),
+            )
 
 
 def _log_config_warnings() -> None:
@@ -190,20 +212,41 @@ def _warn_on_multi_process() -> None:
         logger.info("İş durumu bellekte tutuluyor: tek süreç çalıştırın (--workers kullanmayın).")
 
 
-def _mark_interrupted_runs() -> None:
+def _job_is_live(runner: JobRunner, run_id: str) -> bool:
+    """Is kosucusu bu calistirmayi bekleyen ya da calisan bir is olarak taniyor mu."""
+    handle = runner.get(run_id)
+    return handle is not None and not handle.state.is_terminal
+
+
+def _mark_interrupted_runs(runner: JobRunner) -> None:
     """Onceki surecte yarida kalan calistirmalari isaretler.
 
-    Acilista tanim geregi hicbir is calismiyor, dolayisiyla sonucu olmayan her
-    satir gercekten yarida kalmis. Isaretlenenler gunluk hak sayimindan
-    dusuluyor: sunucu yeniden basladi diye kullanici hicbir sey almadan hakkini
-    kaybetmemeli. Gecmiste "yarim kaldi" olarak gorunmeye devam ediyorlar.
+    Isaretlenenler gunluk hak sayimindan dusuluyor ve kota rezervasyonlari
+    serbest kaliyor: sunucu yeniden basladi diye kullanici hicbir sey almadan
+    hakkini kaybetmemeli. Gecmiste "yarim kaldi" olarak gorunmeye devam
+    ediyorlar.
+
+    Is kosucusu CANLI saydigi isler atlaniyor. Bellek ici kosucu acilista bos
+    oldugu icin orada davranis degismedi: sonucu olmayan her satir yarida
+    kalmis. Redis topolojisinde ise isler worker'da suruyor olabilir; eskiden
+    her web dagitimi onlari da isaretliyordu (bkz.
+    `SQLiteStore.mark_interrupted_runs`).
+
+    Bilinen sinirlar (Redis):
+    - Worker'i COKEN bir is, tutamaci `running` kaldigi icin `JOB_TTL_SEC`
+      dolana kadar canli sayiliyor; isaretlenmesi o sureden sonraki ilk web
+      acilisina kaliyor. Eskiden hemen isaretleniyordu -- ama yalnizca
+      canli isleri de isaretleme pahasina.
+    - Kabul (`run` satiri) ile kuyruga alma (`submit`) arasinda tutamac henuz
+      yok. Bir replika tam o milisaniyelerde acilirsa o calistirmayi kesilmis
+      sayabilir.
     """
     try:
         from src.storage import create_store
 
         server = get_server_config()
         store = create_store(server)
-        marked = store.mark_interrupted_runs()
+        marked = store.mark_interrupted_runs(is_live=lambda run_id: _job_is_live(runner, run_id))
         if marked:
             logger.info("Yarıda kalan %s çalıştırma işaretlendi (günlük hak iade edildi)", marked)
     except Exception:
@@ -238,12 +281,15 @@ async def lifespan(app: FastAPI):
     _warn_on_multi_process()
     _warn_on_plaintext_secrets()
     _warn_on_unbounded_shared_quota()
-    _mark_interrupted_runs()
-    _purge_orphan_run_dirs()
     # Backend `JOB_BACKEND` ile seciliyor (varsayilan: bellek ici, tek surec).
     # Secim `create_job_runner` icinde TEK YERDE; worker giris noktasi da ayni
     # fonksiyonu cagiriyor, boylece web ile worker farkli backend kullanamiyor.
+    #
+    # Kosucu yarida kalanlari isaretlemeden ONCE kuruluyor: hangi islerin hala
+    # canli oldugunu yalnizca o biliyor.
     app.state.job_runner = create_job_runner(_base_config())
+    _mark_interrupted_runs(app.state.job_runner)
+    _purge_orphan_run_dirs()
     try:
         yield
     finally:

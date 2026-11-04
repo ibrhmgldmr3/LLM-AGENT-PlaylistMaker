@@ -20,6 +20,29 @@ jobs:
     name: Backend
     runs-on: ubuntu-latest
 
+    # Gercek Redis ve Postgres. Bunlar olmadan 71 test (Redis is kosucusu,
+    # Postgres lehcesi, SQLite -> Postgres aktarimi) SESSIZCE atlaniyordu:
+    # olceklendirme yolunun tamami CI'da hic kosmuyordu. Yerelde ikisi de
+    # ayaktayken tam takim (atlanan 0) gecti; yani acmak guvenli.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          # Ad "test" ICERMELI: fixture her testten once semayi SILIYOR ve
+          # adinda "test" olmayan bir veritabanina dokunmayi reddediyor.
+          POSTGRES_DB: maptest
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d maptest"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -43,11 +66,27 @@ jobs:
         run: python -c "from api.main import app; print(f'{len(app.routes)} rota kayitli')"
 
       - name: Kullanilmayan import / tanimsiz ad
-        run: python -m pyflakes src api tests
+        # `scripts/` da taraniyor: olcum betikleri README'deki sayilari
+        # uretiyor ve disarida kaldiklarinda bir uyari fark edilmeden duruyordu.
+        run: python -m pyflakes src api tests scripts
 
-      - name: Testler
-        # `.env` ve API anahtari YOK: testler ag ve gizli bilgi olmadan gecmeli.
-        run: python -m pytest -q
+      - name: Testler (Redis ve Postgres dahil)
+        # `.env` ve API anahtari YOK: testler gizli bilgi olmadan gecmeli.
+        #
+        # ATLANAN TEST = HATA. Servisler bu iste ayakta; bir testin atlanmasi
+        # servise baglanilamadigi demek ve eskiden tam olarak boyle sessizce
+        # gorunmez oluyordu. `pipefail` acikca: `shell` belirtilmeyen adimlarda
+        # varsayilan `bash -e` ve `tee` pytest'in cikis kodunu yutardi.
+        env:
+          REDIS_TEST_URL: redis://localhost:6379/0
+          MAP_TEST_POSTGRES_DSN: postgresql://postgres:test@localhost:5432/maptest
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs | tee pytest.out
+          if grep -q "^SKIPPED" pytest.out; then
+            echo "::error::Servisler ayaktayken test atlandi; Redis/Postgres baglantisini kontrol edin"
+            exit 1
+          fi
 
   minimum-deps:
     name: En dusuk bagimlilik surumleri
@@ -146,6 +185,32 @@ jobs:
 
       - name: Derleme
         run: npm run build
+
+  docker:
+    name: Docker imaji
+    runs-on: ubuntu-latest
+
+    # README'nin ve docker-compose.yml'in dayandigi imaj CI'da HIC derlenmiyordu.
+    # Kirilma ancak biri `docker build` calistirdiginda gorunurdu: ornegin
+    # `web/` derlemesi ya da `requirements.txt` imajin Python surumunde
+    # kurulamazsa. Derlemek yetmiyor: imaj `.env`siz ayaga kalkip saglik
+    # ucuna yanit vermeli (CI'nin import adimi ayni sozu kaynak icin veriyor).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Imaji derle
+        run: docker build -t make-a-playlist:ci .
+
+      - name: Imaj ayaga kalkiyor ve saglik ucu yanit veriyor mu
+        run: |
+          docker run -d --name map -p 8000:8000 make-a-playlist:ci
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/api/health; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs map
+          test "$ok" = 1
 
   secrets:
     name: Gizli bilgi taramasi

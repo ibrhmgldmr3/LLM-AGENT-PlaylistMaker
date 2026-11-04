@@ -15,6 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from api.deps import get_server_config, get_store, require_admin
+from api.routers.spaces import RAG_USAGE_PROVIDER
 from src.config import ServerConfig
 from src.providers.youtube_data_api_provider import DEFAULT_DAILY_QUOTA_UNITS
 from src.storage import SQLiteStore
@@ -40,11 +41,18 @@ def usage(
 
     by_endpoint: dict[str, dict[str, int]] = {}
     by_user: dict[str, int] = {}
+    # RAG cagrilari KULLANICI basina. `by_user_units` bunlari gostermiyor
+    # (`units=0`, YouTube butcesine girmesinler diye) ve `by_endpoint`
+    # kullanicilari birlestiriyor; `MAX_RAG_*_PER_USER_PER_DAY`i olcumle
+    # secmek icin gereken sayi bu.
+    rag_by_user: dict[str, dict[str, int]] = {}
     for row in rows:
         bucket = by_endpoint.setdefault(row["endpoint"], {"calls": 0, "units": 0})
         bucket["calls"] += row["calls"]
         bucket["units"] += row["units"]
         by_user[row["user_id"]] = by_user.get(row["user_id"], 0) + row["units"]
+        if row["provider"] == RAG_USAGE_PROVIDER:
+            rag_by_user.setdefault(row["user_id"], {})[row["endpoint"]] = row["calls"]
 
     return {
         # Gun siniri Pasifik saatine gore: Google kotayi orada sifirliyor.
@@ -66,6 +74,9 @@ def usage(
         "by_user_units": by_user,
         "runs_last_24h": store.count_runs_by_user_since(),
         "max_runs_per_user_per_day": server.max_runs_per_user_per_day,
+        "rag_calls_by_user": rag_by_user,
+        "max_rag_questions_per_user_per_day": server.max_rag_questions_per_user_per_day,
+        "max_rag_ingests_per_user_per_day": server.max_rag_ingests_per_user_per_day,
         # ANLIK durum: su an hangi saglayici dinleniyor.
         "active_cooldowns": store.list_active_cooldowns(),
         # GUNUN TOPLAMI: kac kez hiz sinirina takildik, kac kez sogumaya girdik.

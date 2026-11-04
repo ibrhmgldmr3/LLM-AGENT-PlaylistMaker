@@ -154,7 +154,7 @@ def main() -> int:
 
     print(f"\nModel: {config.embedding_model()}")
     print(f"Alan : {space_id}  ({store.count_chunks(space_id)} parca)")
-    print(f"\nBenzerlik dagilimi (esik ancak iki kumenin ARASINDA olabilir):")
+    print("\nBenzerlik dagilimi (esik ancak iki kumenin ARASINDA olabilir):")
     _report_distribution(rows)
     _sweep_thresholds(rows, config.rag_min_lexical_coverage)
     _report_retrieval(rows)

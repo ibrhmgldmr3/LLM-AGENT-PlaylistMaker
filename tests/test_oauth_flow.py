@@ -420,3 +420,210 @@ def test_only_one_of_two_concurrent_callbacks_wins(client):
 
     winners = [item for item in results if item is not None]
     assert len(winners) == 1, f"tam olarak bir cagri kazanmali, {len(winners)} kazandi"
+
+
+# ------------------------------------------------- tarayiciya baglama (login CSRF)
+#
+# `state` tek kullanimlik ve depoda kayitli, ama TARAYICIYA bagli degildi:
+# akisi BASLATAN ile callback'i ACAN ayni tarayici olmak zorunda degildi.
+# Saldirgan kendi tarayicisinda akisi baslatip Google'dan donen `code` +
+# `state` baglantisini kurbana yolladiginda kurban SALDIRGANIN hesabiyla
+# oturum aciyordu (yeniden uretildi: `/api/auth/me` -> `google:ATTACKER-SUB`).
+# Kurbanin yukledigi dokumanlar ve yayinladigi listeler saldirgana gidiyordu.
+
+
+def _never_exchange(calls):
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("code") or args[2])
+        return ExchangedToken(token_json='{"token": "saldirgan"}')
+
+    return spy
+
+
+def test_start_binds_the_state_to_the_browser(client):
+    response = client.get("/api/auth/youtube/start")
+    state = response.json()["state"]
+    cookie = response.headers["set-cookie"]
+
+    assert f"{auth_router.STATE_COOKIE}={state}" in cookie
+    assert "httponly" in cookie.lower()
+    assert "samesite=lax" in cookie.lower()
+    # Yalnizca bu akisin uclarina gidiyor; uygulamanin geri kalanina degil.
+    assert "path=/api/auth/youtube" in cookie.lower()
+
+
+def test_callback_in_a_browser_that_did_not_start_the_flow_is_rejected(client, monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(auth_router, "exchange_code_for_token", _never_exchange(calls))
+
+    state = client.get("/api/auth/youtube/start").json()["state"]  # saldirganin tarayicisi
+    client.cookies.clear()  # kurbanin tarayicisi: baglama cerezi yok
+
+    response = client.get(
+        f"/api/auth/youtube/callback?code=saldirganin-kodu&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert client.store.get_oauth_token("local", "youtube") is None
+    assert calls == [], "kod Google'a hic gonderilmemeli"
+
+
+def test_callback_with_another_flows_state_is_rejected(client, monkeypatch):
+    """Kurbanin KENDI akisinin cerezi var ama gelen `state` baskasinin."""
+    calls: list[str] = []
+    monkeypatch.setattr(auth_router, "exchange_code_for_token", _never_exchange(calls))
+    attacker_state = "saldirganin-baslattigi-state"
+    client.store.put_oauth_state(attacker_state, None, "v", ttl_sec=600, max_pending=100)
+
+    client.get("/api/auth/youtube/start")  # kurban kendi akisini baslatti
+    response = client.get(
+        f"/api/auth/youtube/callback?code=k&state={attacker_state}", follow_redirects=False
+    )
+
+    assert response.status_code == 400
+    assert client.store.get_oauth_token("local", "youtube") is None
+    assert calls == []
+
+
+def test_login_csrf_does_not_sign_the_victim_in(tmp_path, monkeypatch):
+    """Ayni saldiri `multi_user` modunda: kurban saldirganin oturumunu ALMAMALI."""
+    config = AppConfig(
+        auth_mode="multi_user",
+        gemini_api_key="test-key",
+        youtube_oauth_client_id="client-id",
+        youtube_oauth_client_secret="client-secret",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    monkeypatch.setattr(
+        auth_router,
+        "exchange_code_for_token",
+        lambda *a, **kw: ExchangedToken(
+            token_json="{}", google_sub="ATTACKER-SUB", email="saldirgan@example.com"
+        ),
+    )
+
+    from api.main import app
+
+    with TestClient(app) as browser:
+        state = browser.get("/api/auth/youtube/start").json()["state"]
+        browser.cookies.clear()
+
+        response = browser.get(
+            f"/api/auth/youtube/callback?code=k&state={state}", follow_redirects=False
+        )
+
+        assert response.status_code == 400
+        assert auth_router.SESSION_COOKIE not in browser.cookies
+        assert browser.get("/api/auth/me").json()["signed_in"] is False
+
+
+def test_successful_callback_clears_the_binding_cookie(client, monkeypatch):
+    monkeypatch.setattr(
+        auth_router,
+        "exchange_code_for_token",
+        lambda *a, **kw: ExchangedToken(token_json='{"token": "abc"}'),
+    )
+    state = client.get("/api/auth/youtube/start").json()["state"]
+
+    response = client.get(
+        f"/api/auth/youtube/callback?code=kod&state={state}", follow_redirects=False
+    )
+
+    assert response.status_code in (302, 307)
+    cleared = response.headers["set-cookie"].lower()
+    assert f"{auth_router.STATE_COOKIE}=" in cleared and "max-age=0" in cleared
+
+
+# -------------------------------------------------- redirect_uri (ters proxy)
+#
+# `redirect_uri` `request.url_for`tan uretiliyordu. Tipik kurulumda TLS ters
+# proxy'de sonlaniyor ve uygulamaya duz `http` geliyor; uvicorn
+# `X-Forwarded-Proto`ya varsayilan olarak yalnizca 127.0.0.1'den guveniyor.
+# Sonuc: Google'a `http://...` gidiyor ve kayitli `https://...` adresiyle
+# eslesmiyor (`redirect_uri_mismatch`). Ayni dosyada oturum cerezinin
+# `secure` bayragi bu basligi ZATEN okuyordu -- iki karar birbirinden
+# ayrismisti. Varsayilan nginx yapilandirmasi `Host`u da upstream adiyla
+# gonderdigi icin kesin cozum adresi acikca vermek: `PUBLIC_BASE_URL`.
+
+
+def _spy_redirect_uris(monkeypatch):
+    seen: dict[str, str] = {}
+
+    def build(server, redirect_uri, state, **kw):
+        seen["start"] = redirect_uri
+        return "https://accounts.example/consent", "v"
+
+    def exchange(server, redirect_uri, code, code_verifier=None, **kw):
+        seen["callback"] = redirect_uri
+        return ExchangedToken(token_json="{}")
+
+    monkeypatch.setattr(auth_router, "build_authorization_url", build)
+    monkeypatch.setattr(auth_router, "exchange_code_for_token", exchange)
+    return seen
+
+
+def _complete_flow(client, headers=None):
+    state = client.get("/api/auth/youtube/start", headers=headers).json()["state"]
+    # Baglama cerezi ELLE gonderiliyor: proxy `https` bildirdiginde cerez
+    # dogru olarak `Secure` isaretleniyor ve gercek tarayici onu proxy'ye
+    # HTTPS ile gonderiyor. Test istemcisi ise duz http konustugu icin
+    # `Secure` cerezi geri yollamiyor -- bu, uygulamanin degil duzenegin siniri.
+    response = client.get(
+        f"/api/auth/youtube/callback?code=k&state={state}",
+        headers={**(headers or {}), "cookie": f"{auth_router.STATE_COOKIE}={state}"},
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 307), response.text
+
+
+def test_redirect_uri_follows_the_proxys_scheme(client, monkeypatch):
+    seen = _spy_redirect_uris(monkeypatch)
+
+    _complete_flow(client, headers={"x-forwarded-proto": "https"})
+
+    assert seen["start"] == "https://testserver/api/auth/youtube/callback"
+    assert seen["callback"] == seen["start"], "iki adim AYNI adresi kullanmali; Google aksi halde reddeder"
+
+
+def test_without_a_proxy_the_request_address_is_used(client, monkeypatch):
+    """Gelistirme davranisi degismedi."""
+    seen = _spy_redirect_uris(monkeypatch)
+
+    _complete_flow(client)
+
+    assert seen["start"] == seen["callback"] == "http://testserver/api/auth/youtube/callback"
+
+
+def test_public_base_url_wins_over_what_the_request_says(tmp_path, monkeypatch):
+    config = AppConfig(
+        gemini_api_key="test-key",
+        youtube_oauth_client_id="client-id",
+        youtube_oauth_client_secret="client-secret",
+        public_base_url="https://app.example.com/",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    seen = _spy_redirect_uris(monkeypatch)
+
+    from api.main import app
+
+    with TestClient(app) as browser:
+        # Proxy upstream adini ve duz http'yi bildiriyor; ikisi de yok sayilmali.
+        _complete_flow(browser, headers={"host": "upstream:8000", "x-forwarded-proto": "http"})
+
+    assert seen["start"] == seen["callback"] == "https://app.example.com/api/auth/youtube/callback"
+
+
+@pytest.mark.parametrize("bad", ["app.example.com", "ftp://app.example.com", "https://"])
+def test_public_base_url_must_be_an_absolute_http_url(bad):
+    """Yanlis deger ACILISTA reddedilmeli; ilk giris denemesinde Google'dan donen bir hataya donusmemeli."""
+    from src.config import ServerConfig
+
+    with pytest.raises(ValueError):
+        ServerConfig(public_base_url=bad)

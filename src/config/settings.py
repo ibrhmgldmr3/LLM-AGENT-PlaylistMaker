@@ -4,6 +4,7 @@ import functools
 import os
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from dotenv import dotenv_values, find_dotenv, load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -17,6 +18,13 @@ DEV_CORS_ORIGINS: tuple[str, ...] = (
     "http://127.0.0.1:5173",
 )
 
+
+# Saglayici -> anahtarini tasiyan ortam degiskeni (`ServerConfig.llm_api_key_env`).
+LLM_KEY_ENV: dict[str, str] = {
+    "gemini": "GEMINI_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
 
 # Ortam degiskeni -> model alani eslemesi.
 # Varsayilan degerler SADECE modelde tanimlidir; burada tekrarlanmaz.
@@ -63,6 +71,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "JOB_TTL_SEC": "job_ttl_sec",
     "AUTH_MODE": "auth_mode",
     "CORS_ALLOW_ORIGINS": "cors_allow_origins",
+    "PUBLIC_BASE_URL": "public_base_url",
     "SESSION_TTL_SEC": "session_ttl_sec",
     "MAX_RUNS_PER_USER_PER_DAY": "max_runs_per_user_per_day",
     "ADMIN_USER_IDS": "admin_user_ids",
@@ -109,6 +118,8 @@ ENV_TO_FIELD: dict[str, str] = {
     "MAX_SPACES_PER_USER": "max_spaces_per_user",
     "MAX_DOCUMENTS_PER_SPACE": "max_documents_per_space",
     "MAX_UPLOAD_BYTES": "max_upload_bytes",
+    "MAX_RAG_QUESTIONS_PER_USER_PER_DAY": "max_rag_questions_per_user_per_day",
+    "MAX_RAG_INGESTS_PER_USER_PER_DAY": "max_rag_ingests_per_user_per_day",
 }
 
 
@@ -340,6 +351,38 @@ class ServerConfig(BaseModel):
     # koken, herhangi bir sitenin kullanici adina istek atmasi demek olurdu.
     cors_allow_origins: str | None = Field(default=None)
 
+    # Uygulamanin DISARIDAN gorunen koku (sema + alan adi [+ port]), ornegin
+    # `https://app.example.com`. YouTube girisinin `redirect_uri`si bundan
+    # kuruluyor ve Google Console'da kayitli adresle BIREBIR eslesmeli.
+    #
+    # Tanimsizsa adres istekten turetiliyor -- yerel gelistirmede dogru. Ters
+    # proxy arkasinda yanlis: TLS proxy'de sonlaniyor (uygulama `http`
+    # goruyor) ve varsayilan nginx `Host`u upstream adiyla gonderiyor.
+    # Yalnizca KOKEN: alt yol on eki uvicorn `--root-path` ile veriliyor ve
+    # rota yolu ona gore kuruluyor; burada da yazilirsa iki kez eklenirdi.
+    public_base_url: str | None = Field(default=None)
+
+    @field_validator("public_base_url")
+    @classmethod
+    def validate_public_base_url(cls, value: str | None) -> str | None:
+        # ACILISTA reddediliyor: yanlis bir deger aksi halde ancak ilk giris
+        # denemesinde, Google'dan donen bir `redirect_uri_mismatch` olarak
+        # ortaya cikardi.
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                "PUBLIC_BASE_URL mutlak bir http(s) adresi olmalı, örneğin https://app.example.com"
+            )
+        if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise ValueError(
+                "PUBLIC_BASE_URL yalnızca köken olmalı (şema + alan adı); alt yol için "
+                "uvicorn --root-path kullanın"
+            )
+        return value.rstrip("/")
+
     # OAuth ISTEMCISI kuruluma ait, kullaniciya degil: uygulamanin Google'a
     # kayitli kimligi bu. Kullanici basina olsaydi herkesin kendi Google Cloud
     # OAuth istemcisini acip kendi yonlendirme adresini eklemesi gerekirdi.
@@ -525,6 +568,15 @@ class ServerConfig(BaseModel):
     max_documents_per_space: int = Field(default=25, ge=1)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1024)
 
+    # Kullanici basina GUNLUK tavanlar (0 = sinirsiz, varsayilan). Yukaridaki
+    # tavanlar DEPOLAMAYI sinirliyor, bunlar CAGRI hacmini: her soru bir
+    # embedding + bir uretim cagrisi, her iceri alma (dokuman, calistirma
+    # videolari, ASR) transkript + embedding. Anahtarlar paylasimli oldugu
+    # icin sinir yoksa tek kullanici gunluk LLM kotasini herkes icin bitirir.
+    # Gun, YouTube kotasiyla AYNI sinirda (Pasifik saati) donuyor.
+    max_rag_questions_per_user_per_day: int = Field(default=0, ge=0)
+    max_rag_ingests_per_user_per_day: int = Field(default=0, ge=0)
+
     def effective_embedding_provider(self) -> str:
         """Embedding hangi saglayicidan alinacak.
 
@@ -549,6 +601,33 @@ class ServerConfig(BaseModel):
         if self.effective_embedding_provider() == "together":
             return self.together_embedding_model
         return self.gemini_embedding_model
+
+    def llm_api_key(self) -> str | None:
+        """SECILEN saglayicinin anahtari.
+
+        Anahtar secimini tek bir yerde topluyor; cagiran taraflarin hangi
+        saglayicinin hangi alani kullandigini bilmesi gerekmiyor.
+
+        `ServerConfig` UZERINDE (AppConfig degil): "sunucu yapilandirilmis mi"
+        kontrolu (`api/deps.get_user_credentials`) yalnizca `ServerConfig`
+        goruyor. Metot yalnizca `AppConfig`teyken o kontrol saglayicilari
+        ELLE sayiyordu ve listeye OpenRouter hic eklenmemisti -- yalnizca
+        `OPENROUTER_API_KEY` ile kurulan sunucu her ucta 503 donuyordu.
+        """
+        if self.llm_provider == "together":
+            return self.together_api_key
+        if self.llm_provider == "openrouter":
+            return self.openrouter_api_key
+        return self.gemini_api_key
+
+    def llm_api_key_env(self) -> str:
+        """Secilen saglayicinin anahtarini tasiyan ortam degiskeni.
+
+        Hata mesajlari icin: "anahtar eksik" demek yetmiyor, HANGI degiskenin
+        doldurulacagini soylemeli. Uc saglayiciyi birden saymak, secili
+        olmayan bir anahtari doldurmaya yonlendirirdi.
+        """
+        return LLM_KEY_ENV[self.llm_provider]
 
     max_search_workers: int = Field(default=4)
     max_transcript_workers: int = Field(default=4)
@@ -664,18 +743,6 @@ class AppConfig(ServerConfig, UserCredentials, RunOptions):
 
     def run_options(self) -> RunOptions:
         return RunOptions.model_validate(self.model_dump())
-
-    def llm_api_key(self) -> str | None:
-        """SECILEN saglayicinin anahtari.
-
-        Anahtar secimini tek bir yerde topluyor; cagiran taraflarin hangi
-        saglayicinin hangi alani kullandigini bilmesi gerekmiyor.
-        """
-        if self.llm_provider == "together":
-            return self.together_api_key
-        if self.llm_provider == "openrouter":
-            return self.openrouter_api_key
-        return self.gemini_api_key
 
     def public_capabilities(self) -> dict[str, bool]:
         """Arayuzun hangi kontrolleri acabilecegini anlatir. SIR ICERMEZ.

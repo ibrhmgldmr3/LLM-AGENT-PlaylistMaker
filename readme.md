@@ -117,7 +117,11 @@ docker run -d -p 6399:6379 redis:7-alpine
 REDIS_TEST_URL=redis://localhost:6399/0 python -m pytest tests/test_redis_runner.py
 ```
 
-Without a server those tests skip, so CI stays green without Redis.
+Without a server those tests skip locally. CI runs them against real Redis and Postgres
+services and **fails if any test is skipped** — a skip there means a service could not be
+reached, which is exactly how these 71 tests used to go unnoticed: before the services were
+added, the whole scale-out path (Redis job runner, Postgres dialect, SQLite → Postgres
+transfer) never ran in CI.
 
 The same applies to the storage layer. `tests/test_space_storage.py` — the
 store's most database-dependent surface: generated keys, the full-text index
@@ -141,10 +145,11 @@ whose database name does not contain `test`.
 > `WEB_CONCURRENCY > 1`. Scaling out needs a shared job backend (the
 > `JobRunner` protocol exists for exactly that swap).
 
-Two settings matter before exposing this to anyone else:
+Three settings matter before exposing this to anyone else:
 
 | Setting | Why |
 |---|---|
+| `AUTH_MODE` | The default `single_user` has **no sign-in**: whoever reaches the server is its owner — they can delete history, publish to the owner's YouTube account and read the usage report. The Docker image binds `0.0.0.0`, so set `multi_user` for anything others can reach. The server logs a warning the first time a non-local client reaches a `single_user` instance. |
 | `SECRET_ENCRYPTION_KEY` | Without it OAuth tokens are stored **in plain text**. They carry permission to create playlists on the user's YouTube account. Generate with `python -m src.storage.crypto`. |
 | `CORS_ALLOW_ORIGINS` | Leave empty when the UI is served from the same process (the default, and the recommended setup). Only set it if the frontend lives on a separate domain. `*` is ignored — this API carries a session cookie. |
 
@@ -159,7 +164,7 @@ Two settings matter before exposing this to anyone else:
 | | |
 |---|---|
 | Python | **3.13** — the version CI tests and development targets. 3.11/3.12 should work but are not verified. |
-| **An LLM key** | Gemini **or** Together.ai — `LLM_PROVIDER` selects which, and only that one's key is read |
+| **An LLM key** | Gemini, Together.ai **or** OpenRouter — `LLM_PROVIDER` selects which, and only that one's key is read |
 | YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used. **Its daily quota is the binding constraint for a shared deployment** — see below |
 | YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
 | A JS runtime (`node`) | needed for audio download; see below |
@@ -436,19 +441,27 @@ warning rather than being silently ignored.
 
 ### Required
 
-One LLM key. `LLM_PROVIDER` decides which one is read; the other may stay empty.
+One LLM key. `LLM_PROVIDER` decides which one is read; the others may stay empty. A key
+belonging to a provider that is *not* selected does not count: requests are refused with a
+503 that names the missing variable, rather than accepted and failing at the first LLM call.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `LLM_PROVIDER` | `gemini` | `gemini` or `together` |
+| `LLM_PROVIDER` | `gemini` | `gemini`, `together` or `openrouter` |
 | `GEMINI_API_KEY` | — | required when `LLM_PROVIDER=gemini` |
 | `TOGETHER_API_KEY` | — | required when `LLM_PROVIDER=together` |
 | `TOGETHER_MODEL` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | verify it is available on your account |
+| `OPENROUTER_API_KEY` | — | required when `LLM_PROVIDER=openrouter` |
+| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | `<provider>/<model>`; verify it is available on your account |
 
 Together.ai is reached over its **OpenAI-compatible** endpoint, so no extra SDK is
 installed — the existing `requests` dependency carries it. Both providers share one
 prompt and one field contract; only the schema *dialect* differs (Gemini wants
 uppercase types, OpenAI-compatible endpoints want standard JSON Schema).
+
+OpenRouter is reached the same way. It has **no embeddings**, so with
+`LLM_PROVIDER=openrouter` the learning-space embeddings fall back to Gemini (or to
+Together when there is no Gemini key); set `EMBEDDING_PROVIDER` to choose explicitly.
 
 Keys are **server-side and shared**. Users never enter an API key — `LLM_PROVIDER` and the
 keys below apply to every request regardless of who made it. An earlier design had each user
@@ -572,6 +585,18 @@ provider is down, the lexical half keeps working; search gets weaker, not absent
 | `MAX_SPACES_PER_USER` | `10` | storage and embedding cost sits with the server owner |
 | `MAX_DOCUMENTS_PER_SPACE` | `25` | |
 | `MAX_UPLOAD_BYTES` | `20971520` | 20 MB, enforced while reading, not from `Content-Length` |
+| `MAX_RAG_QUESTIONS_PER_USER_PER_DAY` | `0` | per user, `0` = unlimited; each question is at least one embedding call |
+| `MAX_RAG_INGESTS_PER_USER_PER_DAY` | `0` | per user, `0` = unlimited; document uploads, run imports and ASR share it |
+
+`MAX_SPACES_PER_USER`, `MAX_DOCUMENTS_PER_SPACE` and `MAX_UPLOAD_BYTES` bound storage; the last
+two bound **call volume**, which the storage caps do not — deleting and re-adding a source, or asking the same notebook all day, was unlimited.
+Keys are shared, so in `multi_user` one person could otherwise exhaust the day's LLM quota for
+everyone; the server warns at startup when `multi_user` runs with RAG and either limit is `0`.
+Like the run limit, the check and the count happen in one transaction, the day turns over with
+the YouTube quota (Pacific time), and a refusal is a `429` with `Retry-After`. The counters
+live in `api_usage` with `units=0`, so they never count against the YouTube budget, and
+`GET /api/admin/usage` reports them per user under `rag_calls_by_user` — a limit can be
+chosen from measured use rather than guessed.
 
 **`RAG_MIN_SIMILARITY` is measured, not guessed** — and the first measurement was wrong
 in an instructive way. With `gemini-embedding-001` over 20 questions against **real
@@ -700,11 +725,29 @@ deterministic: the delimiters and gate 4.
 | `YOUTUBE_OAUTH_TOKEN_FILE` | `data/cache/youtube_oauth_token.json` | legacy file store; the API uses the `oauth_token` table |
 | `YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER` | `true` | legacy desktop flow only; the API uses a redirect flow |
 | `YOUTUBE_PLAYLIST_PRIVACY_STATUS` | `private` | `private` \| `unlisted` \| `public` |
+| `PUBLIC_BASE_URL` | — | public origin, e.g. `https://app.example.com`; **required behind a reverse proxy** |
 
 The API uses a proper OAuth redirect flow instead of opening a browser on the server, and
 stores tokens per user in the `oauth_token` table rather than a file. For that path the
 Google Cloud client must be of type **Web application**, with
 `http://localhost:8000/api/auth/youtube/callback` registered as an authorized redirect URI.
+
+Behind a reverse proxy, set `PUBLIC_BASE_URL` to the public origin and register
+`<PUBLIC_BASE_URL>/api/auth/youtube/callback`. Without it the address is derived from the
+request, and a proxy hides the truth twice: TLS ends at the proxy, so the app sees `http`
+(uvicorn trusts `X-Forwarded-Proto` only from 127.0.0.1 by default), and nginx's default
+`proxy_pass` sends the *upstream* name as `Host`. Either way Google receives a redirect URI
+it does not know and answers `redirect_uri_mismatch`. When `PUBLIC_BASE_URL` is unset the
+scheme still follows `X-Forwarded-Proto` — the same rule that decides the session cookie's
+`Secure` flag — so the common TLS-only case works without it.
+
+The flow is **bound to the browser that started it.** `/start` sets a short-lived,
+`HttpOnly` cookie holding the `state`, and the callback rejects a `state` this browser did
+not start — before the code is sent to Google. A `state` that is merely valid and unused is
+not enough: without the binding, a callback link prepared in someone else's browser signs the
+person who opens it into *that* Google account (login CSRF), and everything they upload or
+publish afterwards lands there. Starting the flow twice in one browser leaves only the latest
+one completable.
 
 > Tokens are encrypted at rest when `SECRET_ENCRYPTION_KEY` is set (generate one with
 > `python -m src.storage.crypto`). Without a key they are stored in plaintext. Adding a key
@@ -822,17 +865,21 @@ src/
     metadata_ranker.py      scoring
     recommendation_service.py  global assignment
     topic_service.py / transcript_service.py / playlist_publish_service.py
-    rag_service.py          ingest + retrieval + the three abstention gates
+    rag_service.py          ingest + retrieval + the four abstention gates
     chunking.py             transcript/document → overlapping, timestamped chunks
     embedding_service.py    float32 BLOB vectors, cosine search (no vector DB)
     document_parser.py      PDF / DOCX / TXT / MD → (page, text)
     run_retention.py        deleting a run from the database AND from disk
     space_retention.py      deleting a learning space from the database AND from disk
   storage/sqlite_store.py   cache, provider cooldowns, run history, OAuth tokens, quota counters
+  storage/dialect.py        the whole SQLite <-> Postgres difference, in one place
+  storage/factory.py        `create_store`, the single construction path (`DATABASE_URL` picks the dialect)
+  storage/transfer.py       one-time SQLite -> Postgres data transfer
   storage/crypto.py         at-rest encryption for stored OAuth tokens
-  jobs/                     JobRunner abstraction (in-process today)
+  jobs/                     JobRunner: in-process (default) or Redis (`JOB_BACKEND=redis`)
+    worker.py               the Redis worker loop (`python -m src.jobs.worker`)
   utils/                    text, retry, logging, yt-dlp options
-tests/                      471 tests
+tests/                      backend tests (see Tests)
 ```
 
 ## Tests
@@ -841,15 +888,16 @@ tests/                      471 tests
 pytest -q
 ```
 
-359 backend tests, no network access, around ten seconds. Each significant bug fixed in this codebase
-has a regression test named after the behaviour it locks in. The suite runs without a `.env`
-and without any API key — CI has neither.
+836 backend tests, no internet access, around fifteen seconds. 74 of them need a real Redis or
+Postgres and skip without one (see [Scaling out](#scaling-out-optional)); CI runs them all. Each
+significant bug fixed in this codebase has a regression test named after the behaviour it locks
+in. The suite runs without a `.env` and without any API key — CI has neither.
 
 ```bash
 cd web && npm test
 ```
 
-47 frontend tests. Most cover `useRunStream` — the SSE hook, which holds the most intricate
+67 frontend tests. Most cover `useRunStream` — the SSE hook, which holds the most intricate
 logic on that side. They run against a fake `EventSource`, which is what makes them
 deterministic: the test decides when `progress`, `done`, or a bodiless `error` arrives, so
 nothing waits on a timer. The fake mirrors the browser contract in two details that matter —
@@ -859,13 +907,14 @@ would verify behaviour that cannot occur.
 
 ### CI
 
-`.github/workflows/ci.yml` runs four jobs on push and pull request:
+`.github/workflows/ci.yml` runs five jobs on push and pull request:
 
 | Job | What it protects |
 |---|---|
-| `backend` | Python 3.13: import check, `pyflakes`, full test suite |
+| `backend` | Python 3.13: import check, `pyflakes` (including `scripts/`), full test suite against real Redis and Postgres — a skipped test fails the job |
 | `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
 | `frontend` | `web/`: regenerates types from the backend, typecheck, tests, production build |
+| `docker` | Builds the image and checks that it starts without a `.env` and answers `/api/health` |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |
 
 ### The API contract

@@ -242,3 +242,28 @@ def test_active_cooldowns_show_the_server_scope(monkeypatch, tmp_path):
     assert len(body["active_cooldowns"]) == 1
     assert body["active_cooldowns"][0]["provider"] == "yt_dlp"
     assert body["active_cooldowns"][0]["scope"] == "__server__"
+
+
+def test_report_shows_rag_calls_per_user(monkeypatch, tmp_path):
+    """`MAX_RAG_*_PER_USER_PER_DAY` OLCUMLE secilebilmeli.
+
+    RAG sayaclari `units=0` ile yaziliyor (YouTube butcesine girmesinler
+    diye), dolayisiyla `by_user_units` onlari hic gostermiyordu ve
+    `by_endpoint` kullanicilari birlestiriyordu: kullanici basina bir sinir
+    secmek icin gereken tek sayi raporda yoktu.
+    """
+    client, store = _client(
+        monkeypatch, tmp_path, auth_mode="single_user", max_rag_questions_per_user_per_day=50
+    )
+    from api.routers.spaces import ASK, INGEST, RAG_USAGE_PROVIDER
+
+    for _ in range(3):
+        store.consume_daily_allowance("ali", RAG_USAGE_PROVIDER, ASK, limit=0)
+    store.consume_daily_allowance("veli", RAG_USAGE_PROVIDER, INGEST, limit=0)
+
+    with client:
+        report = client.get("/api/admin/usage").json()
+
+    assert report["rag_calls_by_user"] == {"ali": {ASK: 3}, "veli": {INGEST: 1}}
+    assert report["max_rag_questions_per_user_per_day"] == 50
+    assert report["quota"]["spent_units"] == 0, "RAG sayaclari YouTube kotasina girmemeli"
