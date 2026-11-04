@@ -420,3 +420,119 @@ def test_only_one_of_two_concurrent_callbacks_wins(client):
 
     winners = [item for item in results if item is not None]
     assert len(winners) == 1, f"tam olarak bir cagri kazanmali, {len(winners)} kazandi"
+
+
+# ------------------------------------------------- tarayiciya baglama (login CSRF)
+#
+# `state` tek kullanimlik ve depoda kayitli, ama TARAYICIYA bagli degildi:
+# akisi BASLATAN ile callback'i ACAN ayni tarayici olmak zorunda degildi.
+# Saldirgan kendi tarayicisinda akisi baslatip Google'dan donen `code` +
+# `state` baglantisini kurbana yolladiginda kurban SALDIRGANIN hesabiyla
+# oturum aciyordu (yeniden uretildi: `/api/auth/me` -> `google:ATTACKER-SUB`).
+# Kurbanin yukledigi dokumanlar ve yayinladigi listeler saldirgana gidiyordu.
+
+
+def _never_exchange(calls):
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("code") or args[2])
+        return ExchangedToken(token_json='{"token": "saldirgan"}')
+
+    return spy
+
+
+def test_start_binds_the_state_to_the_browser(client):
+    response = client.get("/api/auth/youtube/start")
+    state = response.json()["state"]
+    cookie = response.headers["set-cookie"]
+
+    assert f"{auth_router.STATE_COOKIE}={state}" in cookie
+    assert "httponly" in cookie.lower()
+    assert "samesite=lax" in cookie.lower()
+    # Yalnizca bu akisin uclarina gidiyor; uygulamanin geri kalanina degil.
+    assert "path=/api/auth/youtube" in cookie.lower()
+
+
+def test_callback_in_a_browser_that_did_not_start_the_flow_is_rejected(client, monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(auth_router, "exchange_code_for_token", _never_exchange(calls))
+
+    state = client.get("/api/auth/youtube/start").json()["state"]  # saldirganin tarayicisi
+    client.cookies.clear()  # kurbanin tarayicisi: baglama cerezi yok
+
+    response = client.get(
+        f"/api/auth/youtube/callback?code=saldirganin-kodu&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert client.store.get_oauth_token("local", "youtube") is None
+    assert calls == [], "kod Google'a hic gonderilmemeli"
+
+
+def test_callback_with_another_flows_state_is_rejected(client, monkeypatch):
+    """Kurbanin KENDI akisinin cerezi var ama gelen `state` baskasinin."""
+    calls: list[str] = []
+    monkeypatch.setattr(auth_router, "exchange_code_for_token", _never_exchange(calls))
+    attacker_state = "saldirganin-baslattigi-state"
+    client.store.put_oauth_state(attacker_state, None, "v", ttl_sec=600, max_pending=100)
+
+    client.get("/api/auth/youtube/start")  # kurban kendi akisini baslatti
+    response = client.get(
+        f"/api/auth/youtube/callback?code=k&state={attacker_state}", follow_redirects=False
+    )
+
+    assert response.status_code == 400
+    assert client.store.get_oauth_token("local", "youtube") is None
+    assert calls == []
+
+
+def test_login_csrf_does_not_sign_the_victim_in(tmp_path, monkeypatch):
+    """Ayni saldiri `multi_user` modunda: kurban saldirganin oturumunu ALMAMALI."""
+    config = AppConfig(
+        auth_mode="multi_user",
+        gemini_api_key="test-key",
+        youtube_oauth_client_id="client-id",
+        youtube_oauth_client_secret="client-secret",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    monkeypatch.setattr(
+        auth_router,
+        "exchange_code_for_token",
+        lambda *a, **kw: ExchangedToken(
+            token_json="{}", google_sub="ATTACKER-SUB", email="saldirgan@example.com"
+        ),
+    )
+
+    from api.main import app
+
+    with TestClient(app) as browser:
+        state = browser.get("/api/auth/youtube/start").json()["state"]
+        browser.cookies.clear()
+
+        response = browser.get(
+            f"/api/auth/youtube/callback?code=k&state={state}", follow_redirects=False
+        )
+
+        assert response.status_code == 400
+        assert auth_router.SESSION_COOKIE not in browser.cookies
+        assert browser.get("/api/auth/me").json()["signed_in"] is False
+
+
+def test_successful_callback_clears_the_binding_cookie(client, monkeypatch):
+    monkeypatch.setattr(
+        auth_router,
+        "exchange_code_for_token",
+        lambda *a, **kw: ExchangedToken(token_json='{"token": "abc"}'),
+    )
+    state = client.get("/api/auth/youtube/start").json()["state"]
+
+    response = client.get(
+        f"/api/auth/youtube/callback?code=kod&state={state}", follow_redirects=False
+    )
+
+    assert response.status_code in (302, 307)
+    cleared = response.headers["set-cookie"].lower()
+    assert f"{auth_router.STATE_COOKIE}=" in cleared and "max-age=0" in cleared

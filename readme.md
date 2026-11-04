@@ -706,6 +706,14 @@ stores tokens per user in the `oauth_token` table rather than a file. For that p
 Google Cloud client must be of type **Web application**, with
 `http://localhost:8000/api/auth/youtube/callback` registered as an authorized redirect URI.
 
+The flow is **bound to the browser that started it.** `/start` sets a short-lived,
+`HttpOnly` cookie holding the `state`, and the callback rejects a `state` this browser did
+not start — before the code is sent to Google. A `state` that is merely valid and unused is
+not enough: without the binding, a callback link prepared in someone else's browser signs the
+person who opens it into *that* Google account (login CSRF), and everything they upload or
+publish afterwards lands there. Starting the flow twice in one browser leaves only the latest
+one completable.
+
 > Tokens are encrypted at rest when `SECRET_ENCRYPTION_KEY` is set (generate one with
 > `python -m src.storage.crypto`). Without a key they are stored in plaintext. Adding a key
 > later is safe — existing plaintext rows keep working and are encrypted on next write.
