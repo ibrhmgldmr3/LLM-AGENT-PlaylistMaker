@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from src.models import PlaylistResult, TranscriptResult, VideoCandidate
 from src.storage.crypto import SecretBox
@@ -430,7 +430,21 @@ class SQLiteStore:
         satir yaziliyor. (Bu tabloda yerinde sema degisikligi bir kez CI'i
         kirmisti -- bkz. `_copy_legacy_provider_health`.) Islem tekrarlanabilir:
         ikinci calistirmada tasinacak satir kalmadigi icin etkisiz.
+
+        Tasinacak satir YOKSA hic YAZILMIYOR. Bu fonksiyon her store
+        kurulumunda -- yani `get_store` uzerinden HER ISTEKTE -- calisiyor ve
+        `INSERT ... SELECT` ile `DELETE`, hicbir satir eslesmese bile yazma
+        kilidi istiyor. Kosulsuz calistigi surece salt okunur istekler de baska
+        bir yazicinin kilidini bekliyordu; WAL'in "okuyucu yaziciyi beklemez"
+        kazanci boylece kayboluyordu (olculdu: kilitsiz 11 ms, kilit altinda
+        4047 ms, 30 sn'yi asinca HTTP 500). Gocun kendisi tek seferlik; ilk
+        calismadan sonra asagidaki SELECT hep bos donuyor ve kilit gerekmiyor.
         """
+        pending = conn.execute(
+            "SELECT 1 FROM provider_cooldown WHERE user_id != ? LIMIT 1", (SERVER_SCOPE,)
+        ).fetchone()
+        if pending is None:
+            return
         conn.execute(
             """
             INSERT INTO provider_cooldown
@@ -829,27 +843,58 @@ class SQLiteStore:
                 )
         return removed
 
-    def mark_interrupted_runs(self) -> int:
+    def mark_interrupted_runs(self, is_live: Callable[[str], bool] | None = None) -> int:
         """Yarida kalmis calistirmalari isaretler; isaretlenen sayiyi doner.
 
-        YALNIZCA ACILISTA cagrilmali. Olcut "sonucu yok" -- ve bu, ancak hicbir
-        is calismiyorken dogru bir olcut: surec icinde calisan bir calistirmanin
-        da sonucu henuz yoktur. Acilista tanim geregi hicbir is calismiyor
-        (`InProcessJobRunner` durumu bellekte tutuyor ve yeniden baslamayla
-        kayboluyor), dolayisiyla sonucu olmayan her satir gercekten yarida
-        kalmis demektir.
+        YALNIZCA ACILISTA cagrilmali. Olcut "sonucu yok" TEK BASINA YETMIYOR:
+        calisan bir calistirmanin da sonucu henuz yoktur. Bir calistirma ancak
+        sonucu yoksa VE is kosucusu onu canli bir is olarak tanimiyorsa
+        (`is_live` False) yarida kalmistir.
+
+        `is_live` verilmezse hicbir is canli sayilmiyor. Bellek ici kosucuda
+        acilista dogru olan tam olarak bu: durum surecle birlikte kayboldu,
+        yani sonucu olmayan her satir gercekten yarida kaldi. Redis
+        topolojisinde DEGIL -- isler ayri bir worker'da calisiyor ve web
+        replikasinin yeniden baslamasi onlari durdurmuyor. Eskiden `is_live`
+        yoktu ve her dagitim worker'da SUREN isleri de isaretliyordu:
+        rezervasyonlari sifirlaniyor, gunluk haklari iade ediliyordu.
+
+        `is_live` veritabani baglantisi DISINDA cagriliyor: Redis'e gidebilir
+        ve o sirada yazma kilidi tutulmamali.
 
         Neden isaretleniyor da SILINMIYOR: gecmis listesinde "yarim kaldi"
         olarak gorunmeye devam etmeli. Kullaniciya yalan soylemeden hakkini
         geri vermenin yolu bu.
         """
         with self.connect() as conn:
-            cursor = conn.execute(
-                "UPDATE run SET interrupted_at = ?, reserved_units = 0"
-                " WHERE result_json IS NULL AND interrupted_at IS NULL",
-                (_to_iso(_utc_now()),),
-            )
-            return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+            candidates = [
+                row["run_id"]
+                for row in conn.execute(
+                    "SELECT run_id FROM run WHERE result_json IS NULL AND interrupted_at IS NULL"
+                )
+            ]
+        if is_live is not None:
+            candidates = [run_id for run_id in candidates if not is_live(run_id)]
+        if not candidates:
+            return 0
+
+        marked = 0
+        now = _to_iso(_utc_now())
+        with self.connect() as conn:
+            # Kosullar UPDATE'te TEKRARLANIYOR: secim ile yazma arasinda biten
+            # bir calistirma (sonucu yazildi) isaretlenmemeli.
+            for start in range(0, len(candidates), 500):
+                chunk = candidates[start : start + 500]
+                placeholders = ", ".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    "UPDATE run SET interrupted_at = ?, reserved_units = 0"
+                    f" WHERE run_id IN ({placeholders})"
+                    " AND result_json IS NULL AND interrupted_at IS NULL",
+                    (now, *chunk),
+                )
+                if cursor.rowcount and cursor.rowcount > 0:
+                    marked += cursor.rowcount
+        return marked
 
     def list_run_ids(self) -> set[str]:
         """Veritabaninda kayitli tum calistirma kimlikleri.
@@ -1048,20 +1093,65 @@ class SQLiteStore:
         yani alt sinir pratikte gercege cok yakin.
         """
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO api_usage (day, user_id, provider, endpoint, calls, units)
-                VALUES (?, ?, ?, ?, 1, ?)
-                -- Sutunlar TABLO ADIYLA nitelikli. Niteliksiz `calls`,
-                -- Postgres'te hedef satirla `excluded` arasinda BELIRSIZ
-                -- (`AmbiguousColumn`); SQLite ise kabul ediyor, yani hata
-                -- yalnizca Postgres'te ve yalnizca CALISMA aninda cikiyor.
-                ON CONFLICT(day, user_id, provider, endpoint) DO UPDATE SET
-                    calls = api_usage.calls + 1,
-                    units = api_usage.units + excluded.units
-                """,
-                (day or quota_day(), user_id, provider, endpoint, int(units)),
-            )
+            self._add_api_call(conn, day or quota_day(), user_id, provider, endpoint, units)
+
+    @staticmethod
+    def _add_api_call(conn, day: str, user_id: str, provider: str, endpoint: str, units: int) -> None:
+        conn.execute(
+            """
+            INSERT INTO api_usage (day, user_id, provider, endpoint, calls, units)
+            VALUES (?, ?, ?, ?, 1, ?)
+            -- Sutunlar TABLO ADIYLA nitelikli. Niteliksiz `calls`,
+            -- Postgres'te hedef satirla `excluded` arasinda BELIRSIZ
+            -- (`AmbiguousColumn`); SQLite ise kabul ediyor, yani hata
+            -- yalnizca Postgres'te ve yalnizca CALISMA aninda cikiyor.
+            ON CONFLICT(day, user_id, provider, endpoint) DO UPDATE SET
+                calls = api_usage.calls + 1,
+                units = api_usage.units + excluded.units
+            """,
+            (day, user_id, provider, endpoint, int(units)),
+        )
+
+    def daily_calls(self, user_id: str, provider: str, endpoint: str, day: str | None = None) -> int:
+        """Bir kullanicinin bir kota gunundeki cagri sayisi. Salt okunur."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT calls FROM api_usage"
+                " WHERE day = ? AND user_id = ? AND provider = ? AND endpoint = ?",
+                (day or quota_day(), user_id, provider, endpoint),
+            ).fetchone()
+        return int(row["calls"]) if row else 0
+
+    def consume_daily_allowance(self, user_id: str, provider: str, endpoint: str, limit: int) -> bool:
+        """Gunluk haktan BIR tuketir; hak kalmadiysa `False` doner ve HICBIR SEY yazmaz.
+
+        Sayma ve yazma AYNI islemde, `create_run_within_daily_limit` ile ayni
+        gerekceyle: ayrildiklarinda es zamanli istekler ayni eski sayiyi
+        okuyup hepsi gecer (orada olculmustu: 3 sinirinda 12 istekten 11'i).
+        Kilit KULLANICI basina: farkli kullanicilarin istekleri birbirini
+        beklemesin (Postgres'te tavsiye kilidi; SQLite'ta zaten dosya geneli).
+
+        `limit=0` sinirsiz -- ama sayac YINE artiyor: admin raporu gercek
+        kullanimi gostermeli ki sinir tahminle degil olcumle secilsin. Kilit
+        yalnizca sinir varken aliniyor.
+
+        `units=0` BILEREK: `api_usage.units` YouTube kota butcesinin kaynagi
+        (bkz. `sum_api_units`) ve bu sayaclar ona girmemeli. Embedding sayaci
+        da ayni kurali izliyor (`embedding_service`).
+        """
+        day = quota_day()
+        with self.connect() as conn:
+            if limit:
+                self._dialect.lock(conn, f"daily_allowance:{user_id}")
+                row = conn.execute(
+                    "SELECT calls FROM api_usage"
+                    " WHERE day = ? AND user_id = ? AND provider = ? AND endpoint = ?",
+                    (day, user_id, provider, endpoint),
+                ).fetchone()
+                if row is not None and int(row["calls"]) >= limit:
+                    return False
+            self._add_api_call(conn, day, user_id, provider, endpoint, units=0)
+        return True
 
     def sum_api_units(self, user_id: str | None = None, day: str | None = None) -> int:
         """Bir kota gununde harcanan toplam birim. `user_id=None` = tum kullanicilar."""

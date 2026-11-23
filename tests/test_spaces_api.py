@@ -574,3 +574,58 @@ def test_transcribe_video_source_in_space(client, monkeypatch):
     assert text_body["transcript_source"] == "asr"
 
 
+
+
+# ------------------------------------------------------ gunluk kullanim siniri
+#
+# Anahtarlar PAYLASIMLI ve RAG uclarinin hicbirinde kullanici basina sinir
+# yoktu: her soru bir embedding + bir uretim cagrisi, her iceri alma transkript
+# + embedding, transkript ucu ise ASR. `multi_user`da tek bir kullanici
+# sunucunun gunluk LLM kotasini herkes icin bitirebiliyordu.
+
+
+def test_questions_beyond_the_daily_limit_are_refused(client):
+    client.app_config.max_rag_questions_per_user_per_day = 2
+    space_id = _create(client)
+    _upload(client, space_id)
+
+    for _ in range(2):
+        ok = client.post(f"/api/spaces/{space_id}/ask", json={"question": "kovaryans"})
+        assert ok.status_code == 200
+    refused = client.post(f"/api/spaces/{space_id}/ask", json={"question": "kovaryans"})
+
+    assert refused.status_code == 429
+    assert "(2)" in refused.json()["detail"]
+    assert int(refused.headers["Retry-After"]) > 0
+
+
+def test_uploads_beyond_the_daily_limit_are_refused_and_leave_no_file(client):
+    from pathlib import Path
+
+    client.app_config.max_rag_ingests_per_user_per_day = 1
+    space_id = _create(client)
+    _upload(client, space_id, filename="bir.txt")
+
+    refused = client.post(
+        f"/api/spaces/{space_id}/sources/document",
+        files={"file": ("iki.txt", b"Entropi azalir.", "text/plain")},
+    )
+
+    assert refused.status_code == 429
+    assert int(refused.headers["Retry-After"]) > 0
+    titles = [s["title"] for s in client.get(f"/api/spaces/{space_id}").json()["sources"]]
+    assert titles == ["bir.txt"]
+    uploads = Path(client.app_config.data_dir) / "uploads"
+    assert len(list(uploads.rglob("*.txt"))) == 1, "reddedilen dosya diskte kalmamali"
+
+
+def test_the_ingest_limit_is_shared_by_every_way_of_adding_a_source(client):
+    """Dokuman, calistirma videolari ve ASR AYNI hakki tuketiyor."""
+    client.app_config.max_rag_ingests_per_user_per_day = 1
+    space_id = _create(client)
+    _seed_run(client)
+    _upload(client, space_id)
+
+    from_run = client.post(f"/api/spaces/{space_id}/sources/run", json={"run_id": "run1"})
+
+    assert from_run.status_code == 429

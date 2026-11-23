@@ -3,9 +3,10 @@
 `run_local_server` sunucuda tarayici acmaya calisiyordu; bir web uygulamasinda
 bu imkansiz. Standart uc adimli akis:
 
-    1. GET  /api/auth/youtube/start    -> Google onay URL'i
+    1. GET  /api/auth/youtube/start    -> Google onay URL'i + baglama cerezi
     2. (kullanici Google'da onaylar)
-    3. GET  /api/auth/youtube/callback -> kod -> jeton -> kullaniciya bagli saklanir
+    3. GET  /api/auth/youtube/callback -> cerez == state mi -> kod -> jeton
+                                          -> kullaniciya bagli saklanir
 """
 
 from __future__ import annotations
@@ -56,6 +57,25 @@ STATE_TTL_SECONDS = 600
 # icinde sozlugu istedigi kadar buyutebilen kimliksiz bir yol kalirdi.
 MAX_PENDING_STATES = 10_000
 
+# `state`i akisi BASLATAN tarayiciya baglayan cerez.
+#
+# Depodaki kayit tek basina yetmiyordu: `state` tek kullanimlik ve suresi
+# dolan bir sirdi ama HANGI tarayiciya ait oldugunu bilmiyordu. Saldirgan
+# akisi kendi tarayicisinda baslatip Google'dan donen `code` + `state`
+# baglantisini kurbana yolladiginda callback'i acan KURBAN, saldirganin
+# hesabiyla oturum aciyordu (login CSRF). Kurbanin bundan sonra yukledigi
+# dokumanlar ve yayinladigi listeler saldirganin hesabina gidiyordu.
+#
+# Cerez yalnizca bu akisin uclarina gidiyor (`path`) ve JavaScript'ten
+# okunamiyor. `SameSite=Lax` Google'dan donen ust duzey GET yonlendirmesinde
+# gonderiliyor; capraz siteli alt istekler onu tasimiyor.
+#
+# Bilinen sinir: ayni tarayicida iki akis ust uste baslatilirsa (iki sekme)
+# YALNIZCA sonuncusu tamamlanabilir; ilki "yeniden baslatin" der. Tek akis
+# icin kurulmus bir giris ekraninda bu kabul edilebilir bir bedel.
+STATE_COOKIE = "map_oauth_state"
+STATE_COOKIE_PATH = "/api/auth/youtube"
+
 # Bekleyen yetkilendirmeler ARTIK PAYLASIMLI DEPODA (bkz.
 # `SQLiteStore.put_oauth_state` / `consume_oauth_state`).
 #
@@ -70,9 +90,26 @@ MAX_PENDING_STATES = 10_000
 # `oauth_token` ile ayni sekilde SIFRELENIYOR.
 
 
-def _redirect_uri(request: Request) -> str:
-    """Callback ucunun mutlak adresi; Google Console'a da bu yazilmali."""
-    return str(request.url_for("youtube_callback"))
+def _redirect_uri(request: Request, server: ServerConfig) -> str:
+    """Callback ucunun mutlak adresi; Google Console'a da bu yazilmali.
+
+    `/start` ve `/callback` AYNI degeri uretmeli: Google kod degisiminde
+    `redirect_uri`nin yetkilendirmedekiyle birebir ayni olmasini istiyor.
+
+    `PUBLIC_BASE_URL` tanimliysa TEK YETKILI kaynak o. Tanimsizsa adres
+    istekten kuruluyor ama SEMA `_request_is_https` ile -- oturum cerezinin
+    `secure` kararini veren AYNI kural. Eskiden `request.url_for` oldugu gibi
+    kullaniliyordu: TLS ters proxy'de sonlandiginda uygulamaya `http` geliyor
+    (uvicorn `X-Forwarded-Proto`ya varsayilan olarak yalnizca 127.0.0.1'den
+    guveniyor), Google'a `http://...` gidiyor ve kayitli `https://...` ile
+    eslesmiyordu. Cerez basligi okurken adres okumuyordu; iki karar
+    ayrismisti. `Host`un da yanlis olabildigi kurulumlar (varsayilan nginx)
+    icin cozum `PUBLIC_BASE_URL`.
+    """
+    url = request.url_for("youtube_callback")
+    if server.public_base_url:
+        return f"{server.public_base_url}{url.path}"
+    return str(url.replace(scheme="https" if _request_is_https(request) else "http"))
 
 
 def _oauth_client_configured(server: ServerConfig) -> bool:
@@ -103,6 +140,7 @@ def get_status(
 @router.get("/start")
 def start_authorization(
     request: Request,
+    response: Response,
     server: ServerConfig = Depends(get_server_config),
     store: SQLiteStore = Depends(get_store),
 ) -> dict:
@@ -117,7 +155,7 @@ def start_authorization(
     placeholder = secrets.token_urlsafe(24)
     try:
         url, code_verifier = build_authorization_url(
-            server, _redirect_uri(request), placeholder, scopes=LOGIN_SCOPES
+            server, _redirect_uri(request, server), placeholder, scopes=LOGIN_SCOPES
         )
     except Exception as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, redact_secrets(str(exc))) from exc
@@ -131,6 +169,17 @@ def start_authorization(
         code_verifier,
         ttl_sec=STATE_TTL_SECONDS,
         max_pending=MAX_PENDING_STATES,
+    )
+    # Callback'te bu tarayicinin akisi baslattigi bununla kanitlaniyor; bkz.
+    # `STATE_COOKIE`. Omru state'in TTL'i ile ayni.
+    response.set_cookie(
+        STATE_COOKIE,
+        placeholder,
+        max_age=STATE_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=_request_is_https(request),
+        path=STATE_COOKIE_PATH,
     )
     return {"authorization_url": url, "state": placeholder}
 
@@ -154,9 +203,24 @@ def youtube_callback(
         # KODLANIYOR: `error` Google'in verdigi ham sorgu parametresi ve
         # kodlanmadan yazildiginda icindeki `&` ya da `#` yonlendirme URL'ini
         # bolup arayuze uydurma parametre gecirebiliyordu.
-        return RedirectResponse(f"/?youtube_auth=error&reason={quote(error, safe='')}")
+        denied = RedirectResponse(f"/?youtube_auth=error&reason={quote(error, safe='')}")
+        denied.delete_cookie(STATE_COOKIE, path=STATE_COOKIE_PATH)
+        return denied
     if not code or not state:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Eksik `code` veya `state`")
+
+    # Akisi BU tarayici mi baslatti? (login CSRF; bkz. `STATE_COOKIE`)
+    #
+    # State TUKETILMEDEN ve kod Google'a GONDERILMEDEN once: eslesmeyen bir
+    # istek hicbir yan etki birakmamali. Bayt olarak karsilastiriliyor:
+    # `compare_digest` ASCII disi `str` alinca hata firlatiyor ve `state`
+    # disaridan gelen bir sorgu parametresi.
+    bound = request.cookies.get(STATE_COOKIE)
+    if not bound or not secrets.compare_digest(bound.encode(), state.encode()):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Giriş bu tarayıcıda başlatılmamış ya da süresi dolmuş; girişi yeniden başlatın.",
+        )
 
     # `state` dogrulamasi CSRF korumasi: bu akisi biz baslatmis olmaliyiz.
     # TEK KULLANIMLIK tuketim ve TTL kontrolu depoda, tek islem icinde.
@@ -167,7 +231,7 @@ def youtube_callback(
 
     try:
         exchanged = exchange_code_for_token(
-            server, _redirect_uri(request), code, code_verifier=code_verifier, scopes=LOGIN_SCOPES
+            server, _redirect_uri(request, server), code, code_verifier=code_verifier, scopes=LOGIN_SCOPES
         )
     except Exception as exc:
         raise HTTPException(
@@ -175,6 +239,8 @@ def youtube_callback(
         ) from exc
 
     response = RedirectResponse("/?youtube_auth=ok")
+    # Akis bitti; baglama cerezinin artik bir isi yok.
+    response.delete_cookie(STATE_COOKIE, path=STATE_COOKIE_PATH)
 
     if server.auth_mode == "single_user":
         store.save_oauth_token(DEFAULT_USER_ID, PROVIDER, exchanged.token_json)

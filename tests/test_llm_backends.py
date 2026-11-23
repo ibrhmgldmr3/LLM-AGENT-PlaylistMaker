@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.config import AppConfig
+from src.config import AppConfig, ServerConfig
 from src.providers.errors import (
     ProviderPermanentError,
     ProviderRateLimitedError,
@@ -133,6 +133,21 @@ def test_openrouter_without_a_key_fails_clearly():
 def test_openrouter_key_is_read_from_one_place():
     assert AppConfig(llm_provider="openrouter", openrouter_api_key="o").llm_api_key() == "o"
     assert AppConfig(llm_provider="openrouter", gemini_api_key="g").llm_api_key() is None
+
+
+def test_server_config_knows_the_selected_providers_key():
+    """Regresyon: `get_user_credentials` OpenRouter'i hic tanimiyordu.
+
+    O kontrol yalnizca `ServerConfig` goruyor ve `llm_api_key()` yalnizca
+    `AppConfig` uzerindeydi; bu yuzden saglayicilari elle sayiyordu
+    (`together or gemini`) ve listeye OpenRouter eklenmemisti. Yalnizca
+    `OPENROUTER_API_KEY` ile kurulan sunucu her ucta 503 donuyordu.
+    """
+    server = ServerConfig(llm_provider="openrouter", openrouter_api_key="o")
+    assert server.llm_api_key() == "o"
+    assert server.llm_api_key_env() == "OPENROUTER_API_KEY"
+    assert ServerConfig(llm_provider="together").llm_api_key_env() == "TOGETHER_API_KEY"
+    assert ServerConfig().llm_api_key_env() == "GEMINI_API_KEY"
 
 
 def test_openrouter_embed_fails_clearly():

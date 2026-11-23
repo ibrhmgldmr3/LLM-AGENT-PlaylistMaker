@@ -516,3 +516,132 @@ def _wait_for_state(client, run_id, state, timeout=5.0):
             return
         time.sleep(0.02)
     raise AssertionError(f"`{state}` durumuna {timeout}s icinde ulasilmadi")
+
+
+# ------------------------------------------------------- saglayici anahtari
+
+
+def _client_with(tmp_path, monkeypatch, **overrides):
+    config = AppConfig(
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "cache" / "app.db"),
+        **overrides,
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+
+    from api.main import app
+
+    return TestClient(app)
+
+
+def test_openrouter_only_setup_is_served(tmp_path, monkeypatch):
+    """Regresyon: yalnizca `OPENROUTER_API_KEY` ile kurulan sunucu her ucta 503.
+
+    `.env.example` OpenRouter'i destekliyor ama anahtar kontrolu yalnizca
+    Gemini ve Together'i sayiyordu: `/api/config` bile 503 donuyor, arayuz
+    hicbir yetenegi ogrenemiyordu.
+    """
+    with _client_with(
+        tmp_path, monkeypatch,
+        llm_provider="openrouter", openrouter_api_key="o", enable_rag=True,
+    ) as client:
+        config = client.get("/api/config")
+        assert config.status_code == 200
+        assert config.json()["llm_configured"] is True
+        assert client.post("/api/spaces", json={"name": "defter"}).status_code == 201
+
+
+def test_key_of_an_unselected_provider_does_not_count(tmp_path, monkeypatch):
+    """`LLM_PROVIDER=gemini` iken yalnizca `TOGETHER_API_KEY` yetmez.
+
+    Eski kontrol "herhangi bir anahtar" ariyordu: istek kabul ediliyor, kota
+    rezerve ediliyor ve is ILK LLM cagrisinda dusuyordu. Okunan tek anahtar
+    secilen saglayicininki; mesaj da tam olarak onu adlandirmali.
+    """
+    with _client_with(tmp_path, monkeypatch, together_api_key="t") as client:
+        response = client.post("/api/runs", json={"topic": "zaman serisi"})
+
+    assert response.status_code == 503
+    assert "GEMINI_API_KEY" in response.json()["detail"]
+
+
+# ------------------------------------------- single_user'in disariya acilmasi
+
+
+def _request_from(host):
+    from starlette.requests import Request
+
+    return Request({"type": "http", "headers": [], "client": (host, 50000) if host else None})
+
+
+@pytest.fixture
+def single_user_server(tmp_path, monkeypatch):
+    config = AppConfig(
+        gemini_api_key="k", data_dir=str(tmp_path), sqlite_path=str(tmp_path / "app.db")
+    )
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    monkeypatch.setattr(deps, "_exposure_warned", False)
+
+
+def test_single_user_reached_from_another_machine_is_reported(single_user_server, caplog):
+    """`single_user`da oturum YOK: istegi yapan HERKES sunucu sahibi sayiliyor.
+
+    Varsayilan Docker kurulumu tam olarak bu: `AUTH_MODE` tanimsiz (=
+    single_user) ve CMD `0.0.0.0`a baglaniyor. Uygulama hangi adrese
+    baglandigini guvenilir bicimde bilemiyor; asil soruyu yanitlayan sinyal,
+    yerel olmayan bir istemcinin gercekten ulasmis olmasi.
+    """
+    with caplog.at_level("WARNING", logger="api"):
+        assert deps.get_current_user_optional(_request_from("203.0.113.7")) == "local"
+        deps.get_current_user_optional(_request_from("198.51.100.9"))
+
+    warnings = [r for r in caplog.records if "AUTH_MODE=single_user" in r.getMessage()]
+    assert len(warnings) == 1, "surec basina BIR KEZ uyarilmali; her istekte degil"
+    assert "203.0.113.7" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "::ffff:127.0.0.1", "testclient", None])
+def test_local_or_unknown_clients_do_not_trigger_the_exposure_warning(
+    single_user_server, caplog, host
+):
+    """Yerel istemci (ve IP olmayan test istemcisi / unix soketi) uyari degil."""
+    with caplog.at_level("WARNING", logger="api"):
+        deps.get_current_user_optional(_request_from(host))
+
+    assert not [r for r in caplog.records if "AUTH_MODE=single_user" in r.getMessage()]
+
+
+@pytest.mark.parametrize(
+    ("questions", "ingests", "expected"),
+    [
+        (0, 0, ["MAX_RAG_QUESTIONS_PER_USER_PER_DAY", "MAX_RAG_INGESTS_PER_USER_PER_DAY"]),
+        (30, 0, ["MAX_RAG_INGESTS_PER_USER_PER_DAY"]),
+        (30, 10, []),
+    ],
+)
+def test_unbounded_rag_in_multi_user_is_reported_at_startup(
+    tmp_path, monkeypatch, caplog, questions, ingests, expected
+):
+    """Varsayilan 0 oldugu icin bu durum yapilandirmaya dokunmayan kurulumda KENDILIGINDEN olusuyor."""
+    from api import main
+
+    config = AppConfig(
+        auth_mode="multi_user", gemini_api_key="k", enable_rag=True,
+        max_runs_per_user_per_day=3,
+        max_rag_questions_per_user_per_day=questions,
+        max_rag_ingests_per_user_per_day=ingests,
+        data_dir=str(tmp_path), sqlite_path=str(tmp_path / "app.db"),
+    )
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+
+    with caplog.at_level("WARNING", logger="api"):
+        main._warn_on_unbounded_shared_quota()
+
+    rag = [r.getMessage() for r in caplog.records if "ENABLE_RAG=true" in r.getMessage()]
+    if not expected:
+        assert rag == []
+    else:
+        assert len(rag) == 1
+        for name in expected:
+            assert name in rag[0]

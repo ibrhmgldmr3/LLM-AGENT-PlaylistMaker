@@ -241,3 +241,34 @@ def test_column_migration_tolerates_a_concurrent_writer(tmp_path):
         conn.close()
 
     assert "failure_count" in columns
+
+
+def test_opening_a_store_does_not_wait_for_another_writer(tmp_path, monkeypatch):
+    """Regresyon: salt okunur istekler bile BASKA bir yazicinin kilidini bekliyordu.
+
+    `get_store` her istekte yeni bir `SQLiteStore` kuruyor ve kurulum eski bir
+    gocu (`_collapse_cooldowns_to_server_scope`) KOSULSUZ calistiriyordu:
+    tasinacak satir olmasa da `INSERT ... SELECT` + `DELETE` yazma kilidi
+    istiyordu. WAL'in "okuyucu yaziciyi beklemez" kazanci boylece kayboluyordu.
+    Olculdu: `GET /api/runs` kilitsiz 11 ms, baska bir baglanti yazarken
+    4047 ms; kilit `BUSY_TIMEOUT_SEC`i (30 sn) asinca HTTP 500.
+
+    Bekleme suresi kisaltiliyor: hata 30 sn beklemek yerine HEMEN
+    "database is locked" olarak gorunsun.
+    """
+    import sqlite3
+
+    from src.storage import dialect
+
+    path = str(tmp_path / "app.db")
+    SQLiteStore(path)  # sema hazir; bundan sonrasi her istegin izledigi yol
+    monkeypatch.setattr(dialect, "BUSY_TIMEOUT_SEC", 0.2)
+
+    writer = sqlite3.connect(path, isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        store = SQLiteStore(path)
+        assert store.count_runs(user_id="local") == 0
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()

@@ -138,6 +138,53 @@ def test_marking_is_idempotent(tmp_path):
     assert store.mark_interrupted_runs() == 0
 
 
+def test_startup_leaves_runs_the_shared_job_runner_still_owns(tmp_path, monkeypatch):
+    """Regresyon: `JOB_BACKEND=redis` iken web acilisi worker'da SUREN isleri de kesiyordu.
+
+    `mark_interrupted_runs` "acilista hicbir is calismiyor" varsayimina
+    dayaniyordu. Bellek ici kosucuda dogru; Redis topolojisinde DEGIL: isler
+    ayri bir worker'da calisiyor ve bir web replikasinin yeniden baslamasi
+    (her dagitim) onlari durdurmuyor. Sonucu olmayan her satir isaretleniyor,
+    `reserved_units` sifirlaniyor ve gunluk hak iade ediliyordu -- is hala
+    YouTube kotasi harcarken butce kontrolu onu artik gormuyordu.
+
+    Kural artik: sonucu olmayan bir calistirma, ancak is kosucusu onu CANLI
+    (bekleyen ya da calisan) bir is olarak TANIMIYORSA yarida kalmistir.
+    """
+    from api import main
+    from src.config import settings
+    from src.jobs.playlist_task import BUILD_PLAYLIST
+    from src.jobs.redis_runner import RedisJobRunner
+    from tests.test_redis_runner import FakeRedis
+
+    config, store = _setup(tmp_path)
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    runner = RedisJobRunner(FakeRedis())
+
+    # Kabul edilmis ve kuyruga alinmis: worker'da bekliyor ya da calisiyor.
+    assert store.create_run_within_daily_limit("suren", "k", {}, user_id="ali", max_per_day=1)
+    runner.submit("suren", "ali", BUILD_PLAYLIST, {})
+    # Onceki bir cokmeden kalmis: kosucu onu artik tanimiyor (TTL dolmus).
+    assert store.create_run_within_daily_limit("kalan", "k", {}, user_id="veli", max_per_day=1)
+
+    main._mark_interrupted_runs(runner)
+
+    assert not store.create_run_within_daily_limit("r3", "k", {}, user_id="ali", max_per_day=1), (
+        "worker'da suren isin hakki iade edilmemeli"
+    )
+    assert store.create_run_within_daily_limit("r4", "k", {}, user_id="veli", max_per_day=1), (
+        "kosucunun tanimadigi is gercekten yarida kalmistir; hak iade edilmeli"
+    )
+
+
+def test_a_finished_job_without_a_result_is_still_interrupted(tmp_path):
+    """Kosucunun BITMIS (basarisiz/iptal) bildirdigi is canli sayilmaz."""
+    _, store = _setup(tmp_path)
+    store.create_run_within_daily_limit("r1", "k", {}, user_id="ali", max_per_day=0)
+
+    assert store.mark_interrupted_runs(is_live=lambda run_id: False) == 1
+
+
 def test_interrupted_runs_still_appear_in_history(tmp_path):
     """Isaretleniyor da SILINMIYOR: kullanici ne oldugunu gorebilmeli."""
     _, store = _setup(tmp_path)

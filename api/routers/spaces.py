@@ -62,6 +62,7 @@ from src.providers import create_rag_llm_provider
 from src.services import rag_service, space_retention
 from src.services.document_parser import SUPPORTED_EXTENSIONS
 from src.storage import SQLiteStore
+from src.storage.sqlite_store import seconds_until_next_quota_day
 from src.utils.logging_utils import redact_secrets
 
 router = APIRouter(prefix="/api/spaces", tags=["spaces"])
@@ -86,7 +87,8 @@ def _require_rag(config: AppConfig) -> None:
     if not config.llm_api_key():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "LLM sağlayıcı anahtarı yapılandırılmamış (GEMINI_API_KEY veya TOGETHER_API_KEY)",
+            f"LLM sağlayıcı anahtarı yapılandırılmamış: "
+            f"LLM_PROVIDER={config.llm_provider} için {config.llm_api_key_env()} tanımlı değil",
         )
 
 
@@ -103,6 +105,34 @@ def _owned_space(store: SQLiteStore, space_id: str, user_id: str) -> dict:
     if space is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen öğrenme alanı")
     return space
+
+
+# Gunluk kullanim hakki (`MAX_RAG_*_PER_USER_PER_DAY`). Sayaclar `api_usage`
+# icinde `units=0` ile tutuluyor; admin raporunda `rag_calls_by_user` altinda
+# gorunuyorlar. Uc ad raporun `by_endpoint` dokumunde de tek basina
+# anlasilsin diye onekli. Uc kaynak ekleme yolu (dokuman, calistirma, ASR)
+# AYNI hakki tuketiyor: hepsinin maliyeti transkript + embedding.
+RAG_USAGE_PROVIDER = "rag"
+ASK = "rag_ask"
+INGEST = "rag_ingest"
+_ALLOWANCE_NAME = {ASK: "soru sorma", INGEST: "kaynak ekleme"}
+
+
+def _allowance_exhausted(endpoint: str, limit: int) -> HTTPException:
+    # `Retry-After` gercek sifirlanma anina gore; calistirma sinirindaki gibi
+    # (bkz. `runs.create_run`): gun Pasifik saatiyle donuyor.
+    return HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        f"Bugünlük {_ALLOWANCE_NAME[endpoint]} hakkınız doldu ({limit}). "
+        "Kota sıfırlandığında tekrar deneyin.",
+        headers={"Retry-After": str(seconds_until_next_quota_day())},
+    )
+
+
+def _take_allowance(store: SQLiteStore, user_id: str, endpoint: str, limit: int) -> None:
+    """Gunluk haktan bir tuketir; kalmadiysa 429. `limit=0` sinirsiz (yine sayilir)."""
+    if not store.consume_daily_allowance(user_id, RAG_USAGE_PROVIDER, endpoint, limit):
+        raise _allowance_exhausted(endpoint, limit)
 
 
 def _detail(store: SQLiteStore, space: dict, embedding_model: str) -> SpaceDetail:
@@ -248,6 +278,7 @@ def add_run_source(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen çalıştırma")
     if not summary["is_complete"]:
         raise HTTPException(status.HTTP_409_CONFLICT, "Çalıştırma henüz tamamlanmadı")
+    _take_allowance(store, user_id, INGEST, server.max_rag_ingests_per_user_per_day)
 
     job_id = new_job_id()
     # Kuyruga giden sey VERI: is adi + kimlikler. `config`, `store` ve `llm`
@@ -306,6 +337,13 @@ async def add_document_source(
             f"Desteklenenler: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
         )
 
+    # ON KONTROL, salt okunur: hakki bitmis birinin dosyasi diske hic
+    # yazilmasin (20 MB'a kadar). Asil tuketim asagida, yazma basarili olunca;
+    # kontrol ile tuketim arasindaki yarisi o adim cozuyor.
+    ingest_limit = server.max_rag_ingests_per_user_per_day
+    if ingest_limit and store.daily_calls(user_id, RAG_USAGE_PROVIDER, INGEST) >= ingest_limit:
+        raise _allowance_exhausted(INGEST, ingest_limit)
+
     stored_name = f"{uuid4().hex}{suffix}"
     target_dir = space_retention.space_upload_dir(config, user_id, space_id)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -338,6 +376,14 @@ async def add_document_source(
     if written == 0:
         target.unlink(missing_ok=True)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Dosya boş.")
+
+    # Hak YALNIZCA gecerli bir yukleme icin tuketiliyor (boyut/bos reddi
+    # hakki yakmiyor). Es zamanli bir istek son hakki aldiysa dosya geri alinir.
+    try:
+        _take_allowance(store, user_id, INGEST, ingest_limit)
+    except HTTPException:
+        target.unlink(missing_ok=True)
+        raise
 
     source_id = f"doc:{stored_name}"
     store.add_source(
@@ -453,6 +499,7 @@ def transcribe_source(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Yalnızca video kaynakları için transkript çıkarılabilir"
         )
+    _take_allowance(store, user_id, INGEST, server.max_rag_ingests_per_user_per_day)
 
     job_id = new_job_id()
     runner.submit(
@@ -511,6 +558,9 @@ def ask(
     """
     config = _config(credentials, defaults, server)
     _owned_space(store, space_id, user_id)
+    # Her soru en az bir embedding cagrisi (kacinma kapisi uretim cagrisini
+    # atlasa bile), bu yuzden her kabul edilen soru hakki tuketiyor.
+    _take_allowance(store, user_id, ASK, server.max_rag_questions_per_user_per_day)
 
     llm = create_rag_llm_provider(config)
     try:

@@ -226,6 +226,34 @@ def test_an_interrupted_run_releases_its_reservation(tmp_path):
     )
 
 
+def test_a_run_still_live_on_the_job_runner_keeps_its_reservation(tmp_path):
+    """Canli bir isin rezervasyonu SIFIRLANMAMALI; yalnizca kesilenin payi serbest.
+
+    Rezervasyon toplami GUNE BAGLI DEGIL (`result_json IS NULL AND
+    interrupted_at IS NULL` olan tum satirlar), yani yanlis serbest birakilan
+    bir pay butceden kalici olarak duser.
+    """
+    store = SQLiteStore(str(tmp_path / "app.db"), encryption_key=KEY)
+    for run_id in ("canli", "kesilen"):
+        assert store.create_run_within_daily_limit(
+            run_id, "k", {}, user_id="ali", max_per_day=0,
+            max_units_per_day=10_000, estimated_units=4_000,
+        )
+
+    assert store.mark_interrupted_runs(is_live=lambda run_id: run_id == "canli") == 1
+
+    # Ucusta yalnizca "canli"nin 4000'i: 4000 + 7000 > 10000 -> red,
+    # 4000 + 6000 = 10000 -> kabul (sinir `>` ile).
+    assert not store.create_run_within_daily_limit(
+        "r3", "k", {}, user_id="veli", max_per_day=0,
+        max_units_per_day=10_000, estimated_units=7_000,
+    )
+    assert store.create_run_within_daily_limit(
+        "r4", "k", {}, user_id="veli", max_per_day=0,
+        max_units_per_day=10_000, estimated_units=6_000,
+    )
+
+
 # ------------------------------------------------------------- tahmin/butce
 
 def test_the_estimate_matches_what_a_run_actually_spends():
