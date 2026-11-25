@@ -37,7 +37,6 @@ class FilterOptions(BaseModel):
 class PlaylistRequest(BaseModel):
     topic: str
     filters: FilterOptions = Field(default_factory=FilterOptions)
-    create_youtube_playlist: bool = False
 
 
 class Subtopic(BaseModel):

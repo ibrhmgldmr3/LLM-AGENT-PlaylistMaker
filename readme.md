@@ -32,6 +32,9 @@ docker build -t make-a-playlist .
 docker run -p 8000:8000 --env-file .env -v playlist-data:/app/data make-a-playlist
 ```
 
+The image leaves out local speech-to-text (ASR), which is off by default and adds several
+hundred MB. To include it, build with `--build-arg WITH_ASR=true`.
+
 In development Vite proxies `/api` to port 8000, so start the API first. In production
 the API serves the built frontend from `web/dist`, so a single process is enough.
 
@@ -168,7 +171,7 @@ Three settings matter before exposing this to anyone else:
 | YouTube Data API key | optional — primary search path; without it, `yt-dlp` is used. **Its daily quota is the binding constraint for a shared deployment** — see below |
 | YouTube OAuth client | optional — only for publishing playlists (the API key is *not* used for this) |
 | A JS runtime (`node`) | needed for audio download; see below |
-| `ffmpeg` | needed only when ASR is enabled |
+| `ffmpeg` | needed only when ASR is enabled (with `requirements-asr.txt`) |
 | `whisper.cpp` binary + model | optional alternative ASR backend |
 
 **About the JS runtime:** yt-dlp needs one to solve YouTube's `nsig` challenge. Without
@@ -188,6 +191,13 @@ pip install -U yt-dlp
 ```bash
 pip install -r requirements.txt
 ```
+
+Two optional extras, each on top of the base file:
+
+| File | Adds |
+|---|---|
+| `requirements-dev.txt` | test tools (`pytest`, `httpx`, `pyyaml`) |
+| `requirements-asr.txt` | `faster-whisper` for local speech-to-text (ASR, off by default) |
 
 Copy `.env.example` to `.env` and set at least `GEMINI_API_KEY`.
 
@@ -335,7 +345,9 @@ unmarked under the old rule.
 Downloading audio and running Whisper costs roughly **90–120 seconds per video** on CPU.
 The first two transcript providers already cover the large majority of videos, and a
 transcript moves the score by at most +1.0. Enable it from the sidebar toggle or with
-`ENABLE_ASR_FALLBACK=true`; `MAX_ASR_VIDEOS_PER_RUN` caps the cost per run.
+`ENABLE_ASR_FALLBACK=true`; `MAX_ASR_VIDEOS_PER_RUN` caps the cost per run. The
+`faster-whisper` backend has to be installed first (`requirements-asr.txt`, or
+`--build-arg WITH_ASR=true` for the image); without it the app runs and skips that backend.
 
 The downloader produces 16 kHz mono WAV — exactly what `whisper.cpp` requires, and one
 less encode step than MP3. The Whisper model is cached process-wide (a cold load measured
@@ -722,8 +734,6 @@ deterministic: the delimiters and gate 4.
 | `YOUTUBE_OAUTH_CLIENT_SECRET_FILE` | — | |
 | `YOUTUBE_OAUTH_CLIENT_ID` | — | |
 | `YOUTUBE_OAUTH_CLIENT_SECRET` | — | |
-| `YOUTUBE_OAUTH_TOKEN_FILE` | `data/cache/youtube_oauth_token.json` | legacy file store; the API uses the `oauth_token` table |
-| `YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER` | `true` | legacy desktop flow only; the API uses a redirect flow |
 | `YOUTUBE_PLAYLIST_PRIVACY_STATUS` | `private` | `private` \| `unlisted` \| `public` |
 | `PUBLIC_BASE_URL` | — | public origin, e.g. `https://app.example.com`; **required behind a reverse proxy** |
 
@@ -885,10 +895,11 @@ tests/                      backend tests (see Tests)
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt
 pytest -q
 ```
 
-836 backend tests, no internet access, around fifteen seconds. 74 of them need a real Redis or
+852 backend tests, no internet access, around fifteen seconds. 76 of them need a real Redis or
 Postgres and skip without one (see [Scaling out](#scaling-out-optional)); CI runs them all. Each
 significant bug fixed in this codebase has a regression test named after the behaviour it locks
 in. The suite runs without a `.env` and without any API key — CI has neither.
@@ -912,7 +923,7 @@ would verify behaviour that cannot occur.
 | Job | What it protects |
 |---|---|
 | `backend` | Python 3.13: import check, `pyflakes` (including `scripts/`), full test suite against real Redis and Postgres — a skipped test fails the job |
-| `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and runs the same checks |
+| `minimum-deps` | Installs the **lower bound** of every range in `requirements.txt` and `requirements-dev.txt` and runs the same checks |
 | `frontend` | `web/`: regenerates types from the backend, typecheck, tests, production build |
 | `docker` | Builds the image and checks that it starts without a `.env` and answers `/api/health` |
 | `secrets` | Scans tracked files *and history* for API-key patterns; fails if `.env` is tracked |

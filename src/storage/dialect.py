@@ -45,6 +45,9 @@ class Dialect(Protocol):
     # gibi SQLite'a ozgu arac kullaniyorlar. Postgres veritabani TANIM GEREGI
     # bu kodun kendisi tarafindan yeni olusturuluyor: onarilacak gecmis yok.
     supports_legacy_migration: bool
+    # Sema bu surecte BIR KEZ kurulsun mu; deger veritabaninin kimligi.
+    # `None` = her store kurulumunda kur. Bkz. `SQLiteStore._ensure_schema_once`.
+    schema_key: str | None
 
     def connect(self) -> Any: ...
 
@@ -93,6 +96,9 @@ class SqliteDialect:
 
     name = "sqlite"
     supports_legacy_migration = True
+    # Her seferinde kuruluyor: betik burada 0.37 ms ve kilit beklemiyor
+    # (olculdu), dosya ise surec ayaktayken silinip yeniden yaratilabiliyor.
+    schema_key = None
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -279,6 +285,7 @@ class PostgresDialect:
 
     def __init__(self, dsn: str):
         self.dsn = dsn
+        self.schema_key = dsn
 
     @contextmanager
     def connect(self) -> Iterator[Any]:

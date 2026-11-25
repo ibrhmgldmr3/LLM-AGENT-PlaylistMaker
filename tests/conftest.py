@@ -8,7 +8,7 @@ import uuid
 import pytest
 
 from src.jobs import register_task, unregister_task
-from src.storage import SQLiteStore
+from src.storage import SQLiteStore, sqlite_store
 from src.storage.dialect import PostgresDialect
 
 # Postgres kosumu OPT-IN: bu degisken tanimli degilse o parametre atlaniyor.
@@ -100,6 +100,10 @@ def _fresh_postgres_dsn() -> str:
             cursor.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public")
     finally:
         conn.close()
+    # Store, Postgres semasini surec basina BIR KEZ kuruyor; semayi canli
+    # surecin altindan silen tek yer burasi, o yuzden "kuruldu" kaydi da
+    # burada unutuluyor.
+    sqlite_store._schema_ready.discard(dsn)
     return dsn
 
 

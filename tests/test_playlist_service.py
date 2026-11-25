@@ -149,40 +149,6 @@ def test_run_id_is_generated_when_not_supplied(monkeypatch, tmp_path):
     assert len(result.run_id) == 32  # uuid4().hex
 
 
-def test_publish_failure_warning_reaches_the_result(monkeypatch, tmp_path):
-    """Regresyon: pydantic listeyi kopyaladigi icin uyari `result.warnings`'e ulasmiyordu."""
-    config = _config(tmp_path)
-    candidates = _candidates()
-
-    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM(["Foundations"]))
-    monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: candidates)
-    monkeypatch.setattr(
-        playlist_service,
-        "rank_candidates",
-        lambda cands, topic, subtopic, filters, **kw: [(candidates[0], _score(8.0))],
-    )
-    monkeypatch.setattr(
-        playlist_service,
-        "get_transcript",
-        lambda *a, **k: TranscriptResult(video_id="video-1", status="unavailable", source="none"),
-    )
-
-    def boom(*args, **kwargs):
-        raise RuntimeError("OAuth reddedildi")
-
-    monkeypatch.setattr(playlist_service, "create_youtube_playlist", boom)
-
-    request = PlaylistRequest(
-        topic="Test Topic", filters=FilterOptions(language="en"), create_youtube_playlist=True
-    )
-    result = playlist_service.build_playlist(config, request)
-
-    assert any("OAuth reddedildi" in warning for warning in result.warnings)
-    assert result.published_playlist_url is None
-    # Uyari dis aktarilan JSON'a da yansimali.
-    assert "OAuth reddedildi" in Path(result.exports.json_path).read_text(encoding="utf-8")
-
-
 def test_empty_subtopics_produce_a_warning(monkeypatch, tmp_path):
     """Regresyon: bos alt konu listesi sessizce bos bir playlist uretiyordu."""
     config = _config(tmp_path)

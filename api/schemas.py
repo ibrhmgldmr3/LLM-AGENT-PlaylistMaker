@@ -45,7 +45,6 @@ class CreateRunRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=300)
     filters: FilterOptions = Field(default_factory=FilterOptions)
     options: RunOptionsOverride = Field(default_factory=RunOptionsOverride)
-    create_youtube_playlist: bool = False
 
 
 class RunAccepted(BaseModel):

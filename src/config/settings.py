@@ -41,8 +41,6 @@ ENV_TO_FIELD: dict[str, str] = {
     "YOUTUBE_OAUTH_CLIENT_SECRET_FILE": "youtube_oauth_client_secret_file",
     "YOUTUBE_OAUTH_CLIENT_ID": "youtube_oauth_client_id",
     "YOUTUBE_OAUTH_CLIENT_SECRET": "youtube_oauth_client_secret",
-    "YOUTUBE_OAUTH_TOKEN_FILE": "youtube_oauth_token_file",
-    "YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER": "youtube_oauth_allow_local_server",
     "YOUTUBE_PLAYLIST_PRIVACY_STATUS": "youtube_playlist_privacy_status",
     "ASR_BACKEND": "asr_backend",
     "FASTER_WHISPER_MODEL_SIZE": "faster_whisper_model_size",
@@ -140,7 +138,6 @@ class UserCredentials(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    youtube_oauth_token_file: str = Field(default="data/cache/youtube_oauth_token.json")
     ytdlp_proxy: str | None = Field(default=None)
     ytdlp_cookies_from_browser: str | None = Field(default=None)
     ytdlp_cookies_file: str | None = Field(default=None)
@@ -277,7 +274,6 @@ class ServerConfig(BaseModel):
     # Olcumde `thinking_budget=0` kabul eden modelde hiz kazandirmadi, kabul
     # etmeyen modelleri ise 400 ile tamamen kirdi.
     gemini_thinking_budget: int = Field(default=-1)
-    youtube_oauth_allow_local_server: bool = Field(default=True)
 
     asr_backend: str = Field(default="auto")
     faster_whisper_model_size: str = Field(default="base")

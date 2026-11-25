@@ -386,7 +386,7 @@ async def add_document_source(
         raise
 
     source_id = f"doc:{stored_name}"
-    store.add_source(
+    if not store.add_source(
         space_id,
         source_id,
         kind="document",
@@ -394,7 +394,10 @@ async def add_document_source(
         title=display_name,
         status="pending",
         byte_size=written,
-    )
+    ):
+        # Alan bu istek surerken silindi.
+        target.unlink(missing_ok=True)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bilinmeyen öğrenme alanı")
 
     job_id = new_job_id()
     runner.submit(

@@ -12,6 +12,7 @@ da bosa gider. Onceden reddetmek her durumda daha iyi.
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,7 +21,7 @@ from src.config import settings
 from src.jobs import playlist_task
 from src.config import AppConfig, ServerConfig
 from src.providers.youtube_data_api_provider import estimate_run_units
-from src.storage import SQLiteStore
+from src.storage import SQLiteStore, sqlite_store
 from src.storage.sqlite_store import seconds_until_next_quota_day
 
 KEY = "k" * 44
@@ -229,9 +230,9 @@ def test_an_interrupted_run_releases_its_reservation(tmp_path):
 def test_a_run_still_live_on_the_job_runner_keeps_its_reservation(tmp_path):
     """Canli bir isin rezervasyonu SIFIRLANMAMALI; yalnizca kesilenin payi serbest.
 
-    Rezervasyon toplami GUNE BAGLI DEGIL (`result_json IS NULL AND
-    interrupted_at IS NULL` olan tum satirlar), yani yanlis serbest birakilan
-    bir pay butceden kalici olarak duser.
+    Rezervasyon toplami KOTA GUNUNE BAGLI DEGIL (son 24 saatte acilmis,
+    `result_json IS NULL AND interrupted_at IS NULL` olan tum satirlar), yani
+    yanlis serbest birakilan bir pay o gunun butcesinden duser.
     """
     store = SQLiteStore(str(tmp_path / "app.db"), encryption_key=KEY)
     for run_id in ("canli", "kesilen"):
@@ -252,6 +253,43 @@ def test_a_run_still_live_on_the_job_runner_keeps_its_reservation(tmp_path):
         "r4", "k", {}, user_id="veli", max_per_day=0,
         max_units_per_day=10_000, estimated_units=6_000,
     )
+
+
+def test_a_reservation_older_than_a_day_stops_holding_the_budget(store, monkeypatch):
+    """Payini birakamadan olen bir is (worker coktu, zarfin TTL'i doldu)
+    butceyi web yeniden baslayana kadar tutuyordu."""
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(sqlite_store, "_utc_now", lambda: now - timedelta(hours=25))
+    assert store.create_run_within_daily_limit(
+        "eski", "k", {}, user_id="ali", max_per_day=0,
+        max_units_per_day=10_000, estimated_units=9_000,
+    )
+    monkeypatch.setattr(sqlite_store, "_utc_now", lambda: now)
+
+    assert store.create_run_within_daily_limit(
+        "yeni", "k", {}, user_id="veli", max_per_day=0,
+        max_units_per_day=10_000, estimated_units=9_000,
+    )
+
+
+def test_retry_after_for_the_user_limit_follows_the_rolling_window(store, monkeypatch):
+    """Kullanici siniri son 24 saati sayiyor. `Retry-After` Pasifik gece
+    yarisini gosteriyordu ve sinira takilan kullaniciyi yanlis saate
+    yonlendiriyordu."""
+    start = datetime(2026, 11, 25, 10, 0, tzinfo=timezone.utc)
+
+    def at(hours: int) -> None:
+        monkeypatch.setattr(sqlite_store, "_utc_now", lambda: start + timedelta(hours=hours))
+
+    at(0)
+    assert store.create_run_within_daily_limit("r1", "k", {}, user_id="ali", max_per_day=2)
+    at(3)
+    assert store.create_run_within_daily_limit("r2", "k", {}, user_id="ali", max_per_day=2)
+    at(5)
+    assert not store.create_run_within_daily_limit("r3", "k", {}, user_id="ali", max_per_day=2)
+
+    # Yer, ILK calistirma pencereden cikinca aciliyor: 24 - 5 = 19 saat.
+    assert store.seconds_until_run_slot("ali", 2) == 19 * 3600
 
 
 # ------------------------------------------------------------- tahmin/butce
@@ -319,6 +357,19 @@ def test_capabilities_warns_before_the_user_even_submits(monkeypatch, tmp_path):
         assert client.get("/api/config").json()["service_capacity_reached"] is True
 
 
+def test_capabilities_counts_runs_still_in_flight(monkeypatch, tmp_path):
+    """Kabul karari ucustaki rezervasyonlari sayiyor; isaret saymiyordu.
+    Calistirmalar surerken arayuz "yer var" diyor, gonderim 429 donuyordu."""
+    client, store = _client(monkeypatch, tmp_path, max_units_per_day=2_000)
+    with client:
+        assert store.create_run_within_daily_limit(
+            "r1", "k", {}, user_id="ali", max_per_day=0,
+            max_units_per_day=2_000, estimated_units=1_900,
+        )
+
+        assert client.get("/api/config").json()["service_capacity_reached"] is True
+
+
 def test_failed_run_releases_its_quota_reservation(tmp_path):
     """Basarisiz calistirma butceyi TUTMAMALI.
 
@@ -369,3 +420,57 @@ def test_releasing_a_reservation_does_not_invent_a_result(tmp_path):
         ).fetchone()
     assert row["result_json"] is None
     assert row["reserved_units"] == 0
+
+
+def _reserved(store: SQLiteStore, run_id: str) -> int:
+    with store.connect() as conn:
+        return conn.execute(
+            "SELECT reserved_units FROM run WHERE run_id = ?", (run_id,)
+        ).fetchone()["reserved_units"]
+
+
+def test_cancelling_a_queued_run_releases_its_reservation(monkeypatch, tmp_path):
+    """Kuyrukta bekleyen is iptal edilince HIC baslamiyor.
+
+    Rezervasyonu birakan kod isin icinde (`run_build_playlist`), yani o yol
+    hic calismiyordu: iptal edilen bekleyen her calistirma butceyi bir sonraki
+    yeniden baslatmaya kadar tutuyordu.
+    """
+    import api.main as main
+    from src.jobs.runner import InProcessJobRunner
+
+    client, store = _client(monkeypatch, tmp_path, max_units_per_day=10_000)
+    gate = threading.Event()
+    monkeypatch.setattr(playlist_task, "build_playlist", lambda *a, **k: gate.wait(10))
+    monkeypatch.setattr(main, "create_job_runner", lambda config: InProcessJobRunner(max_workers=1))
+
+    with client:
+        running = client.post("/api/runs", json={"topic": "a"}).json()["run_id"]
+        queued = client.post("/api/runs", json={"topic": "b"}).json()["run_id"]
+        assert _reserved(store, queued) > 0
+
+        assert client.delete(f"/api/runs/{queued}").status_code == 204
+
+        assert _reserved(store, queued) == 0
+        gate.set()
+    assert running != queued
+
+
+def test_a_run_that_cannot_be_queued_releases_its_reservation(monkeypatch, tmp_path):
+    """Kuyruga alma patlarsa (or. Redis erisilemiyor) isi calistiracak kimse yok."""
+    import api.main as main
+    from src.jobs.runner import InProcessJobRunner
+
+    class BrokenRunner(InProcessJobRunner):
+        def submit(self, *args, **kwargs):
+            raise RuntimeError("kuyruk erisilemiyor")
+
+    client, store = _client(monkeypatch, tmp_path, max_units_per_day=10_000)
+    monkeypatch.setattr(main, "create_job_runner", lambda config: BrokenRunner())
+
+    with client:
+        assert client.post("/api/runs", json={"topic": "a"}).status_code == 500
+
+    with store.connect() as conn:
+        rows = conn.execute("SELECT reserved_units FROM run").fetchall()
+    assert [row["reserved_units"] for row in rows] == [0]

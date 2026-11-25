@@ -24,13 +24,19 @@ RUN npm run build
 # ------------------------------------------------------------ calisma zamani
 FROM python:3.13-slim AS runtime
 
-# ffmpeg ASR yolu icin ZORUNLU: `ytdlp_provider.download_audio` 16 kHz mono
-# WAV uretiyor ve donusumu ffmpeg yapiyor. Yoksa ASR "ffmpeg WAV donusumu
-# yapilamadi" ile basarisiz olur (ENABLE_ASR_FALLBACK=false iken kullanilmaz
-# ama acildiginda imajin yeniden kurulmasi gerekmemeli).
-RUN apt-get update \
- && apt-get install --no-install-recommends -y ffmpeg \
- && rm -rf /var/lib/apt/lists/*
+# Yerel ASR (faster-whisper + ffmpeg) ISTEGE BAGLI. Varsayilan olarak kapali
+# (`ENABLE_ASR_FALLBACK=false`) ve imaja yuzlerce MB ekliyordu. Acmak icin:
+#
+#     docker build --build-arg WITH_ASR=true .
+#
+# ffmpeg yalnizca ASR yolu icin: `ytdlp_provider.download_audio` 16 kHz mono
+# WAV uretiyor ve donusumu ffmpeg yapiyor.
+ARG WITH_ASR=false
+RUN if [ "$WITH_ASR" = "true" ]; then \
+      apt-get update \
+      && apt-get install --no-install-recommends -y ffmpeg \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -38,8 +44,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# Test araclari (`requirements-dev.txt`) imaja GIRMIYOR.
+COPY requirements.txt requirements-asr.txt ./
+RUN pip install --upgrade pip \
+ && pip install -r requirements.txt \
+ && if [ "$WITH_ASR" = "true" ]; then pip install -r requirements-asr.txt; fi
 
 COPY src/ ./src/
 COPY api/ ./api/

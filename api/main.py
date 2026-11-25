@@ -19,7 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.body_limit import BodySizeLimitMiddleware
 from api.deps import _base_config, get_server_config
+from src.config import ServerConfig
 from src.config.settings import DEV_CORS_ORIGINS
 from api.routers import admin as admin_router
 from api.routers import auth as auth_router
@@ -302,6 +304,18 @@ app = FastAPI(
     summary="Konudan YouTube öğrenme playlist'i üreten servisin HTTP arayüzü",
     lifespan=lifespan,
 )
+
+def _upload_limit() -> int:
+    """Yukleme siniri; yapilandirma okunamazsa alanin varsayilani (bkz. `_cors_origins`)."""
+    try:
+        return get_server_config().max_upload_bytes
+    except Exception:
+        return ServerConfig.model_fields["max_upload_bytes"].default
+
+
+# CORS'tan ONCE ekleniyor, yani onun ICINDE kaliyor: 413 yanitlari da CORS
+# basliklarini tasisin. Neden var: bkz. `api/body_limit.py`.
+app.add_middleware(BodySizeLimitMiddleware, upload_limit=_upload_limit())
 
 app.add_middleware(
     CORSMiddleware,

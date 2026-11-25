@@ -94,7 +94,6 @@ def create_run(
     request = PlaylistRequest(
         topic=payload.topic.strip(),
         filters=payload.filters,
-        create_youtube_playlist=payload.create_youtube_playlist,
     )
 
     # Isi tanimlayan sey VERI, kod degil: `submit` bir closure yerine is adi ve
@@ -110,7 +109,6 @@ def create_run(
     task_payload = build_payload(
         topic=request.topic,
         filters=request.filters.model_dump(),
-        create_youtube_playlist=request.create_youtube_playlist,
         options=overrides,
     )
 
@@ -146,17 +144,21 @@ def create_run(
         estimated_units=estimate_run_units(options.max_subtopics, queries_per_subtopic),
     )
     if not admission:
-        # `Retry-After` gercek sifirlanma anina gore: kota Pasifik saatiyle
-        # donuyor ve Turkiye'den bakan biri icin bu gun ORTASINA denk geliyor.
-        # Sabit "3600" hem yanlis hem de kullanicinin bosuna denemesine yol
-        # aciyordu.
-        retry_after = seconds_until_next_quota_day()
+        # `Retry-After` gercek acilma anina gore; sabit "3600" hem yanlis hem
+        # de kullanicinin bosuna denemesine yol aciyordu.
         if admission.reason == "service_budget":
+            # Kota Pasifik saatiyle donuyor; Turkiye'den bakan biri icin bu
+            # gun ORTASINA denk geliyor.
+            retry_after = seconds_until_next_quota_day()
             detail = (
                 "Servisin bugünkü kapasitesi doldu. Arama kotası tüm kullanıcılar "
                 "için ortak ve bugünlük tükendi; kota sıfırlandığında tekrar deneyin."
             )
         else:
+            # Kullanici siniri kayan 24 saatlik pencere; kota gunuyle ilgisi yok.
+            retry_after = store.seconds_until_run_slot(
+                user_id, server.max_runs_per_user_per_day
+            )
             detail = (
                 f"Günlük çalıştırma hakkınız doldu ({server.max_runs_per_user_per_day})."
             )
@@ -166,7 +168,13 @@ def create_run(
             headers={"Retry-After": str(retry_after)},
         )
 
-    handle = runner.submit(run_id, user_id, BUILD_PLAYLIST, task_payload)
+    try:
+        handle = runner.submit(run_id, user_id, BUILD_PLAYLIST, task_payload)
+    except Exception:
+        # Is kuyruga girmediyse (or. Redis erisilemiyor) onu calistirip
+        # rezervasyonu birakacak bir taraf da yok.
+        store.release_run_reservation(run_id)
+        raise
     return RunAccepted(
         run_id=run_id,
         state=handle.state.value,
@@ -278,6 +286,10 @@ def cancel_or_delete_run(
     veritabani satirlari gidiyor, calisma plani ve sonuc JSON'u diskte kaliyordu.
     """
     if _owned_handle(runner, run_id, user_id) is not None and runner.cancel(run_id):
+        # Kuyrukta bekleyen is hic BASLAMIYOR, yani rezervasyonu birakan
+        # `playlist_task.run_build_playlist` hic calismiyor. Burada birakmak
+        # sart; calisan is icin ikinci kez birakmak zararsiz.
+        store.release_run_reservation(run_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     config = build_run_config(credentials, defaults, server)
     if delete_run_everywhere(config, store, run_id, user_id=user_id):

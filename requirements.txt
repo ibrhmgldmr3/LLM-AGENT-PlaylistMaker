@@ -49,13 +49,10 @@ redis>=5.0.0,<8.0.0
 # imajda `libpq-dev` + derleyici isterdi.
 psycopg2-binary>=2.9.10,<3.0.0
 
-# Optional ASR
-faster-whisper>=1.1.0,<2.0.0
-
 # RAG: ogrenme alani (embedding + dokuman ayristirma)
-# numpy zaten `faster-whisper` uzerinden geliyordu; ACIKCA yaziliyor cunku
-# `embedding_service` ona DOGRUDAN bagimli ve transitif bir bagimliliga
-# yaslanmak, ASR kaldirildigi gun sessizce kirilmak demek.
+# numpy eskiden `faster-whisper` uzerinden geliyordu; ACIKCA yaziliyor cunku
+# `embedding_service` ona DOGRUDAN bagimli ve ASR artik ayri bir dosyada
+# (`requirements-asr.txt`).
 # Python 3.13 icin ilk manylinux/wheel surumu 2.1.0.
 numpy>=2.1.0,<3.0.0
 pypdf>=5.0.0,<7.0.0
@@ -66,9 +63,7 @@ google-auth>=2.30.0,<3.0.0
 google-auth-oauthlib>=1.2.0,<2.0.0
 google-api-python-client>=2.140.0,<3.0.0
 
-# Testing
-pytest>=8.0.0,<9.0.0
-httpx>=0.27.0,<1.0.0
-# `docker-compose.yml`i okuyan testler icin (bkz. tests/test_compose_topology.py).
-# 6.0.2, Python 3.13 tekerleklerini tasiyan ilk surum.
-pyyaml>=6.0.2,<7.0.0
+# Testler ve yerel konusmadan-metne (ASR) BU DOSYADA DEGIL; uretim imajina
+# girmemeliler:
+#   requirements-dev.txt  -> pytest ve test yardimcilari
+#   requirements-asr.txt  -> faster-whisper (ASR varsayilan olarak kapali)

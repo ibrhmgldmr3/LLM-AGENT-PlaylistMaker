@@ -30,13 +30,12 @@ BUILD_PLAYLIST = "build_playlist"
 
 
 def build_payload(
-    topic: str, filters: dict[str, Any], create_youtube_playlist: bool, options: dict[str, Any]
+    topic: str, filters: dict[str, Any], options: dict[str, Any]
 ) -> dict[str, Any]:
     """Kuyruga gidecek govdeyi kurar. Cagiran taraf anahtar adlarini bilmesin."""
     return {
         "topic": topic,
         "filters": filters,
-        "create_youtube_playlist": create_youtube_playlist,
         "options": options,
     }
 
@@ -59,7 +58,6 @@ def run_build_playlist(
     request = PlaylistRequest(
         topic=context.payload["topic"],
         filters=context.payload.get("filters") or {},
-        create_youtube_playlist=bool(context.payload.get("create_youtube_playlist")),
     )
     try:
         return build_playlist(

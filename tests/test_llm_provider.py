@@ -204,3 +204,19 @@ def test_partial_coverage_is_no_longer_told_to_refuse():
 
     assert "Partial coverage counts as false" not in prompt
     assert "including a partial one" in prompt
+
+
+def test_gemini_client_gets_a_request_timeout(monkeypatch):
+    """`google-genai`in varsayilani zaman asimi YOK; takilan cagri is parcacigini
+    sonsuza kadar tutuyordu."""
+    from google import genai
+
+    from src.config import AppConfig
+    from src.providers.llm_provider import GeminiLLMProvider
+
+    seen: dict = {}
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: seen.update(kwargs))
+
+    GeminiLLMProvider(AppConfig(gemini_api_key="k", request_timeout_sec=7))
+
+    assert seen["http_options"]["timeout"] == 7000

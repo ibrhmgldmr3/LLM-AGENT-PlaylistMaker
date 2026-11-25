@@ -1,0 +1,9 @@
+# Gelistirme ve testler. Uretim imajina GIRMIYOR (bkz. Dockerfile).
+-r requirements.txt
+
+pytest>=8.0.0,<9.0.0
+# FastAPI `TestClient` bunu istiyor.
+httpx>=0.27.0,<1.0.0
+# `docker-compose.yml`i okuyan testler icin (bkz. tests/test_compose_topology.py).
+# 6.0.2, Python 3.13 tekerleklerini tasiyan ilk surum.
+pyyaml>=6.0.2,<7.0.0

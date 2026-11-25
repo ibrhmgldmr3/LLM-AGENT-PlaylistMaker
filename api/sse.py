@@ -12,7 +12,10 @@ ilerleme kaybolmaz.
 from __future__ import annotations
 
 import json
-from typing import Iterator
+from typing import AsyncIterator
+
+import anyio
+from starlette.concurrency import run_in_threadpool
 
 from api.schemas import RunSnapshotBody
 from src.jobs import JobRunner
@@ -20,6 +23,10 @@ from src.jobs import JobRunner
 # Proxy'ler ve yuk dengeleyiciler sessiz baglantiyi kapatir. Bu araliklarla
 # yorum satiri gondererek baglantiyi canli tutuyoruz.
 HEARTBEAT_SECONDS = 15.0
+
+# Yeni olaya bakma araligi. Bekleme thread TUTMUYOR (bkz. `run_event_stream`);
+# bu deger yalnizca ilerleme cubugunun en fazla ne kadar gecikecegi.
+POLL_SECONDS = 0.5
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache, no-transform",
@@ -51,15 +58,21 @@ def parse_last_event_id(raw: str | None) -> int:
         return 0
 
 
-def run_event_stream(
+async def run_event_stream(
     runner: JobRunner, run_id: str, cursor: int = 0, user_id: str | None = None
-) -> Iterator[str]:
+) -> AsyncIterator[str]:
     """Bir isin ilerlemesini SSE olarak akitir.
 
-    Senkron uretici bilerek: olay gunlugu bloklayan bir bekleme uzerinde
-    calisiyor ve Starlette senkron ureticileri thread havuzunda dondurur. Her
-    acik akis bir thread tutar — tek instance icin kabul edilebilir, cok
-    kullanicili dagitimda `CeleryJobRunner` ile birlikte gozden gecirilecek.
+    ASENKRON uretici, bilerek. Eskiden senkrondu ve `wait_for_events` icinde
+    15 sn'ye kadar bloklaniyordu; Starlette senkron ureticiyi, butun `def`
+    rotalarina hizmet eden 40 thread'lik havuzda dondurur. Yani acik her akis
+    bir thread TUTUYORDU: canli islerde 40 akis (tek bir betik ya da HTTP/2
+    uzerinde bir avuc sekme) API'nin geri kalanini is bitene kadar
+    kuyruga sokuyordu. Simdi runner'a yalnizca kisa, bloklamayan cagrilar
+    gidiyor (`events_since`, `is_stream_closed`) ve aradaki bekleme thread
+    tutmayan `anyio.sleep`. Istemci koptugunda akis da o bekleme noktasinda
+    hemen iptal ediliyor; eskiden thread 15 sn'lik beklemeyi bitirmek
+    zorundaydi.
 
     `user_id` verildiginde BASKASININ isi "bilinmeyen" gibi davraniliyor: ayri
     bir "yetkisiz" yaniti, var olmayan bir kimlikle var olan bir kimligi ayirt
@@ -70,26 +83,36 @@ def run_event_stream(
     baglanmaya calisir. Olay olarak gonderildiginde istemci durumu okuyup
     duruyor.
     """
-    handle = runner.get(run_id)
+    # Runner cagrilari yine thread'de: Redis'te ag gidis-donusu var ve olay
+    # dongusunu bloklamamali. Ama her biri milisaniyelik; thread'i hemen
+    # birakiyorlar.
+    handle = await run_in_threadpool(runner.get, run_id)
     if handle is None or (user_id is not None and handle.user_id != user_id):
         yield format_event("error", {"run_id": run_id, "detail": "Bilinmeyen çalıştırma"})
         return
 
+    quiet = 0.0
     while True:
         # Once birikmis olaylari bosalt: yeniden baglanan istemci
         # `Last-Event-ID`den itibaren kacirdiklarini burada alir.
-        for index, event in runner.events_since(run_id, cursor):
+        events = await run_in_threadpool(runner.events_since, run_id, cursor)
+        for index, event in events:
             cursor = index + 1
             yield format_event("progress", event.model_dump(), event_id=index)
+        if events:
+            quiet = 0.0
 
-        if runner.is_stream_closed(run_id):
+        if await run_in_threadpool(runner.is_stream_closed, run_id):
             break
 
+        await anyio.sleep(POLL_SECONDS)
+        quiet += POLL_SECONDS
         # Yeni olay yoksa baglantiyi canli tut.
-        if not runner.wait_for_events(run_id, cursor, HEARTBEAT_SECONDS):
+        if quiet >= HEARTBEAT_SECONDS:
             yield heartbeat()
+            quiet = 0.0
 
-    final = runner.get(run_id)
+    final = await run_in_threadpool(runner.get, run_id)
     if final is not None:
         # Sozlugu OLDUGU GIBI yollamiyoruz: `snapshot()` is katmaninin ic
         # adlarini tasiyor (`job_id`) ve istemcinin isine yaramayan `user_id`yi

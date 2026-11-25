@@ -49,7 +49,10 @@ def get_capabilities(
     # Ortak kapasite: bir sonraki calistirmayi kaldiracak butce kaldi mi.
     # Kullanici basina hakki olsa BILE burada durabilir -- kota paylasimli.
     budget = server.daily_unit_budget()
-    spent = store.sum_api_units()
+    # Ucustaki calistirmalarin ayirdigi pay da sayiliyor, kabul karariyla AYNI
+    # hesap. Eskiden yalnizca harcanana bakiliyordu: calistirmalar surerken
+    # arayuz "yer var" diyor, gonderim ise 429 donuyordu.
+    spent = store.sum_api_units() + store.sum_reserved_units()
     # Varsayilan secenekler uzerinden en kotu durum; istek govdesi bunu
     # degistirebilir ama arayuze gosterilecek isaret icin dogru olcek bu.
     typical_run = estimate_run_units(defaults.max_subtopics, 2 if defaults.include_english_by_default else 1)
