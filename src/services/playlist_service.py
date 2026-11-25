@@ -23,7 +23,6 @@ from src.models import (
 from src.providers import create_llm_provider
 from src.services.playlist_export import render_markdown
 from src.services.metadata_ranker import rank_candidates
-from src.services.playlist_publish_service import create_youtube_playlist
 from src.services.recommendation_service import assign_recommendations
 from src.services.topic_service import generate_subtopics
 from src.services.transcript_service import RunTranscriptState, get_transcript
@@ -346,20 +345,10 @@ def _run_pipeline(
         result.subtopics.append(subtopic_result)
         store.add_run_subtopic(run_id, index, subtopic_result.model_dump())
 
-    # ---------------------------------------------------------------- FAZ 5
-    if request.create_youtube_playlist:
-        if not result.recommendations:
-            result.warnings.append("Öneri üretilmediği için YouTube playlist'i oluşturulmadı.")
-        else:
-            try:
-                publish = create_youtube_playlist(config, result, logger=logger)
-                result.published_playlist_url = publish.url
-                result.warnings.extend(publish.warnings)
-            except Exception as exc:
-                result.warnings.append(f"YouTube playlist oluşturulamadı: {redact_secrets(str(exc))}")
-                if logger:
-                    logger.exception("YouTube playlist creation failed")
-
+    # Yayinlama burada YAPILMIYOR: yalnizca `POST /api/runs/{id}/publish`,
+    # istegi yapan kullanicinin KENDI jetonuyla. Is icinden yayinlamak paylasilan
+    # bir jeton dosyasina dusuyordu, yani herkesin listesi sunucu sahibinin
+    # hesabina gidiyordu.
     result.exports = export_playlist_artifacts(run_dir, result)
     store.finalize_run(run_id, result)
 

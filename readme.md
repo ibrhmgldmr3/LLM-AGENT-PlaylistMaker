@@ -722,8 +722,6 @@ deterministic: the delimiters and gate 4.
 | `YOUTUBE_OAUTH_CLIENT_SECRET_FILE` | — | |
 | `YOUTUBE_OAUTH_CLIENT_ID` | — | |
 | `YOUTUBE_OAUTH_CLIENT_SECRET` | — | |
-| `YOUTUBE_OAUTH_TOKEN_FILE` | `data/cache/youtube_oauth_token.json` | legacy file store; the API uses the `oauth_token` table |
-| `YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER` | `true` | legacy desktop flow only; the API uses a redirect flow |
 | `YOUTUBE_PLAYLIST_PRIVACY_STATUS` | `private` | `private` \| `unlisted` \| `public` |
 | `PUBLIC_BASE_URL` | — | public origin, e.g. `https://app.example.com`; **required behind a reverse proxy** |
 

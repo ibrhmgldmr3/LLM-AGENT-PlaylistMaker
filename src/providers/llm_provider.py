@@ -436,7 +436,14 @@ class GeminiLLMProvider:
                 ) from exc
 
         self.config = config
-        self.client = genai.Client(api_key=config.gemini_api_key)
+        # Zaman asimi ACIKCA veriliyor: `google-genai`in varsayilani `None`, yani
+        # takilan bir cagri is parcacigini (havuzda yalnizca 2 tane var) SONSUZA
+        # kadar tutuyordu. Together/OpenRouter yolu zaten ayni ayari kullaniyor.
+        # Birim milisaniye.
+        self.client = genai.Client(
+            api_key=config.gemini_api_key,
+            http_options={"timeout": config.request_timeout_sec * 1000},
+        )
         # Bir model `thinking_config`'i reddederse (400) o model icin bir daha gonderme.
         self._thinking_unsupported: set[str] = set()
 

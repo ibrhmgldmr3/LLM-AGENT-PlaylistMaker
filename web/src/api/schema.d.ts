@@ -645,11 +645,6 @@ export interface components {
         };
         /** CreateRunRequest */
         CreateRunRequest: {
-            /**
-             * Create Youtube Playlist
-             * @default false
-             */
-            create_youtube_playlist?: boolean;
             filters?: components["schemas"]["FilterOptions"];
             options?: components["schemas"]["RunOptionsOverride"];
             /** Topic */

@@ -369,3 +369,57 @@ def test_releasing_a_reservation_does_not_invent_a_result(tmp_path):
         ).fetchone()
     assert row["result_json"] is None
     assert row["reserved_units"] == 0
+
+
+def _reserved(store: SQLiteStore, run_id: str) -> int:
+    with store.connect() as conn:
+        return conn.execute(
+            "SELECT reserved_units FROM run WHERE run_id = ?", (run_id,)
+        ).fetchone()["reserved_units"]
+
+
+def test_cancelling_a_queued_run_releases_its_reservation(monkeypatch, tmp_path):
+    """Kuyrukta bekleyen is iptal edilince HIC baslamiyor.
+
+    Rezervasyonu birakan kod isin icinde (`run_build_playlist`), yani o yol
+    hic calismiyordu: iptal edilen bekleyen her calistirma butceyi bir sonraki
+    yeniden baslatmaya kadar tutuyordu.
+    """
+    import api.main as main
+    from src.jobs.runner import InProcessJobRunner
+
+    client, store = _client(monkeypatch, tmp_path, max_units_per_day=10_000)
+    gate = threading.Event()
+    monkeypatch.setattr(playlist_task, "build_playlist", lambda *a, **k: gate.wait(10))
+    monkeypatch.setattr(main, "create_job_runner", lambda config: InProcessJobRunner(max_workers=1))
+
+    with client:
+        running = client.post("/api/runs", json={"topic": "a"}).json()["run_id"]
+        queued = client.post("/api/runs", json={"topic": "b"}).json()["run_id"]
+        assert _reserved(store, queued) > 0
+
+        assert client.delete(f"/api/runs/{queued}").status_code == 204
+
+        assert _reserved(store, queued) == 0
+        gate.set()
+    assert running != queued
+
+
+def test_a_run_that_cannot_be_queued_releases_its_reservation(monkeypatch, tmp_path):
+    """Kuyruga alma patlarsa (or. Redis erisilemiyor) isi calistiracak kimse yok."""
+    import api.main as main
+    from src.jobs.runner import InProcessJobRunner
+
+    class BrokenRunner(InProcessJobRunner):
+        def submit(self, *args, **kwargs):
+            raise RuntimeError("kuyruk erisilemiyor")
+
+    client, store = _client(monkeypatch, tmp_path, max_units_per_day=10_000)
+    monkeypatch.setattr(main, "create_job_runner", lambda config: BrokenRunner())
+
+    with client:
+        assert client.post("/api/runs", json={"topic": "a"}).status_code == 500
+
+    with store.connect() as conn:
+        rows = conn.execute("SELECT reserved_units FROM run").fetchall()
+    assert [row["reserved_units"] for row in rows] == [0]

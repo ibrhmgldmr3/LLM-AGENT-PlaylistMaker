@@ -4,7 +4,6 @@ import base64
 import json
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 from src.config import AppConfig, ServerConfig
@@ -167,13 +166,14 @@ def create_youtube_playlist(
     config: AppConfig,
     result: PlaylistResult,
     logger=None,
-    token_json: str | None = None,
+    *,
+    token_json: str,
     on_token_refresh: Callable[[str], None] | None = None,
 ) -> PublishResult:
     """Playlist'i YouTube'a yayinlar.
 
-    `token_json` verilirse (API yolu) yalnizca o jeton kullanilir; tarayici
-    acilmaz. Verilmezse eski dosya tabanli akisa donulur (Streamlit yolu).
+    Yalnizca istegi yapan kullanicinin saklanan jetonu (`token_json`) kullanilir.
+    Sunucuda tarayici acan ya da paylasilan bir jeton dosyasi okuyan yol YOK.
     """
     # NOT: YOUTUBE_DATA_API_KEY burada ARANMIYOR. Playlist olusturma OAuth
     # kimlik bilgileriyle yapilir; API anahtari bu akista kullanilmaz.
@@ -196,12 +196,9 @@ def create_youtube_playlist(
             "Google OAuth bağımlılıkları kurulu değil. `pip install -r requirements.txt` çalıştırın."
         ) from exc
 
-    if token_json:
-        credentials = _credentials_from_token(
-            token_json, Credentials, Request, on_token_refresh, logger
-        )
-    else:
-        credentials = _load_credentials(config, YOUTUBE_SCOPES, Credentials, Request, logger=logger)
+    credentials = _credentials_from_token(
+        token_json, Credentials, Request, on_token_refresh, logger
+    )
 
     service = build("youtube", "v3", credentials=credentials, cache_discovery=False)
     playlist = (
@@ -280,65 +277,3 @@ def _credentials_from_token(
     if logger:
         logger.info("YouTube OAuth token refreshed")
     return credentials
-
-
-def _load_credentials(config: AppConfig, scopes: list[str], Credentials, Request, logger=None):
-    token_path = Path(config.youtube_oauth_token_file)
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-
-    credentials = None
-    if token_path.exists():
-        try:
-            credentials = Credentials.from_authorized_user_file(str(token_path), scopes=scopes)
-        except Exception as exc:
-            if logger:
-                logger.warning("Stored OAuth token could not be read: %s", exc)
-            credentials = None
-
-    if credentials and credentials.valid:
-        return credentials
-
-    if credentials and credentials.expired and credentials.refresh_token:
-        try:
-            credentials.refresh(Request())
-            token_path.write_text(credentials.to_json(), encoding="utf-8")
-            return credentials
-        except Exception as exc:
-            # Yenileme basarisizsa tam yetkilendirmeye geri don (eskiden burada takiliyordu).
-            if logger:
-                logger.warning("OAuth token refresh failed, re-authorising: %s", exc)
-
-    if not config.youtube_oauth_allow_local_server:
-        raise RuntimeError(
-            "Geçerli bir OAuth token yok ve YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER=false. "
-            f"Yetkilendirmeyi yerel makinede yapıp token dosyasını `{token_path}` konumuna kopyalayın."
-        )
-
-    flow = _build_installed_app_flow(config, scopes)
-    try:
-        # UYARI: bu cagri bir tarayici acar ve SUNUCU tarafinda calisir.
-        # Uzak/headless dagitimda YOUTUBE_OAUTH_ALLOW_LOCAL_SERVER=false yapin.
-        credentials = flow.run_local_server(port=0, open_browser=True, timeout_seconds=300)
-    except TypeError:
-        # Eski google-auth-oauthlib surumleri `timeout_seconds` kabul etmiyor.
-        credentials = flow.run_local_server(port=0)
-    token_path.write_text(credentials.to_json(), encoding="utf-8")
-    return credentials
-
-
-def _build_installed_app_flow(config: AppConfig, scopes: list[str]):
-    from google_auth_oauthlib.flow import InstalledAppFlow
-
-    if config.youtube_oauth_client_secret_file:
-        return InstalledAppFlow.from_client_secrets_file(config.youtube_oauth_client_secret_file, scopes=scopes)
-
-    client_config = {
-        "installed": {
-            "client_id": config.youtube_oauth_client_id,
-            "client_secret": config.youtube_oauth_client_secret,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost"],
-        }
-    }
-    return InstalledAppFlow.from_client_config(client_config, scopes=scopes)

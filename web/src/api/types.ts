@@ -49,7 +49,6 @@ export interface CreateRunRequest {
   topic: string;
   filters: FilterOptions;
   options?: RunOptionsOverride;
-  create_youtube_playlist?: boolean;
 }
 
 export interface RunAccepted {
