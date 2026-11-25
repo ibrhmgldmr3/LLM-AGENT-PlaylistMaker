@@ -220,3 +220,31 @@ def test_gemini_client_gets_a_request_timeout(monkeypatch):
     GeminiLLMProvider(AppConfig(gemini_api_key="k", request_timeout_sec=7))
 
     assert seen["http_options"]["timeout"] == 7000
+
+
+def test_gemini_embedding_size_is_sent_and_kept_apart(monkeypatch):
+    """768 boyut, soru basina okunan veriyi 4 kat azaltiyor. Boyut model
+    anahtarina girmeli: farkli boyutlu vektorler ayni matrise girmez."""
+    from types import SimpleNamespace
+
+    from google import genai
+
+    from src.config import AppConfig
+    from src.providers.llm_provider import GeminiLLMProvider
+
+    seen: dict = {}
+
+    class _Models:
+        def embed_content(self, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.1] * 768)])
+
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: SimpleNamespace(models=_Models()))
+
+    config = AppConfig(gemini_api_key="k", gemini_embedding_dimensions=768)
+    GeminiLLMProvider(config).embed(["merhaba"])
+
+    assert seen["config"] == {"output_dimensionality": 768}
+    assert config.embedding_model() == "gemini-embedding-001@768"
+    # Varsayilan DEGISMEDI: mevcut alanlarin vektorleri gecerli kaliyor.
+    assert AppConfig(gemini_api_key="k").embedding_model() == "gemini-embedding-001"

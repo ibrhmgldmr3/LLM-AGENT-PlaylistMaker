@@ -581,8 +581,13 @@ class GeminiLLMProvider:
         if not texts:
             return []
         model = self.config.gemini_embedding_model.strip()
+        dimensions = self.config.gemini_embedding_dimensions
         try:
-            response = self.client.models.embed_content(model=model, contents=texts)
+            response = self.client.models.embed_content(
+                model=model,
+                contents=texts,
+                config={"output_dimensionality": dimensions} if dimensions else None,
+            )
         except Exception as exc:
             raise _classify_gemini_error(exc) from exc
 

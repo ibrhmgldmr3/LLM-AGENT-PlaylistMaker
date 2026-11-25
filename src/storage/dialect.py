@@ -24,8 +24,10 @@ bir duzeltmeyi aciklayan YORUMUN icinde gecen `?` yuzunden.
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Protocol
@@ -277,6 +279,20 @@ def to_tsquery_expression(match_query: str) -> str:
     return " ".join(out)
 
 
+# Bosta bekleyen Postgres baglantilari, (surec, DSN) basina. Baglanti acmak
+# (parola dogrulamasi + sunucuda yeni bir surec) sorgunun kendisinden ~100 kat
+# pahali: olculdu, yerel Postgres 16'da depo cagrisi basina 6.6 ms, acik
+# baglantida ayni sorgu 0.07 ms. Bir calistirma ~170 depo cagrisi yapiyor.
+#
+# Anahtarda surec kimligi var: `fork` sonrasi cocuk, ebeveynin soketlerine
+# DOKUNMAMALI (kapatmak ebeveynin baglantisini da keserdi); kendi havuzunu
+# kuruyor. Esin ustundeki es zamanli cagrilar eskisi gibi yeni baglanti
+# aciyor; havuz yalnizca bosta tutulacak sayiyi sinirliyor.
+POOL_IDLE_MAX = 8
+_idle: dict[tuple[int, str], list[Any]] = {}
+_idle_lock = threading.Lock()
+
+
 class PostgresDialect:
     """Ayni SQL'i Postgres'e cevirir."""
 
@@ -289,18 +305,59 @@ class PostgresDialect:
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
-        import psycopg2
-        import psycopg2.extras
-
-        conn = psycopg2.connect(self.dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn = self._checkout()
         try:
             yield _PgConnection(conn, self)
             conn.commit()
         except Exception:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                conn.close()  # baglanti kopmus; havuza donmemeli
             raise
         finally:
-            conn.close()
+            self._checkin(conn)
+
+    def _checkout(self):
+        """Bostaki bir baglantiyi verir; yoksa yenisini acar.
+
+        Bostaki baglanti once `SELECT 1` ile yoklaniyor: sunucu yeniden
+        baslamis ya da baglantiyi kesmis olabilir ve olu bir baglanti istegi
+        500 ile dusururdu. Yoklama acik baglantida tek gidis-donus, yeni
+        baglanti acmaktan yine ~100 kat ucuz. Yoklamanin actigi islem,
+        depo cagrisinin kendi islemi oluyor.
+        """
+        import psycopg2
+        import psycopg2.extras
+
+        key = (os.getpid(), self.dsn)
+        while True:
+            with _idle_lock:
+                idle = _idle.get(key)
+                conn = idle.pop() if idle else None
+            if conn is None:
+                return psycopg2.connect(self.dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                return conn
+            except psycopg2.Error:
+                conn.close()
+
+    def _checkin(self, conn) -> None:
+        import psycopg2.extensions
+
+        reusable = (
+            not conn.closed
+            and conn.info.transaction_status == psycopg2.extensions.TRANSACTION_STATUS_IDLE
+        )
+        if reusable:
+            with _idle_lock:
+                idle = _idle.setdefault((os.getpid(), self.dsn), [])
+                if len(idle) < POOL_IDLE_MAX:
+                    idle.append(conn)
+                    return
+        conn.close()
 
     def sql(self, statement: str) -> str:
         return to_pg_placeholders(statement)

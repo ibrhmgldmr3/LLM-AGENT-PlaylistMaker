@@ -135,6 +135,22 @@ def test_empty_docx_yields_no_pages(tmp_path):
     assert parse_document(path) == []
 
 
+def test_docx_that_unpacks_too_large_is_refused(tmp_path, monkeypatch):
+    """DOCX bir ZIP: kucuk bir dosya acildiginda gigabaytlarca XML olabiliyor
+    ve ayristirici hepsini bellege aliyordu. Boyut ACILMADAN olculmeli."""
+    docx = pytest.importorskip("docx")
+    from src.services import document_parser
+
+    path = tmp_path / "buyuk.docx"
+    document = docx.Document()
+    document.add_paragraph("Kovaryans matrisi. " * 200)
+    document.save(str(path))
+    monkeypatch.setattr(document_parser, "MAX_DOCX_UNPACKED_BYTES", 1_000)
+
+    with pytest.raises(ProviderPermanentError, match="çok büyük"):
+        parse_document(path)
+
+
 # ------------------------------------------------------------------ duz metin
 
 

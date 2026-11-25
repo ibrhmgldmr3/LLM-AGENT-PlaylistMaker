@@ -780,6 +780,22 @@ def ingest_document(
         report.skipped_no_text.append(title)
         return report
 
+    # Parca, embedding cagrisi ve soru basina okunan vektor sayisi metinle
+    # dogrusal buyuyor; dosya boyutu tavani bunu sinirlamiyordu.
+    text_size = sum(len(text) for _page, text in pages)
+    if text_size > config.max_document_chars:
+        store.update_source(
+            space_id,
+            source_id,
+            status="failed",
+            error=(
+                f"Belge çok uzun: {text_size} karakter, en fazla "
+                f"{config.max_document_chars} karakter işlenebiliyor. Belgeyi bölüp yükleyin."
+            ),
+        )
+        report.failed.append(title)
+        return report
+
     drafts = chunk_document(
         pages,
         max_chars=config.rag_chunk_chars,
@@ -825,7 +841,7 @@ def _embed_space(
     iki durumda da dogru.
     """
     model = config.embedding_model()
-    missing_before = len(store.chunks_missing_embeddings(space_id, model))
+    missing_before = store.count_chunks_missing_embeddings(space_id, model)
     try:
         embedding_service.embed_missing(
             config,
@@ -840,7 +856,7 @@ def _embed_space(
             "Vektörler üretilemedi (leksik arama çalışmaya devam ediyor): %s",
             redact_secrets(str(exc)),
         )
-    missing_after = len(store.chunks_missing_embeddings(space_id, model))
+    missing_after = store.count_chunks_missing_embeddings(space_id, model)
     if missing_after:
         _log.warning(
             "Anlamsal arama EKSIK: space=%s vektorsuz_parca=%d/%d",

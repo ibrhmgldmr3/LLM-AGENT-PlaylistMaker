@@ -539,6 +539,29 @@ class SQLiteStore:
         return digest
 
     def get_search_cache(self, provider: str, query: str, filters: dict[str, Any]) -> list[VideoCandidate] | None:
+        payload = self.get_cached_payload(provider, query, filters)
+        if payload is None:
+            return None
+        return [VideoCandidate.model_validate(item) for item in payload]
+
+    def put_search_cache(
+        self,
+        provider: str,
+        query: str,
+        filters: dict[str, Any],
+        candidates: list[VideoCandidate],
+        ttl_sec: int,
+    ) -> None:
+        self.put_cached_payload(
+            provider, query, filters, [item.model_dump() for item in candidates], ttl_sec
+        )
+
+    def get_cached_payload(self, provider: str, query: str, filters: dict[str, Any]) -> Any:
+        """`search_cache`ten suresi dolmamis HAM yuk; yoksa `None`.
+
+        Arama sonuclari ve alt konu planlari (`playlist_service._plan_subtopics`)
+        ayni tabloyu, `provider` adiyla ayrilarak paylasiyor.
+        """
         cache_key = self.build_search_cache_key(provider, query, filters)
         with self.connect() as conn:
             row = conn.execute(
@@ -547,14 +570,14 @@ class SQLiteStore:
             ).fetchone()
         if not row or _is_expired(row["expires_at"]):
             return None
-        return [VideoCandidate.model_validate(item) for item in json.loads(row["payload_json"])]
+        return json.loads(row["payload_json"])
 
-    def put_search_cache(
+    def put_cached_payload(
         self,
         provider: str,
         query: str,
         filters: dict[str, Any],
-        candidates: list[VideoCandidate],
+        payload: Any,
         ttl_sec: int,
     ) -> None:
         cache_key = self.build_search_cache_key(provider, query, filters)
@@ -577,7 +600,7 @@ class SQLiteStore:
                     provider,
                     query,
                     json.dumps(filters, ensure_ascii=False, sort_keys=True),
-                    json.dumps([item.model_dump() for item in candidates], ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False),
                     _iso_in(ttl_sec),
                     _to_iso(_utc_now()),
                 ),
@@ -2018,6 +2041,21 @@ class SQLiteStore:
                 (space_id, model),
             ).fetchall()
         return [(int(row["chunk_id"]), row["text"]) for row in rows]
+
+    def count_chunks_missing_embeddings(self, space_id: str, model: str) -> int:
+        """`chunks_missing_embeddings` ile AYNI olcut; yalnizca sayi.
+
+        Sayi isteyen yer metni de cekiyordu: buyuk bir yuklemeden sonra bir
+        sayi icin megabaytlarca metin, hem once hem sonra.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM chunk c"
+                " LEFT JOIN chunk_embedding e ON e.chunk_id = c.chunk_id"
+                " WHERE c.space_id = ? AND (e.chunk_id IS NULL OR e.model != ?)",
+                (space_id, model),
+            ).fetchone()
+        return int(row["n"]) if row else 0
 
     def embedded_chunk_counts(self, space_id: str, model: str) -> dict[str, int]:
         """Kaynak basina BU MODELLE gomulu parca sayisi.

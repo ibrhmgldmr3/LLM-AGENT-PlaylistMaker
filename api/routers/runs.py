@@ -63,6 +63,34 @@ def _owned_handle(runner: JobRunner, run_id: str, user_id: str):
     return handle
 
 
+# `multi_user`da istek bu ayarlari sunucu ayarinin USTUNE cikaramiyor: her biri
+# isi (arama kotasi, transkript, ASR, LLM cagrisi) buyutuyor ve anahtarlar
+# sunucunun. ASR ve calisma notu ac/kapa secenekleri arayuzun ozelligi;
+# bedelleri bu tavanlarla ve gunluk calistirma siniriyla sinirli kaliyor.
+_COST_CEILINGS = (
+    "max_subtopics",
+    "metadata_top_k",
+    "transcript_enrichment_top_k",
+    "max_asr_videos_per_run",
+)
+
+
+def _bounded_overrides(overrides: dict, defaults: RunOptions, server: ServerConfig) -> dict:
+    """Istegin secenek ezmeleri; `multi_user`da sunucu ayarlari TAVAN.
+
+    Model secimi de yok sayiliyor: herhangi bir model adi kabul ediliyordu,
+    yani bir kullanici sunucunun anahtariyla daha pahali bir modeli
+    secebiliyordu. `single_user`da tek kullanici sunucunun sahibi; dokunulmuyor.
+    """
+    if server.auth_mode != "multi_user":
+        return overrides
+    bounded = {name: value for name, value in overrides.items() if name != "gemini_model"}
+    for name in _COST_CEILINGS:
+        if name in bounded:
+            bounded[name] = min(bounded[name], getattr(defaults, name))
+    return bounded
+
+
 @router.post("", response_model=RunAccepted, status_code=status.HTTP_202_ACCEPTED)
 def create_run(
     payload: CreateRunRequest,
@@ -87,7 +115,7 @@ def create_run(
     # Burada YALNIZCA kota tahmini icin birlestiriliyor (`options.max_subtopics`);
     # calistirmanin kendi `AppConfig`ini artik isin kendisi ortamdan kuruyor
     # (bkz. `playlist_task._config_for`).
-    overrides = payload.options.model_dump(exclude_none=True)
+    overrides = _bounded_overrides(payload.options.model_dump(exclude_none=True), defaults, server)
     options = defaults.model_copy(update=overrides) if overrides else defaults
 
     run_id = new_job_id()
