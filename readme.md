@@ -585,6 +585,7 @@ provider is down, the lexical half keeps working; search gets weaker, not absent
 | `ENABLE_RAG` | `false` | one embedding + one generation call per question |
 | `EMBEDDING_PROVIDER` | follows `LLM_PROVIDER` | can differ from the generation provider |
 | `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | `text-embedding-004` is **gone** (404) |
+| `GEMINI_EMBEDDING_DIMENSIONS` | empty (3072) | `768` reads and compares 4× less per question. Changing it re-embeds each notebook on its next import; until then that notebook only has keyword search. Recommended for new installs |
 | `TOGETHER_EMBEDDING_MODEL` | `BAAI/bge-m3` | multilingual — decisive for Turkish |
 | `EMBEDDING_BATCH_SIZE` | `64` | chunks per embedding request |
 | `RAG_CHUNK_CHARS` / `RAG_CHUNK_OVERLAP_CHARS` | `1200` / `200` | overlap keeps a boundary-straddling answer whole |
@@ -597,8 +598,9 @@ provider is down, the lexical half keeps working; search gets weaker, not absent
 | `MAX_SPACES_PER_USER` | `10` | storage and embedding cost sits with the server owner |
 | `MAX_DOCUMENTS_PER_SPACE` | `25` | |
 | `MAX_UPLOAD_BYTES` | `20971520` | 20 MB, enforced while reading, not from `Content-Length` |
-| `MAX_RAG_QUESTIONS_PER_USER_PER_DAY` | `0` | per user, `0` = unlimited; each question is at least one embedding call |
-| `MAX_RAG_INGESTS_PER_USER_PER_DAY` | `0` | per user, `0` = unlimited; document uploads, run imports and ASR share it |
+| `MAX_DOCUMENT_CHARS` | `1000000` | text extracted from one document; bigger documents are marked failed. File size alone let one 20 MB text file become ~20,000 pieces |
+| `MAX_RAG_QUESTIONS_PER_USER_PER_DAY` | empty | per user, `0` = unlimited; empty = unlimited in `single_user`, `100` in `multi_user`. Each question is at least one embedding call |
+| `MAX_RAG_INGESTS_PER_USER_PER_DAY` | empty | per user, `0` = unlimited; empty = unlimited in `single_user`, `20` in `multi_user`. Document uploads, run imports and ASR share it |
 
 `MAX_SPACES_PER_USER`, `MAX_DOCUMENTS_PER_SPACE` and `MAX_UPLOAD_BYTES` bound storage; the last
 two bound **call volume**, which the storage caps do not — deleting and re-adding a source, or asking the same notebook all day, was unlimited.
@@ -769,14 +771,16 @@ one completable.
 |---|---|---|
 | `AUTH_MODE` | `single_user` | `single_user` \| `multi_user` (Google sign-in) |
 | `SESSION_TTL_SEC` | `1209600` (14 d) | session cookie lifetime |
-| `MAX_RUNS_PER_USER_PER_DAY` | `0` | per user; `0` = unlimited. **`3` is recommended for `multi_user`** |
+| `MAX_RUNS_PER_USER_PER_DAY` | empty | per user; `0` = unlimited. Empty = unlimited in `single_user`, **`3` in `multi_user`** |
 | `MAX_UNITS_PER_DAY` | — | service-wide quota ceiling; empty = the project quota below |
 | `YOUTUBE_DAILY_QUOTA_UNITS` | `10000` | tell it here if you had the quota raised |
 | `ADMIN_USER_IDS` | — | comma-separated ids that may read `/api/admin/usage`. Empty in `multi_user` = nobody |
 
-Leaving `MAX_RUNS_PER_USER_PER_DAY` at `0` in `multi_user` mode lets one signed-in user
-drain the shared quota for everyone; the server logs a warning about that combination at
-startup rather than failing, since a closed deployment may want it.
+All keys are the server's, so in `multi_user` mode the three per-user limits that are left
+empty default to 3 runs, 100 questions and 20 imports a day. Setting one to `0` still means
+unlimited: one signed-in user can then drain the shared quota for everyone, so the server
+logs a warning about that combination at startup rather than failing, since a closed
+deployment may want it.
 
 To find your own id for `ADMIN_USER_IDS`, sign in and call `GET /api/auth/me`.
 
@@ -789,7 +793,7 @@ To find your own id for `ADMIN_USER_IDS`, sign in and call `GET /api/auth/me`.
 | `REQUEST_TIMEOUT_SEC` | `30` |
 | `RETRY_MAX_ATTEMPTS` | `3` |
 | `RETRY_BASE_DELAY_SEC` | `1.0` |
-| `SEARCH_CACHE_TTL_SEC` | `21600` (6 h) |
+| `SEARCH_CACHE_TTL_SEC` | `86400` (24 h) — also how long a topic's subtopic plan is reused |
 | `TRANSCRIPT_CACHE_TTL_SEC` | `2592000` (30 d) |
 | `FAILURE_CACHE_TTL_SEC` | `900` |
 | `PROVIDER_COOLDOWN_SEC` | `900` |
@@ -899,7 +903,7 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-852 backend tests, no internet access, around fifteen seconds. 76 of them need a real Redis or
+868 backend tests, no internet access, around fifteen seconds. 79 of them need a real Redis or
 Postgres and skip without one (see [Scaling out](#scaling-out-optional)); CI runs them all. Each
 significant bug fixed in this codebase has a regression test named after the behaviour it locks
 in. The suite runs without a `.env` and without any API key — CI has neither.

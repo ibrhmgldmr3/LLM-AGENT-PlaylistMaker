@@ -15,6 +15,7 @@ kullanicinin dosyasinin arandigini sanmasi demek olurdu.
 from __future__ import annotations
 
 import logging
+import zipfile
 from pathlib import Path
 
 from src.providers.errors import ProviderPermanentError
@@ -26,6 +27,12 @@ _log = logging.getLogger(__name__)
 # "reddedileni say" yerine "kabul edileni say" yaklasimi yeni bir bicim
 # eklendiginde guvenlik kontrolunu atlamayi imkansiz kiliyor.
 SUPPORTED_EXTENSIONS = frozenset({".pdf", ".docx", ".txt", ".md"})
+
+# DOCX bir ZIP arsivi ve ayristirici XML'in tamamini bellege aliyor. 20 MB'lik
+# bir dosya acildiginda gigabaytlarca XML olabiliyordu; metin tavani
+# (`MAX_DOCUMENT_CHARS`) ancak ayristirmadan SONRA isliyor. Bir milyon
+# karakterlik gercek bir belgenin XML'i birkac on MB.
+MAX_DOCX_UNPACKED_BYTES = 100 * 1024 * 1024
 
 
 def parse_document(path: Path, filename: str | None = None) -> list[tuple[int, str]]:
@@ -90,7 +97,15 @@ def _parse_docx(path: Path) -> list[tuple[int, str]]:
         ) from exc
 
     try:
+        with zipfile.ZipFile(path) as archive:
+            unpacked = sum(item.file_size for item in archive.infolist())
+        if unpacked > MAX_DOCX_UNPACKED_BYTES:
+            raise ProviderPermanentError(
+                "DOCX açıldığında çok büyük; belgeyi bölüp yükleyin."
+            )
         document = docx.Document(str(path))
+    except ProviderPermanentError:
+        raise
     except Exception as exc:
         raise ProviderPermanentError(f"DOCX okunamadı: {exc}") from exc
 

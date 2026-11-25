@@ -14,6 +14,17 @@ from src.utils.logging_utils import redact_secrets
 from src.utils.retry_utils import retry_with_backoff
 
 
+def search_cache_filters(filters: FilterOptions) -> dict[str, str]:
+    """Onbellek anahtarina giren filtreler: yalnizca ISTEGI degistirenler.
+
+    Data API sorguya ve `relevanceLanguage`e bakiyor; zorluk, sure, tazelik ve
+    Ingilizce secenegi sonuclari sonradan SIRALIYOR. Hepsi anahtardayken
+    yalnizca "zorluk"u farkli ayni arama kotadan ikinci kez (102 birim)
+    dusuyordu.
+    """
+    return {"language": filters.language}
+
+
 def search_candidates(
     config: AppConfig,
     store: SQLiteStore,
@@ -22,12 +33,16 @@ def search_candidates(
     logger=None,
     notes: list[str] | None = None,
     user_id: str = DEFAULT_USER_ID,
+    use_data_api: bool = True,
 ) -> list[VideoCandidate]:
     """Aday videolari sirayla saglayicilardan toplar.
 
     Bir saglayici SIFIR sonuc dondururse bu artik "basari" sayilmaz; bir sonraki
     saglayiciya gecilir. Onceki surum bos listeyi dondurup 6 saat onbellekliyor ve
     yt-dlp yedegini tamamen devre disi birakiyordu.
+
+    `use_data_api=False`: kota HARCAMAYAN arama. Kabul aninda ayrilan kota
+    tahminine girmeyen yollar icin (bkz. `playlist_service._search_all`).
     """
     # Kota sayaci BURADA baglaniyor: `store` ve `user_id` yalnizca bu katmanda
     # birlikte var. Onbellek isabetlerinde saglayici hic cagrilmadigi icin
@@ -35,11 +50,11 @@ def search_candidates(
     def _record(endpoint: str, units: int) -> None:
         store.record_api_usage(user_id, YouTubeDataAPIProvider.name, endpoint, units)
 
-    providers = [
-        YouTubeDataAPIProvider(config, usage_recorder=_record),
-        YtDlpProvider(config),
-    ]
+    providers = [YtDlpProvider(config)]
+    if use_data_api:
+        providers.insert(0, YouTubeDataAPIProvider(config, usage_recorder=_record))
     provider_errors: list[str] = []
+    cache_filters = search_cache_filters(filters)
 
     for provider in providers:
         if hasattr(provider, "is_configured") and not provider.is_configured():
@@ -54,7 +69,7 @@ def search_candidates(
             provider_errors.append(f"{provider.name}: cooldown until {cooldown_until}")
             continue
 
-        cached = store.get_search_cache(provider.name, query, filters.model_dump())
+        cached = store.get_search_cache(provider.name, query, cache_filters)
         if cached:
             if logger:
                 logger.info("Search cache hit for %s via %s", query, provider.name)
@@ -119,7 +134,7 @@ def search_candidates(
         if not final_candidates:
             # Bos sonucu kisa sureli onbellekle (uzun TTL yanlis olurdu) ve devam et.
             store.put_search_cache(
-                provider.name, query, filters.model_dump(), [], config.failure_cache_ttl_sec
+                provider.name, query, cache_filters, [], config.failure_cache_ttl_sec
             )
             provider_errors.append(f"{provider.name}: no results")
             if logger:
@@ -127,7 +142,7 @@ def search_candidates(
             continue
 
         store.put_search_cache(
-            provider.name, query, filters.model_dump(), final_candidates, config.search_cache_ttl_sec
+            provider.name, query, cache_filters, final_candidates, config.search_cache_ttl_sec
         )
         return final_candidates
 

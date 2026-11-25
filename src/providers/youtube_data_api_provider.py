@@ -80,9 +80,13 @@ _PERMANENT_REASONS = {
     "badrequest",
     "invalidparameter",
 }
+# GUNLUK kota bitti: Pasifik gece yarisina kadar hicbir istek gecmez.
+# Gecici sayildiginda her arama 3 kez (1 + 2 sn beklemeyle) deneniyor,
+# saglayici yalnizca 15 dk dinleniyor ve gece yarisina kadar her calistirma
+# ayni seyi bastan yasiyordu.
+_DAILY_QUOTA_REASONS = {"quotaexceeded", "dailylimitexceeded"}
 # Gecici, tekrar denenebilir hata nedenleri.
 _TEMPORARY_REASONS = {
-    "quotaexceeded",
     "ratelimitexceeded",
     "userratelimitexceeded",
     "backenderror",
@@ -290,6 +294,11 @@ class YouTubeDataAPIProvider:
             except (TypeError, ValueError):
                 retry_after = None
             return ProviderRateLimitedError(text, retry_after=retry_after)
+        if reason in _DAILY_QUOTA_REASONS:
+            # Hiz siniri gibi isleniyor: tekrar denemeden, kota donene kadar dinlen.
+            from src.storage.sqlite_store import seconds_until_next_quota_day
+
+            return ProviderRateLimitedError(text, retry_after=seconds_until_next_quota_day())
         if reason in _PERMANENT_REASONS:
             return ProviderPermanentError(text)
         if reason in _TEMPORARY_REASONS:

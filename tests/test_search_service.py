@@ -72,13 +72,17 @@ def test_empty_result_is_not_cached_for_the_long_ttl(tmp_path, monkeypatch):
     search_service.search_candidates(config, store, "q", FilterOptions())
 
     # failure_cache_ttl_sec=0 oldugu icin bos kayit aninda gecersiz olmali.
-    assert store.get_search_cache("youtube_data_api", "q", FilterOptions().model_dump()) is None
+    assert store.get_search_cache(
+        "youtube_data_api", "q", search_service.search_cache_filters(FilterOptions())
+    ) is None
 
 
 def test_cached_empty_result_still_allows_fallback(tmp_path, monkeypatch):
     config = _config(tmp_path)
     store = SQLiteStore(config.sqlite_path)
-    store.put_search_cache("youtube_data_api", "q", FilterOptions().model_dump(), [], ttl_sec=600)
+    store.put_search_cache(
+        "youtube_data_api", "q", search_service.search_cache_filters(FilterOptions()), [], ttl_sec=600
+    )
     primary = FakeProvider("youtube_data_api", result=[])
     fallback = FakeProvider("yt_dlp", result=[_candidate("v2")])
     _install(monkeypatch, primary, fallback)
@@ -143,3 +147,38 @@ def test_api_key_is_redacted_from_notes(tmp_path, monkeypatch):
     joined = " ".join(notes)
     assert "AIzaSyTOPSECRETVALUE1234" not in joined
     assert "***" in joined
+
+
+def test_ranking_only_filters_share_the_search_cache(tmp_path, monkeypatch):
+    """Zorluk, sure, tazelik ve Ingilizce secenegi YouTube istegini degil,
+    yalnizca sonradan siralamayi degistiriyor. Anahtarda olmalari ayni aramayi
+    kotadan ikinci kez (102 birim) dusuruyordu."""
+    config = _config(tmp_path)
+    store = SQLiteStore(config.sqlite_path)
+    primary = FakeProvider("youtube_data_api", result=[_candidate()])
+    fallback = FakeProvider("yt_dlp", result=[_candidate("v2")])
+    _install(monkeypatch, primary, fallback)
+
+    search_service.search_candidates(config, store, "q", FilterOptions(difficulty="beginner"))
+    again = search_service.search_candidates(
+        config,
+        store,
+        "q",
+        FilterOptions(difficulty="advanced", max_duration_minutes=20, include_english=True),
+    )
+
+    assert primary.calls == 1
+    assert [item.video_id for item in again] == ["v1"]
+
+
+def test_a_different_language_is_a_different_search(tmp_path, monkeypatch):
+    """Dil `relevanceLanguage` olarak istege giriyor; anahtarda KALMALI."""
+    config = _config(tmp_path)
+    store = SQLiteStore(config.sqlite_path)
+    primary = FakeProvider("youtube_data_api", result=[_candidate()])
+    _install(monkeypatch, primary, FakeProvider("yt_dlp"))
+
+    search_service.search_candidates(config, store, "q", FilterOptions(language="tr"))
+    search_service.search_candidates(config, store, "q", FilterOptions(language="en"))
+
+    assert primary.calls == 2

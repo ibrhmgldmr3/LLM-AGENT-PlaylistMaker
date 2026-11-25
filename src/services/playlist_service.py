@@ -31,6 +31,7 @@ from src.storage import DEFAULT_USER_ID, SQLiteStore, create_store
 from src.providers.youtube_data_api_provider import DEFAULT_DAILY_QUOTA_UNITS
 from src.storage.sqlite_store import quota_day
 from src.utils.logging_utils import close_logger, redact_secrets, run_log_path, setup_logger
+from src.utils.text_utils import normalize_text
 
 
 # Ilerleme cubugu icin faz sinirlari.
@@ -205,9 +206,7 @@ def _run_pipeline(
     # ---------------------------------------------------------------- FAZ 0
     emit("topic_planning", "Alt konular üretiliyor", 0.02)
     llm = create_llm_provider(config)
-    subtopics = generate_subtopics(
-        llm, request.topic, request.filters.language, max_items=config.max_subtopics, logger=logger
-    )
+    subtopics = _plan_subtopics(config, store, llm, request, logger)
     if not subtopics:
         result.warnings.append("Konu alt başlıklara ayrılamadı. Daha açık veya daha dar bir konu deneyin.")
         result.exports = export_playlist_artifacts(run_dir, result)
@@ -267,8 +266,14 @@ def _run_pipeline(
     # ---------------------------------------------------------------- FAZ 3
     # Transkriptler VIDEO bazinda tekillestirilip paralel cekilir. Onceki surumde
     # alt konu icinde seri calisiyordu ve toplam surenin ~%73'unu yiyordu.
+    # TEK durum nesnesi: ASR tavanlari (`MAX_ASR_VIDEOS_PER_RUN`,
+    # `MAX_ASR_SECONDS_PER_RUN`) CALISTIRMA basina. Calisma notu fazi kendi
+    # nesnesini kurunca tavanlar sifirlaniyor ve bir calistirma soyleneni iki
+    # katina kadar ASR yapabiliyordu.
+    transcript_state = RunTranscriptState()
     transcripts_by_video = _fetch_transcripts(
-        config, store, request, work, run_id, run_dir, logger, emit, user_id=user_id
+        config, store, request, work, run_id, run_dir, logger, emit,
+        user_id=user_id, state=transcript_state,
     )
 
     # ---------------------------------------------------------------- FAZ 4
@@ -301,6 +306,7 @@ def _run_pipeline(
             run_id=run_id,
             run_dir=run_dir,
             user_id=user_id,
+            transcript_state=transcript_state,
         )
         for note in result.study_notes:
             if note.status == "failed":
@@ -369,6 +375,43 @@ def _run_pipeline(
     return result
 
 
+# Planlar arama sonuclariyla ayni tabloda, bu "saglayici" adiyla duruyor.
+PLAN_CACHE = "subtopic_plan"
+
+
+def _plan_subtopics(
+    config: AppConfig, store: SQLiteStore, llm, request: PlaylistRequest, logger
+) -> list[Subtopic]:
+    """Konuyu alt konulara boler; ayni konunun planini YENIDEN KULLANIR.
+
+    Arama onbellegi yalnizca sorgu metni BIREBIR ayniysa isabet ediyor. Plan
+    her calistirmada LLM'den (sicaklik 0.4) yeniden geldiginde sorgularin
+    ifadesi degisiyordu: ayni gun ayni konuyu isteyen iki kullanici kotayi iki
+    kez (~1.224 birim) oduyordu. Plan arama sonuclariyla AYNI sure saklaniyor,
+    yani ikinci calistirmanin aramalari da onbellekten geliyor.
+    """
+    topic_key = normalize_text(request.topic).casefold()
+    key_filters = {"language": request.filters.language, "max_items": config.max_subtopics}
+    cached = store.get_cached_payload(PLAN_CACHE, topic_key, key_filters)
+    if cached:
+        if logger:
+            logger.info("Subtopic plan cache hit for %r", request.topic)
+        return [Subtopic.model_validate(item) for item in cached]
+
+    subtopics = generate_subtopics(
+        llm, request.topic, request.filters.language, max_items=config.max_subtopics, logger=logger
+    )
+    if subtopics:
+        store.put_cached_payload(
+            PLAN_CACHE,
+            topic_key,
+            key_filters,
+            [item.model_dump() for item in subtopics],
+            config.search_cache_ttl_sec,
+        )
+    return subtopics
+
+
 def _search_all(
     config: AppConfig,
     store: SQLiteStore,
@@ -400,8 +443,19 @@ def _search_all(
             if widened and widened != item.query:
                 if logger:
                     logger.info("Widening search for %r -> %r", item.query, widened)
+                # Yalnizca yt-dlp: bu arama kabul aninda ayrilan kota tahminine
+                # (`estimate_run_units`) girmiyor. Data API'ye gitseydi alt konu
+                # basina 102 birim, butce dolmak uzereyken gunu herkes icin
+                # bitiren bir 403 demekti.
                 item.candidates = search_candidates(
-                    config, store, widened, request.filters, logger=logger, notes=notes, user_id=user_id
+                    config,
+                    store,
+                    widened,
+                    request.filters,
+                    logger=logger,
+                    notes=notes,
+                    user_id=user_id,
+                    use_data_api=False,
                 )
                 if item.candidates:
                     notes.append(f"genişletilmiş sorgu kullanıldı: {widened!r}")
@@ -439,6 +493,7 @@ def _fetch_transcripts(
     logger,
     emit,
     user_id: str = DEFAULT_USER_ID,
+    state: RunTranscriptState | None = None,
 ) -> dict[str, TranscriptResult]:
     """Zenginlestirilecek videolari tekillestirip paralel transkript ceker."""
     enrichment_top_k = config.effective_enrichment_top_k()
@@ -453,7 +508,8 @@ def _fetch_transcripts(
         emit("transcript_enrichment", "Zenginleştirilecek aday yok", _P_TRANSCRIPTS)
         return results
 
-    state = RunTranscriptState()
+    if state is None:
+        state = RunTranscriptState()
     total = len(targets)
     workers = max(1, min(config.max_transcript_workers, total))
 
@@ -515,6 +571,7 @@ def _generate_study_notes(
     run_id: str | None = None,
     run_dir: Path | str | None = None,
     user_id: str = DEFAULT_USER_ID,
+    transcript_state: RunTranscriptState | None = None,
 ) -> list[StudyNote]:
     """Secilen videolarin transkriptinden calisma notu uretir.
 
@@ -547,7 +604,8 @@ def _generate_study_notes(
 
     total = len(targets)
     workers = max(1, min(config.max_transcript_workers, total))
-    asr_state = RunTranscriptState()
+    # Calistirmanin transkript fazindaki nesne: ASR tavanlari calistirma basina.
+    asr_state = transcript_state if transcript_state is not None else RunTranscriptState()
 
     def run_one(pair) -> StudyNote:
         item, recommendation = pair

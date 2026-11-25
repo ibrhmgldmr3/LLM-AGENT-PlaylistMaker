@@ -7,7 +7,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values, find_dotenv, load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 # Vite gelistirme sunucusu. `CORS_ALLOW_ORIGINS` tanimsizken kullanilan
@@ -103,6 +103,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "ENABLE_RAG": "enable_rag",
     "EMBEDDING_PROVIDER": "embedding_provider",
     "GEMINI_EMBEDDING_MODEL": "gemini_embedding_model",
+    "GEMINI_EMBEDDING_DIMENSIONS": "gemini_embedding_dimensions",
     "TOGETHER_EMBEDDING_MODEL": "together_embedding_model",
     "EMBEDDING_BATCH_SIZE": "embedding_batch_size",
     "RAG_CHUNK_CHARS": "rag_chunk_chars",
@@ -116,6 +117,7 @@ ENV_TO_FIELD: dict[str, str] = {
     "MAX_SPACES_PER_USER": "max_spaces_per_user",
     "MAX_DOCUMENTS_PER_SPACE": "max_documents_per_space",
     "MAX_UPLOAD_BYTES": "max_upload_bytes",
+    "MAX_DOCUMENT_CHARS": "max_document_chars",
     "MAX_RAG_QUESTIONS_PER_USER_PER_DAY": "max_rag_questions_per_user_per_day",
     "MAX_RAG_INGESTS_PER_USER_PER_DAY": "max_rag_ingests_per_user_per_day",
 }
@@ -245,6 +247,16 @@ class RunOptions(BaseModel):
         if value < 0:
             raise ValueError("ASR limitleri sıfır veya daha büyük olmalı")
         return value
+
+
+# `multi_user` kurulumda HIC AYARLANMAMIS kullanici basina gunluk sinirlarin
+# degeri. Anahtarlar sunucunun; sinir unutuldugunda giris yapan herkes
+# sinirsiz harcayabiliyordu. Acikca yazilan 0 hala "sinirsiz" demek.
+MULTI_USER_DEFAULT_LIMITS = {
+    "max_runs_per_user_per_day": 3,
+    "max_rag_questions_per_user_per_day": 100,
+    "max_rag_ingests_per_user_per_day": 20,
+}
 
 
 class ServerConfig(BaseModel):
@@ -398,9 +410,9 @@ class ServerConfig(BaseModel):
     # sunucu sahibine biniyor: sinir olmadan tek bir kullanici gunluk YouTube
     # kotasinin tamamini tuketebilir (kota proje basina 10.000 birim, bir
     # calistirma ~612-1200 birim -- yani ~8-16 calistirma TUM kullanicilar
-    # icin toplam). `multi_user` kurulumlari icin `.env.example` bunu 3 olarak
-    # ONERIR; varsayilan burada 0 kaliyor ki mevcut `single_user` kurulumlarin
-    # davranisi sessizce degismesin.
+    # icin toplam). Varsayilan 0 kaliyor ki `single_user` kurulumlarin
+    # davranisi degismesin; `multi_user`da AYARLANMAMISSA 3 oluyor
+    # (bkz. `MULTI_USER_DEFAULT_LIMITS`).
     max_runs_per_user_per_day: int = Field(default=0, ge=0)
 
     # Kullanim raporunu (`GET /api/admin/usage`) gorebilecek kullanicilar.
@@ -482,6 +494,12 @@ class ServerConfig(BaseModel):
     # benzerligi anlamsizlasir ve arama SESSIZCE bozulur. Model bulunamazsa
     # hata yukseliyor, sessizce baskasina dusulmuyor.
     gemini_embedding_model: str = Field(default="gemini-embedding-001")
+    # Gemini vektor boyutu; bos = modelin varsayilani (`gemini-embedding-001`
+    # icin 3072). 768, soru basina okunan ve karsilastirilan veriyi 4 kat
+    # azaltiyor. Boyut model anahtarina giriyor (bkz. `embedding_model`), yani
+    # degistirmek o alana yeni bir icerik eklendiginde vektorleri yeniden
+    # urettiriyor; o zamana kadar o alanda yalnizca leksik arama calisiyor.
+    gemini_embedding_dimensions: int | None = Field(default=None, ge=128, le=3072)
     # Cok dilli olmasi Turkce icin BELIRLEYICI: yalnizca Ingilizce egitilmis bir
     # embedding modelinde Turkce soru ile Turkce transkript arasindaki benzerlik
     # gurultuye gomuluyor.
@@ -563,6 +581,12 @@ class ServerConfig(BaseModel):
     max_spaces_per_user: int = Field(default=10, ge=1)
     max_documents_per_space: int = Field(default=25, ge=1)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1024)
+    # Bir dokumandan cikan METNIN tavani (karakter). Dosya boyutu tek basina
+    # yetmiyordu: 20 MB'lik bir metin dosyasi ~20.000 parca, yani yukleme
+    # basina ~300 embedding cagrisi ve sonraki HER soruda okunan ~250 MB
+    # vektor demekti (olculdu: soru basina 0.9 sn, ~470 MB bellek).
+    # 1.000.000 karakter ~ 1.000 parca.
+    max_document_chars: int = Field(default=1_000_000, ge=1_000)
 
     # Kullanici basina GUNLUK tavanlar (0 = sinirsiz, varsayilan). Yukaridaki
     # tavanlar DEPOLAMAYI sinirliyor, bunlar CAGRI hacmini: her soru bir
@@ -572,6 +596,20 @@ class ServerConfig(BaseModel):
     # Gun, YouTube kotasiyla AYNI sinirda (Pasifik saati) donuyor.
     max_rag_questions_per_user_per_day: int = Field(default=0, ge=0)
     max_rag_ingests_per_user_per_day: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _apply_multi_user_limits(self) -> "ServerConfig":
+        """`multi_user`da hic ayarlanmamis sinirlara guvenli varsayilan.
+
+        `single_user`da varsayilan 0 (sinirsiz) kaliyor: tek kullanici
+        sunucunun sahibi. "Ayarlanmamis" = `model_fields_set`te yok; `.env`'de
+        bos birakilan degisken de oyle sayiliyor (bkz. `load_config`).
+        """
+        if self.auth_mode == "multi_user":
+            for name, value in MULTI_USER_DEFAULT_LIMITS.items():
+                if name not in self.model_fields_set:
+                    setattr(self, name, value)
+        return self
 
     def effective_embedding_provider(self) -> str:
         """Embedding hangi saglayicidan alinacak.
@@ -596,6 +634,9 @@ class ServerConfig(BaseModel):
         """
         if self.effective_embedding_provider() == "together":
             return self.together_embedding_model
+        # Boyut da anahtarda: farkli boyutlu vektorler ayni matrise girmez.
+        if self.gemini_embedding_dimensions:
+            return f"{self.gemini_embedding_model}@{self.gemini_embedding_dimensions}"
         return self.gemini_embedding_model
 
     def llm_api_key(self) -> str | None:
@@ -632,7 +673,10 @@ class ServerConfig(BaseModel):
     retry_max_attempts: int = Field(default=3)
     retry_base_delay_sec: float = Field(default=1.0)
 
-    search_cache_ttl_sec: int = Field(default=21600)
+    # Arama sonuclari ve alt konu planlari. Kota gunde bir kez donuyor;
+    # 6 saatlik sure, ayni sorguyu sabah ve aksam iki kez (102'ser birim)
+    # odetiyordu. Bir ogrenme konusunun arama sonuclari bir gunde pek degismiyor.
+    search_cache_ttl_sec: int = Field(default=86400)
     transcript_cache_ttl_sec: int = Field(default=2592000)
     failure_cache_ttl_sec: int = Field(default=900)
     provider_cooldown_sec: int = Field(default=900)

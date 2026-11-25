@@ -483,6 +483,85 @@ def test_zero_means_unlimited(store):
     assert ServerConfig().max_runs_per_user_per_day == 0
 
 
+def test_multi_user_gets_safe_limits_when_none_are_set():
+    """Anahtarlar sunucunun. `multi_user`da sinir unutuldugunda giris yapan
+    herkes sinirsiz harciyordu; acikca yazilan 0 ise hala sinirsiz."""
+    from src.config import ServerConfig
+    from src.config.settings import MULTI_USER_DEFAULT_LIMITS
+
+    config = ServerConfig(auth_mode="multi_user")
+    for name, value in MULTI_USER_DEFAULT_LIMITS.items():
+        assert getattr(config, name) == value
+
+    explicit = ServerConfig(auth_mode="multi_user", max_runs_per_user_per_day=0)
+    assert explicit.max_runs_per_user_per_day == 0
+
+
+def test_multi_user_run_options_cannot_raise_costs(monkeypatch, tmp_path):
+    """Istek secenekleri sunucunun maliyet ayarlarini ASAMIYOR ve modeli
+    SECEMIYOR. Eskiden her kullanici 20 alt konu (gunluk kotanin %40'i),
+    sinirsiz ASR ve istedigi modeli sunucunun anahtariyla isteyebiliyordu."""
+    from fastapi.testclient import TestClient
+
+    import api.main as main
+    from src.config import AppConfig
+    from src.jobs.runner import InProcessJobRunner
+
+    submitted: list[dict] = []
+
+    class RecordingRunner(InProcessJobRunner):
+        def submit(self, job_id, user_id, task, payload):
+            submitted.append(payload)
+            return super().submit(job_id, user_id, task, payload)
+
+    config = AppConfig(
+        gemini_api_key="k",
+        data_dir=str(tmp_path),
+        sqlite_path=str(tmp_path / "app.db"),
+        secret_encryption_key=KEY,
+        auth_mode="multi_user",
+    )
+    config.ensure_directories()
+    monkeypatch.setattr(settings, "base_config", lambda: config)
+    monkeypatch.setattr(playlist_task, "build_playlist", lambda *a, **k: None)
+    monkeypatch.setattr(main, "create_job_runner", lambda config: RecordingRunner())
+
+    with TestClient(main.app) as client:
+        store = SQLiteStore(config.sqlite_path, encryption_key=KEY)
+        store.create_session("ali-jeton", "google:ali", None, ttl_sec=3600)
+        client.cookies.set("map_session", "ali-jeton")
+        response = client.post(
+            "/api/runs",
+            json={
+                "topic": "kuantum",
+                "options": {
+                    "max_subtopics": 20,
+                    "max_asr_videos_per_run": 1000,
+                    "gemini_model": "en-pahali-model",
+                    "enable_asr_fallback": True,
+                },
+            },
+        )
+
+    assert response.status_code == 202
+    options = submitted[0]["options"]
+    assert options["max_subtopics"] == config.max_subtopics
+    assert options["max_asr_videos_per_run"] == config.max_asr_videos_per_run
+    assert "gemini_model" not in options
+    # Ac/kapa secenegi arayuzun ozelligi; bedeli yukaridaki tavanlarla sinirli.
+    assert options["enable_asr_fallback"] is True
+
+
+def test_single_user_run_options_are_left_alone():
+    """Tek kullanici sunucunun sahibi; secenekleri sinirlamanin anlami yok."""
+    from api.routers.runs import _bounded_overrides
+    from src.config import RunOptions, ServerConfig
+
+    overrides = {"max_subtopics": 20, "gemini_model": "baska-model"}
+
+    assert _bounded_overrides(overrides, RunOptions(), ServerConfig()) == overrides
+
+
 # ------------------------------------------------- kesilen calistirmalar
 
 def test_interrupted_run_is_not_reported_as_pending(tmp_path, monkeypatch):

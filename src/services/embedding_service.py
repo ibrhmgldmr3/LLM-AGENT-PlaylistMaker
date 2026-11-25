@@ -1,10 +1,11 @@
 """Parca vektorleri: uretim, saklama ve benzerlik aramasi.
 
-VEKTOR VERITABANI YOK. Bir ogrenme alani birkac bin parca tasiyor; 2.500 parca
-x 768 boyut = ~7 MB float32 ve kosinus hesabi numpy ile milisaniyelerle
-olculuyor. Chroma/FAISS/pgvector eklemek, bugun olmayan bir olcek sorununu
-cozmek olurdu -- ayni gerekce `playlist_service`in RAG kullanmama kararinda da
-yaziliydi ve orada bugun de gecerli.
+VEKTOR VERITABANI YOK. Bir ogrenme alani birkac bin parca tasiyor. Olculdu:
+2.500 parca x 3072 boyut (`gemini-embedding-001` varsayilani) = ~30 MB float32,
+soru basina 62 ms ve ~80 MB bellek. Chroma/FAISS/pgvector eklemek, bugun
+olmayan bir olcek sorununu cozmek olurdu. Bunun SARTI alanin buyuyememesi:
+dokuman basina metin tavani `MAX_DOCUMENT_CHARS`, boyut icin
+`GEMINI_EMBEDDING_DIMENSIONS` (768 = dort kat az).
 
 Vektorler `chunk_embedding` tablosunda float32 BLOB olarak duruyor, MODEL ADIYLA
 BIRLIKTE: farkli modellerin vektorleri arasinda kosinus benzerligi anlamsizdir.

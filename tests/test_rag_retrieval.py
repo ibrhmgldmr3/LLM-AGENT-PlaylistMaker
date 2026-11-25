@@ -207,3 +207,43 @@ def test_url_without_query_uses_question_mark():
     assert rag_service._url_with_timestamp("https://youtu.be/abc", 12) == (
         "https://youtu.be/abc?t=12s"
     )
+
+
+# --------------------------------------------------------- dokuman tavani
+
+
+def test_a_document_over_the_text_cap_is_refused_before_any_embedding(tmp_path):
+    """Yalnizca dosya boyutu sinirliydi: 20 MB'lik bir metin dosyasi ~20.000
+    parca, ~300 embedding cagrisi ve sonraki her soruda ~250 MB vektor
+    demekti (olculdu: soru basina 0.9 sn, ~470 MB bellek)."""
+    config = _config(tmp_path, max_document_chars=1_000)
+    store = SQLiteStore(config.sqlite_path)
+    store.create_space("sp", "local", "Alan")
+    store.add_source("sp", "doc:1", kind="document", ref_id="1", title="Uzun.txt")
+    path = tmp_path / "uzun.txt"
+    path.write_text("kovaryans " * 300, encoding="utf-8")
+
+    class _NoEmbedding(_Capturing):
+        def embed(self, texts):
+            raise AssertionError("tavanin ustundeki belge icin embedding istenmemeli")
+
+    report = rag_service.ingest_document(
+        config, store, _NoEmbedding(), "sp", "doc:1", path, "Uzun.txt"
+    )
+
+    assert report.failed == ["Uzun.txt"]
+    assert store.get_source("sp", "doc:1")["status"] == "failed"
+    assert store.count_chunks("sp") == 0
+
+
+def test_missing_embeddings_are_counted_without_loading_text(store):
+    """Sayi isteyen yer metni de cekiyordu; iki yol ayni olcutu kullanmali."""
+    store.create_space("sp", "local", "Alan")
+    store.add_source("sp", "doc:1", kind="document", ref_id="1", title="Not")
+    store.replace_chunks(
+        "sp", "doc:1", chunk_document([(1, "Bir. " * 400)], max_chars=200, overlap_chars=0)
+    )
+
+    assert store.count_chunks_missing_embeddings("sp", "m") == len(
+        store.chunks_missing_embeddings("sp", "m")
+    ) > 0

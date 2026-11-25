@@ -244,3 +244,95 @@ def test_subtopic_count_respects_config_cap(monkeypatch, tmp_path):
     playlist_service.build_playlist(config, PlaylistRequest(topic="Test"))
 
     assert len(searches) == 2
+
+
+def test_the_same_topic_reuses_its_plan(monkeypatch, tmp_path):
+    """Arama onbellegi yalnizca BIREBIR ayni sorguda isabet ediyor. Plan her
+    calistirmada LLM'den yeniden gelince sorgularin ifadesi degisiyordu ve
+    ayni gun ayni konuyu isteyen iki kullanici kotayi iki kez oduyordu."""
+    config = _config(tmp_path)
+    plans: list[str] = []
+
+    class CountingLLM(DummyLLM):
+        def generate_subtopics(self, topic, language, max_items=6):
+            plans.append(topic)
+            return super().generate_subtopics(topic, language, max_items)
+
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: CountingLLM())
+    monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: _candidates())
+    monkeypatch.setattr(
+        playlist_service,
+        "get_transcript",
+        lambda config, store, candidate, *a, **k: TranscriptResult(
+            video_id=candidate.video_id, status="unavailable", source="youtube_transcript_api"
+        ),
+    )
+
+    first = playlist_service.build_playlist(
+        config, PlaylistRequest(topic="Kalman Filtresi", filters=FilterOptions(language="tr"))
+    )
+    second = playlist_service.build_playlist(
+        config, PlaylistRequest(topic="kalman filtresi ", filters=FilterOptions(language="tr"))
+    )
+
+    assert plans == ["Kalman Filtresi"]
+    assert [s.subtopic.title for s in second.subtopics] == [
+        s.subtopic.title for s in first.subtopics
+    ]
+
+
+def _unavailable(config, store, candidate, *args, **kwargs):
+    return TranscriptResult(
+        video_id=candidate.video_id, status="unavailable", source="youtube_transcript_api"
+    )
+
+
+def test_the_widened_search_costs_no_quota(monkeypatch, tmp_path):
+    """Genisletilmis arama, kabul aninda ayrilan kota tahminine girmiyor.
+    Data API'ye gidince butce dolmak uzereyken gunu bitirebiliyordu."""
+    config = _config(tmp_path)
+    calls: list[tuple[str, bool]] = []
+
+    def fake_search(config, store, query, filters, **kwargs):
+        paid = kwargs.get("use_data_api", True)
+        calls.append((query, paid))
+        return [] if paid else _candidates()
+
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM(["Foundations"]))
+    monkeypatch.setattr(playlist_service, "search_candidates", fake_search)
+    monkeypatch.setattr(playlist_service, "get_transcript", _unavailable)
+
+    playlist_service.build_playlist(
+        config, PlaylistRequest(topic="Konu", filters=FilterOptions(language="en"))
+    )
+
+    assert calls == [("Konu Foundations", True), ("Foundations", False)]
+
+
+def test_study_notes_share_the_runs_asr_budget(monkeypatch, tmp_path):
+    """ASR tavanlari calistirma basina. Calisma notu fazi kendi durum nesnesini
+    kurunca tavanlar sifirlaniyor ve soyleneni iki katina kadar ASR yapilabiliyordu."""
+    config = _config(tmp_path, enable_study_notes=True, enable_asr_fallback=True)
+    candidates = _candidates()
+    states: list[object] = []
+
+    def recording_transcript(config, store, candidate, run_dir, state, **kwargs):
+        states.append(state)
+        return _unavailable(config, store, candidate)
+
+    monkeypatch.setattr(playlist_service, "create_llm_provider", lambda config: DummyLLM())
+    monkeypatch.setattr(playlist_service, "search_candidates", lambda *a, **k: candidates)
+    monkeypatch.setattr(
+        playlist_service,
+        "rank_candidates",
+        lambda cands, topic, subtopic, filters, **kw: [(candidates[0], _score(8.0)), (candidates[1], _score(7.0))],
+    )
+    monkeypatch.setattr(playlist_service, "get_transcript", recording_transcript)
+
+    result = playlist_service.build_playlist(
+        config, PlaylistRequest(topic="Konu", filters=FilterOptions(language="en"))
+    )
+
+    assert result.study_notes, "calisma notu fazi calismali"
+    assert len(states) > len({id(c) for c in candidates}), "not fazi da transkript denemeli"
+    assert len({id(state) for state in states}) == 1

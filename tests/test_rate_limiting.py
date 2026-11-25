@@ -268,3 +268,23 @@ def test_search_rate_limit_registers_a_cooldown_others_can_see(tmp_path, monkeyp
     )
 
     assert len(cagrilar) == ilk_tur, "soguma ikinci kullaniciyi da durdurmaliydi"
+
+
+def test_an_exhausted_daily_quota_rests_until_the_reset(tmp_path):
+    """`quotaExceeded` gecici sayiliyordu: her arama 3 kez deneniyor, saglayici
+    yalnizca 15 dk dinleniyor ve Pasifik gece yarisina kadar her calistirma
+    ayni seyi bastan yasiyordu."""
+    from types import SimpleNamespace
+
+    from src.providers.youtube_data_api_provider import YouTubeDataAPIProvider
+
+    response = SimpleNamespace(
+        status_code=403,
+        headers={},
+        json=lambda: {"error": {"message": "quota", "errors": [{"reason": "quotaExceeded"}]}},
+    )
+
+    error = YouTubeDataAPIProvider(_config(tmp_path))._classify_error(response, "search")
+
+    assert isinstance(error, ProviderRateLimitedError)
+    assert 0 < error.retry_after <= 24 * 3600
