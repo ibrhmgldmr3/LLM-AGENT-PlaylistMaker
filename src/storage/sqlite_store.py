@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -67,6 +69,10 @@ USER_LIMIT = RunAdmission(False, "user_limit")
 SERVICE_BUDGET = RunAdmission(False, "service_budget")
 
 _log = logging.getLogger(__name__)
+
+# Semasi BU SURECTE kurulmus veritabanlari (`Dialect.schema_key`).
+_schema_ready: set[str] = set()
+_schema_lock = threading.Lock()
 
 
 def _utc_now() -> datetime:
@@ -162,13 +168,32 @@ class SQLiteStore:
         # Sirlar (OAuth jetonlari) bu kutu ile sifrelenir. Anahtar yoksa duz
         # metin yazilir ve eski davranis korunur.
         self._secrets = SecretBox(encryption_key)
-        self._ensure_schema()
+        self._ensure_schema_once()
 
     @contextmanager
     def connect(self):
         """Baglanti acar. Islem yonetimi ve lehce farklari `dialect` icinde."""
         with self._dialect.connect() as conn:
             yield conn
+
+    def _ensure_schema_once(self) -> None:
+        """Semayi kurar; `schema_key`i olan lehcede surec basina BIR KEZ.
+
+        `get_store` her istekte yeni bir store kuruyor. Postgres'te sema betigi
+        istek basina 8.4 ms suruyordu; daha kotusu, `CREATE INDEX IF NOT
+        EXISTS` indeks zaten varken bile tabloya kilit istiyor. Acik tek bir
+        `chunk` yazimi, her API istegini 3 sn bekletti (olculdu).
+        """
+        key = self._dialect.schema_key
+        if key is None:
+            self._ensure_schema()
+            return
+        if key in _schema_ready:
+            return
+        with _schema_lock:
+            if key not in _schema_ready:
+                self._ensure_schema()
+                _schema_ready.add(key)
 
     def _ensure_schema(self) -> None:
         with self.connect() as conn:
@@ -983,12 +1008,7 @@ class SQLiteStore:
                 # kabulden DAKIKALAR sonra olusuyor, dolayisiyla es zamanli
                 # istekler ayni "harcanan" degerini okuyup hepsi geciyordu.
                 # Olculdu: 5 calistirmalik butceye 6 calistirma kabul edildi.
-                reserved = int(
-                    conn.execute(
-                        "SELECT COALESCE(SUM(reserved_units), 0) AS total FROM run"
-                        " WHERE result_json IS NULL AND interrupted_at IS NULL"
-                    ).fetchone()["total"]
-                )
+                reserved = self._reserved_units(conn)
                 # Ucustaki bir calistirma hem rezervasyonunu hem o ana kadarki
                 # gercek harcamasini tasiyor, yani kisa sureligine IKI KEZ
                 # sayiliyor. Bilerek: fazla saymanin bedeli birkac yuz birimlik
@@ -1020,6 +1040,54 @@ class SQLiteStore:
                 ),
             )
             return ACCEPTED
+
+    @staticmethod
+    def _reserved_units(conn: sqlite3.Connection) -> int:
+        """Ucustaki calistirmalarin butceden ayirdigi kota.
+
+        24 saatten eski rezervasyon SAYILMIYOR. O sure icinde biten, basarisiz
+        olan ya da iptal edilen calistirma payini coktan birakmis olmali;
+        birakmadiysa birakacak kimse de kalmamistir (worker oldu ya da zarfi
+        TTL'i dolunca atti). Eskiden bu pay web yeniden baslayana kadar
+        butceyi tutuyordu.
+        """
+        cutoff = _to_iso(_utc_now() - timedelta(days=1))
+        row = conn.execute(
+            "SELECT COALESCE(SUM(reserved_units), 0) AS total FROM run"
+            " WHERE result_json IS NULL AND interrupted_at IS NULL AND created_at >= ?",
+            (cutoff,),
+        ).fetchone()
+        return int(row["total"]) if row else 0
+
+    def sum_reserved_units(self) -> int:
+        """Ucustaki calistirmalarin ayirdigi kota (bkz. `_reserved_units`)."""
+        with self.connect() as conn:
+            return self._reserved_units(conn)
+
+    def seconds_until_run_slot(
+        self, user_id: str, max_per_day: int, within_sec: int = 86400
+    ) -> int:
+        """Gunluk calistirma sinirina takilan kullanici ne zaman tekrar deneyebilir.
+
+        Bu sinir KAYAN bir pencere (son 24 saat), kota gunune bagli degil.
+        Eskiden `Retry-After` Pasifik gece yarisini gosteriyordu: saat 10'da
+        sinira takilan biri yanlis saate yonlendiriliyordu. Yer, pencereden
+        yeterince calistirma ciktiginda aciliyor.
+        """
+        now = _utc_now()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT created_at FROM run"
+                " WHERE user_id = ? AND created_at >= ? AND interrupted_at IS NULL"
+                " ORDER BY created_at",
+                (user_id, _to_iso(now - timedelta(seconds=within_sec))),
+            ).fetchall()
+        excess = len(rows) - max_per_day
+        if excess < 0:
+            return 1
+        started = _parse_iso(rows[excess]["created_at"]) or now
+        frees_at = started + timedelta(seconds=within_sec)
+        return max(1, math.ceil((frees_at - now).total_seconds()))
 
     def add_run_subtopic(self, run_id: str, position: int, payload: dict[str, Any]) -> None:
         with self.connect() as conn:
@@ -1593,6 +1661,7 @@ class SQLiteStore:
         yazili). Onu `space_retention.delete_space` yapiyor.
         """
         with self.connect() as conn:
+            self._lock_space(conn, space_id)
             cursor = conn.execute(
                 "DELETE FROM space WHERE space_id = ? AND user_id = ?",
                 (space_id, user_id),
@@ -1601,6 +1670,15 @@ class SQLiteStore:
                 return False
             self._delete_space_content(conn, space_id)
         return True
+
+    def _lock_space(self, conn: sqlite3.Connection, space_id: str) -> None:
+        """Bir alanin kaynak/parca YAZIMLARINI silmeyle serilestirir.
+
+        Indeksleme dakikalar suruyor ve kullanici bu arada kaynagi ya da alani
+        silebiliyor. Kilit olmadan "var mi" kontrolu ile yazma arasinda silme
+        araya girebilir ve silinen kaynagin parcalari geri yazilirdi.
+        """
+        self._dialect.lock(conn, f"space:{space_id}")
 
     @staticmethod
     def _delete_space_content(conn: sqlite3.Connection, space_id: str) -> None:
@@ -1627,21 +1705,27 @@ class SQLiteStore:
         language: str | None = None,
         status: str = "pending",
         byte_size: int = 0,
-    ) -> None:
-        """Kaynagi ekler ya da mevcut kaydin uzerine yazar.
+    ) -> bool:
+        """Kaynagi ekler ya da mevcut kaydin uzerine yazar; alan yoksa `False`.
 
-        `INSERT OR REPLACE`: ayni videoyu iceren ikinci bir calistirma alana
-        eklendiginde ya da basarisiz bir indeksleme tekrarlandiginda kayit
-        TAZELENMELI, ikinci kez eklenmemeli. Tekillik zaten
-        `(space_id, source_id)` birincil anahtarinda.
+        Upsert: ayni videoyu iceren ikinci bir calistirma alana eklendiginde
+        ya da basarisiz bir indeksleme tekrarlandiginda kayit TAZELENMELI,
+        ikinci kez eklenmemeli. Tekillik zaten `(space_id, source_id)`
+        birincil anahtarinda.
+
+        Alan SILINMISSE hicbir sey yazilmiyor: indeksleme suren bir alan
+        silindiginde is, sonraki videolari sahipsiz satirlar olarak geri
+        yaziyordu.
         """
         with self.connect() as conn:
-            conn.execute(
+            self._lock_space(conn, space_id)
+            cursor = conn.execute(
                 """
                 INSERT INTO space_source (
                     space_id, source_id, kind, ref_id, title, url, language,
                     status, chunk_count, byte_size, error, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?)
+                ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?
+                    WHERE EXISTS (SELECT 1 FROM space WHERE space_id = ?)
                     ON CONFLICT(space_id, source_id) DO UPDATE SET
                         kind = excluded.kind,
                         ref_id = excluded.ref_id,
@@ -1665,8 +1749,10 @@ class SQLiteStore:
                     status,
                     int(byte_size),
                     _to_iso(_utc_now()),
+                    space_id,
                 ),
             )
+            return bool(cursor.rowcount and cursor.rowcount > 0)
 
     def update_source(
         self,
@@ -1710,6 +1796,7 @@ class SQLiteStore:
     def delete_source(self, space_id: str, source_id: str) -> bool:
         """Kaynagi ve parcalarini siler. Alanin kendisine dokunmaz."""
         with self.connect() as conn:
+            self._lock_space(conn, space_id)
             cursor = conn.execute(
                 "DELETE FROM space_source WHERE space_id = ? AND source_id = ?",
                 (space_id, source_id),
@@ -1749,10 +1836,21 @@ class SQLiteStore:
         `search_text` BURADA uretiliyor: cagiranlarin bunu hatirlamasi
         gerekmemeli ve unutulan tek bir cagri yeri arama indeksini sessizce
         eksik birakirdi.
+
+        Kaynak bu arada SILINDIYSE hicbir sey yazilmiyor ve 0 donuyor. Arama
+        yalnizca alana gore suzuyor; silinen bir kaynagin geri yazilan
+        parcalari, kullanicinin sildigi kaynagi yanitlarda kaynak gosteriyordu.
         """
         from src.utils.text_utils import search_key
 
         with self.connect() as conn:
+            self._lock_space(conn, space_id)
+            exists = conn.execute(
+                "SELECT 1 FROM space_source WHERE space_id = ? AND source_id = ?",
+                (space_id, source_id),
+            ).fetchone()
+            if exists is None:
+                return 0
             self._delete_source_chunks(conn, space_id, source_id)
             written = 0
             for draft in drafts:

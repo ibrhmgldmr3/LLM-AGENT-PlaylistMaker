@@ -54,7 +54,7 @@ jobs:
       - name: Bagimliliklari kur
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
           pip install pyflakes
 
       - name: Kurulu surumler
@@ -110,9 +110,11 @@ jobs:
       - name: Alt sinir surumlerini kur
         run: |
           python -m pip install --upgrade pip
-          # `>=X,<Y` araliklarini `==X`e cevir
-          sed -E 's/>=([0-9][^,]*),<[^ ]*/==\1/; s/>=([0-9].*)$/==\1/' requirements.txt \
-            | grep -v '^#' | grep -v '^$' > constraints-min.txt
+          # `>=X,<Y` araliklarini `==X`e cevir. Test araclari ayri dosyada;
+          # `-r` satirlari atiliyor (iki dosya zaten birlikte okunuyor).
+          cat requirements.txt requirements-dev.txt \
+            | sed -E 's/>=([0-9][^,]*),<[^ ]*/==\1/; s/>=([0-9].*)$/==\1/' \
+            | grep -v '^#' | grep -v '^$' | grep -v '^-r ' > constraints-min.txt
           echo "--- alt sinirlar ---"; cat constraints-min.txt
           pip install -r constraints-min.txt
 

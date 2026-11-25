@@ -144,17 +144,21 @@ def create_run(
         estimated_units=estimate_run_units(options.max_subtopics, queries_per_subtopic),
     )
     if not admission:
-        # `Retry-After` gercek sifirlanma anina gore: kota Pasifik saatiyle
-        # donuyor ve Turkiye'den bakan biri icin bu gun ORTASINA denk geliyor.
-        # Sabit "3600" hem yanlis hem de kullanicinin bosuna denemesine yol
-        # aciyordu.
-        retry_after = seconds_until_next_quota_day()
+        # `Retry-After` gercek acilma anina gore; sabit "3600" hem yanlis hem
+        # de kullanicinin bosuna denemesine yol aciyordu.
         if admission.reason == "service_budget":
+            # Kota Pasifik saatiyle donuyor; Turkiye'den bakan biri icin bu
+            # gun ORTASINA denk geliyor.
+            retry_after = seconds_until_next_quota_day()
             detail = (
                 "Servisin bugünkü kapasitesi doldu. Arama kotası tüm kullanıcılar "
                 "için ortak ve bugünlük tükendi; kota sıfırlandığında tekrar deneyin."
             )
         else:
+            # Kullanici siniri kayan 24 saatlik pencere; kota gunuyle ilgisi yok.
+            retry_after = store.seconds_until_run_slot(
+                user_id, server.max_runs_per_user_per_day
+            )
             detail = (
                 f"Günlük çalıştırma hakkınız doldu ({server.max_runs_per_user_per_day})."
             )

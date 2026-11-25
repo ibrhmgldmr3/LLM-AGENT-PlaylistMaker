@@ -331,6 +331,33 @@ def test_deleting_unknown_source_reports_false(store):
     assert store.delete_source("sp", "doc:yok") is False
 
 
+def test_chunks_are_not_written_back_for_a_source_deleted_mid_ingest(store):
+    """Indeksleme dakikalar suruyor. Kullanici bu arada kaynagi silerse is
+    parcalari GERI yaziyordu; arama yalnizca alana gore suzdugu icin silinen
+    kaynak yanitlarda kaynak olarak gosteriliyordu."""
+    _seed(store)
+    store.add_source("sp", "doc:2", kind="document", ref_id="2", title="Silinecek")
+    store.delete_source("sp", "doc:2")
+
+    written = store.replace_chunks(
+        "sp", "doc:2", chunk_document([(1, "Hayalet entropi.")], max_chars=400, overlap_chars=0)
+    )
+
+    assert written == 0
+    assert store.search_chunks_fts("sp", build_fts_query("entropi")) == []
+
+
+def test_sources_are_not_added_to_a_deleted_space(store):
+    """Alan indeksleme surerken silinirse sonraki videolar sahipsiz satir olmamali."""
+    _seed(store)
+    store.delete_space("sp", "local")
+
+    added = store.add_source("sp", "video:x", kind="video", ref_id="x", title="Gec gelen")
+
+    assert added is False
+    assert _rowcount(store, "space_source") == 0
+
+
 def test_adding_the_same_source_twice_refreshes_instead_of_duplicating(store):
     """Ayni videoyu iceren ikinci bir calistirma alana eklenebilmeli."""
     _seed(store)

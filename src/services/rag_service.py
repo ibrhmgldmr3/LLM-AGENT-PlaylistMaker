@@ -677,7 +677,7 @@ def ingest_run(
         if progress:
             progress(index, total, video.title)
 
-        store.add_source(
+        if not store.add_source(
             space_id,
             source_id,
             kind="video",
@@ -686,7 +686,11 @@ def ingest_run(
             url=video.url,
             language=video.language,
             status="pending",
-        )
+        ):
+            # Alan is surerken silindi. Kalan videolar icin transkript ve
+            # vektor uretmek bosa harcanan kota ve LLM cagrisi olurdu.
+            _log.info("Alan %s indeksleme sirasinda silindi; is durduruluyor", space_id)
+            return report
         report.added += 1
 
         try:

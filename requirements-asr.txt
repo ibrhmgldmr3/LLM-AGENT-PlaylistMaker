@@ -1,0 +1,7 @@
+# Yerel konusmadan-metne (ASR). VARSAYILAN OLARAK KAPALI (`ENABLE_ASR_FALLBACK`)
+# ve kurulumu yuzlerce MB (CTranslate2, PyAV, ONNX Runtime). Kurulu degilse
+# `faster_whisper_provider` kendini "kullanilamaz" sayiyor; uygulama calisiyor.
+# Docker'da: `docker build --build-arg WITH_ASR=true .`
+-r requirements.txt
+
+faster-whisper>=1.1.0,<2.0.0

@@ -13,10 +13,13 @@ sunucuya karsi olculuyor.
 
 from __future__ import annotations
 
+import uuid
+from contextlib import contextmanager
+
 import pytest
 
 from src.config import AppConfig
-from src.storage import backend_name, create_dialect
+from src.storage import SQLiteStore, backend_name, create_dialect
 from src.storage.dialect import PostgresDialect
 
 
@@ -243,3 +246,48 @@ def test_memory_backend_still_warns_about_a_single_process(monkeypatch, caplog):
     message = _multi_process_log(monkeypatch, caplog, job_backend="memory")
 
     assert "tek süreç" in message.lower()
+
+
+# ------------------------------------------------------- sema kurulumu
+
+
+class _CountingDialect:
+    """Sema betigini SAYAN sahte lehce; gercek sunucu gerekmiyor."""
+
+    name = "counting"
+    supports_legacy_migration = False
+
+    def __init__(self, schema_key):
+        self.schema_key = schema_key
+        self.scripts = 0
+
+    @contextmanager
+    def connect(self):
+        yield self
+
+    def executescript(self, script):
+        self.scripts += 1
+
+    def execute(self, statement, params=()):
+        return None
+
+
+def test_a_shared_database_gets_its_schema_once_per_process(tmp_path):
+    """`get_store` her istekte store kuruyor. Postgres'te sema betigi her
+    seferinde kosuyordu ve `CREATE INDEX IF NOT EXISTS`, indeks varken bile
+    tablo kilidi istiyor: acik bir yazim her istegi 3 sn bekletti."""
+    dialect = _CountingDialect(f"postgresql://h/test_{uuid.uuid4().hex}")
+
+    for _ in range(3):
+        SQLiteStore(str(tmp_path / "unused.db"), dialect=dialect)
+
+    assert dialect.scripts == 1
+
+
+def test_a_deleted_sqlite_file_gets_its_schema_back(tmp_path):
+    """SQLite'ta kurulum hatirlanmiyor: dosya surec ayaktayken silinebiliyor."""
+    path = tmp_path / "app.db"
+    SQLiteStore(str(path))
+    path.unlink()
+
+    assert SQLiteStore(str(path)).list_run_ids() == set()
